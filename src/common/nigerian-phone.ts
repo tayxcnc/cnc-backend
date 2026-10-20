@@ -16,8 +16,16 @@
 export const NIGERIAN_PHONE = /^(\+234|0)[789][01]\d{8}$/;
 
 /**
- * A number that passes `NIGERIAN_PHONE`, in the one form `+234…`:
- * `08031234567` and `+2348031234567` both come back `+2348031234567`.
+ * A number that passes `NIGERIAN_PHONE`, in the one form CNC stores: `0`
+ * plus 10 digits. `08031234567` and `+2348031234567` both come back
+ * `08031234567`.
+ *
+ * The local form, not `+234…`, because the plan stores it (§4.2: a
+ * customer's `phone` is "`0`+10 digits"), the business's own number is
+ * stored that way (`08022188797`), and it is the form every CNC screen shows
+ * and every guest types. TAY's copy of this helper returns `+234…`; the two
+ * services never compare numbers with each other, so they need not agree.
+ * `Customer.phone` carries a CHECK refusing any other spelling.
  *
  * For a number that is **compared**, not merely shown. A phone that must be
  * unique, or that a duplicate check matches on, has two spellings for one
@@ -35,5 +43,5 @@ export function canonicalNigerianPhone(value: string): string {
     );
   }
 
-  return value.startsWith('0') ? `+234${value.slice(1)}` : value;
+  return value.startsWith('+234') ? `0${value.slice('+234'.length)}` : value;
 }
