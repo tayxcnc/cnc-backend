@@ -1,4 +1,9 @@
-import { hashPassword, MIN_PASSWORD_LENGTH, verifyPassword } from './password';
+import {
+  generateTemporaryPassword,
+  hashPassword,
+  MIN_PASSWORD_LENGTH,
+  verifyPassword,
+} from './password';
 
 describe('password hashing', () => {
   it('hashes with argon2id at the cost every writer shares', async () => {
@@ -34,5 +39,15 @@ describe('password hashing', () => {
 
   it("keeps TAY's eight-character minimum", () => {
     expect(MIN_PASSWORD_LENGTH).toBe(8);
+  });
+
+  it('generates temporary passwords as five groups of four hex characters', () => {
+    const passwords = Array.from({ length: 50 }, generateTemporaryPassword);
+
+    for (const password of passwords) {
+      expect(password).toMatch(/^[0-9a-f]{4}(-[0-9a-f]{4}){4}$/);
+      expect(password.length).toBeGreaterThanOrEqual(MIN_PASSWORD_LENGTH);
+    }
+    expect(new Set(passwords).size).toBe(passwords.length);
   });
 });

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { CncAuthModule } from './auth/cnc-auth.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { CncConfigModule } from './config/cnc-config.module';
 import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
@@ -31,6 +32,7 @@ import { CncPrismaService } from './prisma/cnc-prisma.service';
     CncConfigModule,
     CncPrismaModule,
     IdempotencyModule,
+    CncAuthModule,
   ],
   controllers: [HealthController],
   providers: [

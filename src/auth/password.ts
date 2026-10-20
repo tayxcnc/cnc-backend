@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { hash, verify } from '@node-rs/argon2';
 
 /**
@@ -43,6 +44,28 @@ export const ARGON2_OPTIONS = {
  * number.
  */
 export const MIN_PASSWORD_LENGTH = 8;
+
+/** Random bytes in a temporary password: 80 bits. */
+const TEMPORARY_PASSWORD_BYTES = 10;
+
+/**
+ * A machine-chosen password for an account an Owner or a manager has reset
+ * (C3-3), and for a new account (C3-6). The holder must replace it at first
+ * sign-in (`mustChangePassword`).
+ *
+ * TAY emails its generated password; CNC has no mail until C6, so the
+ * password is shown once to the manager who reset the account and handed
+ * over in person. It is therefore shorter than TAY's 32 hex characters and
+ * grouped for reading aloud: 20 lower-case hex characters in five groups of
+ * four (`3f9a-07c2-…`). Hex has no case to get wrong and no look-alike
+ * letters. 80 bits is far beyond reach of a sign-in route that allows ten
+ * guesses per fifteen minutes and costs an argon2 verification each.
+ */
+export function generateTemporaryPassword(): string {
+  const hex = randomBytes(TEMPORARY_PASSWORD_BYTES).toString('hex');
+
+  return hex.match(/.{4}/g)!.join('-');
+}
 
 /** Hash a plaintext password for `Staff.passwordHash`. */
 export function hashPassword(plaintext: string): Promise<string> {
