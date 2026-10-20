@@ -66,6 +66,8 @@ npm run mock             # prism mock against openapi-cnc.json, port 4014
 
 npm run db:generate      # prisma generate, to generated/cnc-client
 npm run db:migrate       # prisma migrate dev, LOCAL ONLY
+npm run db:seed          # reference data, menu, paired Bar stock (also Prisma's seed key)
+npm run db:seed:owner    # the first Owner, by hand only (never the seed key)
 ```
 
 ## Layout
@@ -77,13 +79,17 @@ src/
   app.module.ts      CncAppModule
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
-  common/            money, dates, errors, pagination, request helpers
+  auth/              password hashing (argon2id) shared by the seed and sign-in
+  common/            money, dates, errors, pagination, request helpers, QR tokens
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
   migrations/
+  seed.ts, seed-owner.ts   the two seed entry points (data-seed.ts, owner-seed.ts do the work)
+  menu-seed.ts       joins the copied menu sources; refuses a disagreement
+  seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
 test/                e2e specs and create-test-app.ts
 scripts/             check-env-names.ts
 ```

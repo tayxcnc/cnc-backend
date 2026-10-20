@@ -382,6 +382,33 @@ They are here so the first card that builds it starts from the rule.
   stored lower case, and a CHECK refuses anything else.** The unique index
   is case-sensitive, so `Ada@x.com` and `ada@x.com` would otherwise be two
   accounts.
+- **A seed inserts what is missing and never updates a row**
+  (`createMany({ skipDuplicates: true })`, keyed on each table's natural
+  key: a slug, a room and code, a menu item). Once the Owner has changed a
+  price or a manager a description in the staff app, the database is the
+  record; a seed that wrote its values again would quietly undo their work,
+  and "re-running changes nothing" is then true by construction, with no
+  `version` or `updatedAt` moved.
+- **Every seed that writes builds its client with `createWritingSeedClient`
+  (`prisma/seed-client.ts`), passing its own `CNC_SEED_<X>_ALLOW_REMOTE`
+  flag by literal name.** The remote-database check then runs before any
+  connection in every seed, and a new seed cannot forget it. Today:
+  `CNC_SEED_DATA_ALLOW_REMOTE` (`npm run db:seed`) and
+  `CNC_SEED_OWNER_ALLOW_REMOTE` (`npm run db:seed:owner`).
+- **The menu is seeded from copies of `cnc-frontend`'s sources in
+  `prisma/seed-data/`, joined by `buildMenuSeed` (`prisma/menu-seed.ts`), which
+  throws when the website and the staff app disagree on a price, a signature
+  or a choice.** The website wins on every field it shows (the shared
+  contract's slugs, names and descriptions); the staff file adds the staff id,
+  category, department and availability. A seed that silently picked one of
+  two prices would be setting a price, which is the founder's decision (Q7),
+  not a script's. The copies are not edited to change the menu: after the
+  first seed, the menu changes in the staff app.
+- **Every Bar menu item has its paired Bar stock item in the same write**,
+  and the data seed checks it before committing: a Bar item left unpaired
+  (a stock item already holding its name) rolls the whole run back with the
+  item's slug. A Bar sale deducts the paired item, so an unpaired Bar item is
+  one that can be sold and never counted.
 
 ## Auth *(from C3)*
 
@@ -437,6 +464,26 @@ They are here so the first card that builds it starts from the rule.
 - **The last-Owner rule is the domain's** (plan §11): `403`, "CNC needs at
   least one active Owner." An Owner may step down while another active Owner
   exists. TAY's self-lockout rule is not copied.
+- **Every writer of `Staff.passwordHash` hashes through `hashPassword`
+  (`src/auth/password.ts`), and every reader verifies through
+  `verifyPassword`.** An argon2 digest records its own cost, so a hash made
+  with weaker parameters still verifies and nothing reports it. TAY's
+  first-admin seed carries its own copy of the parameters for exactly that
+  reason to go wrong; here the seed and the auth service share one module.
+  `MIN_PASSWORD_LENGTH` (8, TAY's) lives there too.
+- **Every writer of `Staff.qrToken` mints it with `generateQrToken`
+  (`src/common/qr-token.ts`)**: 32 random bytes, base64url. The token is the
+  part of the QR payload that proves possession; one minting function keeps
+  its entropy and encoding from drifting between the seed, staff creation
+  and the reissue route.
+- **The first Owner is seeded only when no Owner account exists, with
+  `mustChangePassword` true, and the seed never updates or promotes an
+  account.** A re-run that reset the password would revive the one in the
+  operator's shell history; one that ran after the Owner changed their email
+  would mint a second Owner; promoting an existing account by email would
+  turn a typo into an Owner. The seeded password has travelled through a
+  `.env` file and a shell, so it is temporary (A14, the C3 gate's first
+  step). TAY seeds its first admin with the flag off; CNC's plan does not.
 
 ## CORS
 

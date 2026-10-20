@@ -69,7 +69,37 @@ The plan and progress record are in the workspace docs repository
    migrated by hand with `migrate deploy`; see *Data and migrations* in the
    conventions.
 
-6. Start the API:
+6. Seed the reference data and the menu, then the first Owner:
+
+   ```bash
+   npm run db:seed
+   npm run db:seed:owner
+   ```
+
+   `db:seed` writes the settings row, CNC's business details, the two rooms
+   and their 23 tables, the 12 customer and 25 staff menu categories, the
+   166 menu items and one Bar stock item for each of the 87 Bar items. The
+   opening hours come from the migration. It is also Prisma's `seed` key,
+   so `npx prisma db seed` runs it.
+
+   `db:seed:owner` creates the first Owner from `CNC_SEED_OWNER_EMAIL` and
+   `CNC_SEED_OWNER_PASSWORD` (and the optional `CNC_SEED_OWNER_NAME`). The
+   password is temporary: the app asks for a new one at first sign-in. It is
+   deliberately not Prisma's `seed` key, so `migrate reset` never creates a
+   credential.
+
+   Both are safe to run again: they insert only what is missing and never
+   change a row, so a price the Owner changed in the app stays changed, and
+   the Owner seed does nothing once any Owner exists. Both refuse any
+   database but a local one unless their own flag
+   (`CNC_SEED_DATA_ALLOW_REMOTE`, `CNC_SEED_OWNER_ALLOW_REMOTE`) is `true`
+   for the run.
+
+   The menu data is copied from `cnc-frontend` (`lib/order/menu.ts`,
+   `staff/lib/menu.json`, `docs/staff-id-map.json`) into `prisma/seed-data/`.
+   Change the menu in the staff app, not there.
+
+7. Start the API:
 
    ```bash
    npm run start
