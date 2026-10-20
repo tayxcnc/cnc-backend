@@ -79,7 +79,8 @@ src/
   config/            CncConfigService, the only reader of the environment
   common/            money, dates, errors, pagination, request helpers
   health/            liveness and readiness
-  prisma/            CncPrismaService, sequences, Prisma error helpers
+  idempotency/       Idempotency-Key: the service, decorator and scopes
+  prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
   migrations/

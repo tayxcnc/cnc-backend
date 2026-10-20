@@ -127,6 +127,24 @@ They are here so the first card that builds it starts from the rule.
   lock taken by the command's transaction.** A read-then-compare in two
   statements lets two writers both pass the check, which is the race the
   version exists to stop.
+- **Use `claimVersion` (`src/prisma/optimistic-version.ts`) as the first
+  statement of the command's transaction, and never increment `version`
+  again in the command's own update.** It is the one statement that compares
+  and increments, and it leaves the row locked until the transaction ends,
+  so the rest of the command runs on a row nobody else can change (the same
+  protection as `SELECT … FOR UPDATE`). A second increment would skip a
+  version and make the client's next write look stale. Outside a
+  transaction the lock is released at once, and the command's write is
+  unguarded.
+- **A request that writes a versioned row extends `VersionedWriteDto`**
+  (`src/common/dto/versioned-write.dto.ts`), so `version` is required,
+  validated and documented once. A write that names no version has nothing
+  to be stale against and silently overwrites a change it never saw.
+- **A model that gains a `version` column is added to `VERSIONED_TABLES` in
+  the same change.** `claimVersion` interpolates the table name and refuses
+  any name not on the list, and a unit test fails when the list and the
+  schema's versioned models differ, so the check cannot be forgotten for a
+  new model.
 
 ## Idempotency
 
@@ -145,6 +163,34 @@ They are here so the first card that builds it starts from the rule.
   send a preflight first; a header missing from the allowlist fails that
   preflight, the call never reaches the API, and every test that calls the API
   directly still passes. TAY shipped this class of defect once, with `PUT`.
+- **A route that takes the key uses `@IdempotencyKey()` for the request,
+  `@IdempotentRoute()` for the document, and runs its command through
+  `IdempotencyService.execute`** (`src/idempotency/`). The service inserts
+  the key row inside the command's own transaction, before the command, and
+  stores the response before the commit. So the key and the command commit
+  together or not at all, and a duplicate that arrives while the first is
+  still running waits on the unique index and then replays, instead of
+  running the command a second time. `test/idempotency.e2e-spec.ts`
+  preflights every route the API document shows with the header, so
+  `@IdempotentRoute()` is what puts a route under that test.
+- **Only a successful command stores a response.** A refused or failed
+  command rolls back with its key, and a retry under the same key runs
+  again. Storing a refusal would replay a "This record changed" 409 for ever
+  to a client that has since refreshed and resent the same key.
+- **The same key with a different request is `409` "This Idempotency-Key was
+  already used for a different request."**, and a missing or malformed key
+  is `400` "An Idempotency-Key header holding a UUID is required for this
+  request." The request is fingerprinted from its route parameters, query
+  and body with keys sorted, so a retry that rebuilt its JSON in another
+  order is the same request, and a key reused by mistake never returns the
+  answer to some other request.
+- **The scope comes from the authenticated subject on the server
+  (`idempotencyScope`), never from the request.** A client that could name
+  its scope could replay another caller's response by sending their key.
+- **Anything a command does outside its transaction is not covered by the
+  key**: an email, a Paystack call. It is keyed separately (the
+  `OutboundMessage` and `CustomerNotification` `dedupeKey`, Paystack's
+  reference) or happens after the commit.
 
 ## Configuration
 
@@ -302,6 +348,40 @@ They are here so the first card that builds it starts from the rule.
   `CNC_SEED_OWNER_PASSWORD`, kept off Prisma's `seed` key** (plan §12.1,
   from C3). `migrate reset` runs the `seed` key, and a reset must never
   create a credential.
+- **Draw a human number with `drawNumber(prisma, '<kind>')`
+  (`src/prisma/sequences.ts`), never by spelling a sequence name or a prefix
+  at the call site.** `SEQUENCES` is the one list of sequence, prefix and
+  digit count, and a unit test holds it in step with the migrations that
+  create the sequences. Two call sites spelling a format would print one
+  kind of record two ways.
+- **What Prisma cannot express is written by hand at the end of the
+  migration, under a "Hand-written below" line, and `prisma migrate diff
+  --from-config-datasource --to-schema prisma/schema.prisma --script` must
+  still print an empty migration afterwards.** CHECKs, expression indexes,
+  triggers and sequences are invisible to the schema; the line tells a
+  reviewer which part was generated, and an empty diff proves the
+  hand-written part did not drift the schema.
+- **The audit log is append-only in the database** (A13): a trigger on
+  `AuditLog` raises on UPDATE, DELETE and TRUNCATE. Rows are only ever
+  inserted, by `AuditService` inside the command's transaction, and nothing
+  (a test, a seed, a sweep) may try to tidy them. A foreign key into it must
+  restrict, never cascade or set null: either would be an UPDATE or DELETE
+  the trigger refuses. The table's owner can still drop the trigger; that is
+  a reviewed migration, not an accident.
+- **One-row tables (`Settings`, `Business`) carry a `singleton` column that
+  is unique and held true by a CHECK, and are read by `singleton: true`.** A
+  second row cannot be inserted by any path, so there is never a question of
+  which settings row is the real one.
+- **A customer's phone is stored as `0` plus 10 digits, written by
+  `canonicalNigerianPhone`** (plan §4.2), and a CHECK on `Customer.phone`
+  refuses any other spelling. Requests accept `0…` and `+234…`; storing both
+  would let one number be two customers. TAY's copy of the helper returns
+  `+234…`; CNC follows its own plan, and the two services never compare
+  numbers.
+- **Emails that identify a person (`Staff.email`, `Customer.email`) are
+  stored lower case, and a CHECK refuses anything else.** The unique index
+  is case-sensitive, so `Ada@x.com` and `ada@x.com` would otherwise be two
+  accounts.
 
 ## Auth *(from C3)*
 
