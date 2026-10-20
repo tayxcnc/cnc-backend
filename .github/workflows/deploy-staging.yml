@@ -1,0 +1,190 @@
+# Staging deploy.
+#
+# One job, for the one service this repository builds: tayxcnc-cnc-staging, in
+# the shared tayxcnc-staging project, beside TAY's service but sharing nothing
+# with it: its own runtime identity, its own deployer, its own database user,
+# its own secrets, its own bucket and its own Artifact Registry repository.
+#
+# Migrations are deliberately absent. `prisma migrate deploy` is run by a person
+# against staging, before the merge that needs it, never as a step here: a
+# deploy that migrates on its way past gives no one the chance to read the
+# plan, and Cloud Run can start several instances at once, so an automatic
+# migration races itself.
+
+name: Deploy to staging
+
+on:
+  push:
+    branches: [develop]
+
+# Two pushes to develop in quick succession would otherwise race to deploy, and
+# the older image could land last. Newer wins; the in-flight one is not
+# cancelled, because a half-finished `gcloud run deploy` is worse than a
+# superseded one.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  # =========================================================================
+  # CNC: switched off until C2.
+  #
+  # Defined so the shape of the deploy is settled and reviewable now, and
+  # disabled so it cannot run. `if: false` is evaluated before anything else in
+  # the job, so no step executes, no image is built and no service is created.
+  # Nothing depends on this job via `needs`, so there is no path that reaches
+  # it: deleting the `if` is the only way to enable it, which is the deliberate
+  # act C2 performs once the GCP resources it names exist (plan 12.3): the
+  # service, the tayxcnc-cnc-runtime and tayxcnc-cnc-deployer accounts, the
+  # tayxcnc-cnc Artifact Registry repository, the bucket, cnc_db and every
+  # secret mounted below, plus the WIF_PROVIDER, WIF_SERVICE_ACCOUNT and
+  # GCP_PROJECT_ID repository secrets.
+  # =========================================================================
+  cnc:
+    name: Deploy CNC to staging
+    # C2 switches this on once the GCP resources exist.
+    if: false
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Read-only checkout; this job never writes to the repository.
+      contents: read
+      # Required. Workload Identity Federation works by GitHub minting a short
+      # lived OIDC token for this job and Google exchanging it for credentials.
+      # Without this permission there is no token to exchange and the auth step
+      # fails before it reaches Google.
+      id-token: write
+
+    env:
+      SERVICE: tayxcnc-cnc-staging
+      REGION: europe-west1
+      # The separate repository tayxcnc-cnc, not TAY's tayxcnc. The CNC
+      # deployer holds artifactregistry.writer on this repository only, so it
+      # cannot overwrite a TAY image.
+      IMAGE: europe-west1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/tayxcnc-cnc/cnc:${{ github.sha }}
+
+    steps:
+      - name: Check out the commit being deployed
+        uses: actions/checkout@v4
+
+      # No service-account JSON key is used here, and none exists to use: the
+      # organisation policy constraints/iam.disableServiceAccountKeyCreation
+      # forbids creating one. Federation is not a workaround for that policy,
+      # it is the better mechanism the policy exists to force: the credential
+      # is minted per run, expires in minutes, and cannot leak out of the job
+      # because it is never at rest anywhere.
+      #
+      # WIF_SERVICE_ACCOUNT here is the CNC deployer, tayxcnc-cnc-deployer,
+      # never TAY's tayxcnc-deployer, which holds project-wide grants.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up the gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Let Docker push to Artifact Registry as the federated identity
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+
+      # Tagged with the commit SHA and nothing else. Every deployed revision is
+      # traceable to an exact commit, and a redeploy of an old commit is a real
+      # rollback rather than whatever `latest` happens to point at today.
+      - name: Build the image
+        run: docker build --tag "$IMAGE" .
+
+      - name: Push the image
+        run: docker push "$IMAGE"
+
+      # Scale-to-zero is deliberate. Clients poll for order status and Cloud
+      # Scheduler drives the sweeps, rather than anything holding a connection
+      # open. Setting a warm minimum here to smooth cold starts would quietly
+      # undo the cost model; that is a decision with measurements behind it,
+      # not a default.
+      #
+      # --max-instances 2 because every instance opens its own database pool
+      # (max 3) on an instance it shares with TAY. The cap bounds what CNC can
+      # take from that instance's connection limit.
+      #
+      # --allow-unauthenticated makes the Cloud Run endpoint public. That is
+      # correct for a public API: authorisation happens at the application
+      # layer, in the service's own guards, against its own JWT realm. IAM
+      # cannot express "this cashier may settle this bill".
+      #
+      # Every secret value below arrives from Secret Manager at runtime.
+      # Nothing is baked into the image, so the image is safe to keep and to
+      # roll back to. Each one is mounted under its own name from a secret of
+      # the same CNC_ name: the runtime identity holds secretAccessor on these
+      # secrets only, and the env-name check fails on any name, mounted or
+      # read, that is not CNC_-prefixed.
+      #
+      # CNC_GCS_BUCKET and CNC_ENV are the exception to "every value arrives
+      # from Secret Manager", and deliberately so: neither is a secret, and
+      # keeping them in the file means a reviewer can see them in the diff
+      # rather than having to hold Secret Manager access to find out.
+      #
+      # **Both --set-env-vars and --set-secrets replace their whole collection
+      # on every deploy.** They manage separate collections, so neither clears
+      # the other, but a value added to a running service with
+      # `gcloud run services update` is gone at the next push to develop. Add
+      # values here, never by hand. A secret mounted here that does not exist
+      # in Secret Manager fails the deploy at this step, which is the loud
+      # failure and the one to prefer over a revision that will not start: so
+      # a new secret is created on staging before the change that mounts it is
+      # merged.
+      #
+      # CNC_ENV names the deployment and is what the deployed boot rules read.
+      # It is NOT NODE_ENV, which stays `production` here and in the image
+      # because it drives the refresh cookie's Secure attribute. It is required
+      # rather than defaulted: with NODE_ENV=production and no CNC_ENV,
+      # CncConfigService refuses to boot. That is why this line exists rather
+      # than a `gcloud run services update` after the fact, which the next push
+      # to develop would erase.
+      #
+      # CNC_SWEEP_TOKEN is the shared secret Cloud Scheduler presents to the
+      # sweep routes. Required on a deployed environment: the guard refuses
+      # every call without it, so the cleanups would fail at 401 every night
+      # in silence.
+      #
+      # CNC_CORS_ORIGINS is not optional. An empty allowlist rejects every
+      # browser origin: the API would pass its health check and answer curl
+      # perfectly while no frontend could reach it. The deployed boot rules
+      # refuse an empty list for that reason.
+      #
+      # CNC_PAYSTACK_SECRET_KEY, CNC_RESEND_API_KEY and CNC_MAIL_FROM hold
+      # PLACEHOLDER_NOT_SET until the phases that use them (C7, C6). They are
+      # mounted from the start so adding the real value is a new secret
+      # version, not a workflow change.
+      #
+      # --service-account names the identity the container runs as. Omitting it
+      # is not neutral: Cloud Run falls back to the default compute service
+      # account, which carries far more project-wide authority than a web API
+      # should hold and was never granted access to these secrets, so the
+      # deploy would succeed and the revision would fail to start. CNC has its
+      # own runtime identity, matching the rest of the isolation model: it must
+      # not be able to read TAY's secrets.
+      #
+      # These comments stay above the step, never inside the command. A `#`
+      # line between backslash-continued flags would comment out every flag
+      # after it, and the deploy would run with silently wrong settings.
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --platform managed \
+            --service-account tayxcnc-cnc-runtime@tayxcnc-staging.iam.gserviceaccount.com \
+            --min-instances 0 \
+            --max-instances 2 \
+            --allow-unauthenticated \
+            --add-cloudsql-instances tayxcnc-staging:europe-west1:tayxcnc-staging-pg \
+            --set-env-vars "CNC_GCS_BUCKET=tayxcnc-cnc-staging-media,CNC_ENV=staging" \
+            --set-secrets "CNC_DB_URL=CNC_DB_URL:latest,CNC_JWT_SECRET=CNC_JWT_SECRET:latest,CNC_SWEEP_TOKEN=CNC_SWEEP_TOKEN:latest,CNC_WEB_URL=CNC_WEB_URL:latest,CNC_STAFF_URL=CNC_STAFF_URL:latest,CNC_CORS_ORIGINS=CNC_CORS_ORIGINS:latest,CNC_CONTACT_EMAIL=CNC_CONTACT_EMAIL:latest,CNC_PAYSTACK_SECRET_KEY=CNC_PAYSTACK_SECRET_KEY:latest,CNC_RESEND_API_KEY=CNC_RESEND_API_KEY:latest,CNC_MAIL_FROM=CNC_MAIL_FROM:latest" \
+            --quiet
+
+      - name: Report the deployed URL
+        run: |
+          gcloud run services describe "$SERVICE" \
+            --region "$REGION" \
+            --format 'value(status.url)'

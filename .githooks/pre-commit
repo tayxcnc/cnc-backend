@@ -1,0 +1,2 @@
+#!/bin/sh
+gitleaks protect --staged --redact --verbose || { echo "BLOCKED: gitleaks found a secret in staged changes."; exit 1; }

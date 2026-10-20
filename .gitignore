@@ -1,0 +1,57 @@
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# dotenv environment variable files. Only the example is tracked: every real
+# value lives in a local .env (gitignored) or in Secret Manager.
+.env
+.env.*
+!.env.example
+
+# temp directory
+.temp
+.tmp
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# The Prisma client, generated from prisma/schema.prisma by `prisma generate`.
+/generated
+
+# Swagger spec: emitted on boot in non-production, generated not authored.
+# The decorated controllers are the source; this file is only their output.
+/openapi-cnc.json
+
+# Service account / credential keys
+*-key.json
+
+# Agent tooling: regenerable, not part of the deliverable
+.agents/
+.claude/
+.windsurf/
+
+# Internal working documents. `docs/*` and not `docs/`: git cannot re-include
+# a file whose parent directory is excluded, because it never descends into
+# it. The conventions record is the one document that must survive a clone.
+# This negation MUST stay after the rule above: .gitignore is last-match-wins.
+docs/*
+!docs/conventions.md

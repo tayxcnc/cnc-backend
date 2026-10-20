@@ -1,0 +1,67 @@
+// CNC schema — the one schema in this repository.
+//
+// There is no `url` here. Prisma 7 rejects it in the schema: the CLI reads the
+// database URL from `prisma.config.ts` and the running service passes a driver
+// adapter to PrismaClient in CncPrismaService. CNC_DB_URL is the variable's
+// name in both places.
+
+datasource db {
+  provider = "postgresql"
+}
+
+// `prisma-client-js`, kept deliberately. Prisma 7 deprecates it in favour of
+// `prisma-client`, which emits TypeScript instead of a prebuilt JavaScript
+// bundle. A .ts file under generated/ pulls that directory into the build and
+// moves every entry point from dist/ to dist/src/, which is not where the
+// image runs it. That move is its own card at a later boundary; the
+// deprecated generator compiles and runs cleanly under 7.10.0.
+//
+// The output is a path of its own, imported by that path everywhere
+// (`generated/cnc-client`), never through `@prisma/client`.
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/cnc-client"
+}
+
+// ---------------------------------------------------------------------------
+// Conventions
+//
+// Money   Int, in kobo. Never Float, never Decimal-as-string. ₦20,000 is
+//         2000000. Field names carry the `Kobo` suffix so a bare number is
+//         never mistaken for naira at a call site.
+// Time    DateTime is UTC everywhere. Raw SQL writes `now() AT TIME ZONE
+//         'UTC'`, never a bare `now()`, so a session timezone cannot shift it.
+// Dates   `@db.Date` marks every business date (the day an order belongs to,
+//         the day a reservation is for). A business date must not carry a
+//         time or shift across a timezone boundary; it is computed in
+//         Africa/Lagos by src/common/wat.ts and stored at UTC midnight.
+// Clock   Wall-clock times of day are String "HH:mm" in 24h form. They are a
+//         schedule, not an instant, and must not drift with UTC conversion.
+// Keys    Every model: id String @id @default(cuid()), createdAt, updatedAt.
+//         Human numbers (`CNCR-000001`, `CNC-S001`…) are separate columns
+//         drawn from one Postgres sequence per prefix (nextSequenceCode),
+//         never derived from the id.
+// Version Every row two devices can edit carries `version Int @default(0)`,
+//         and a write naming a stale version is a 409 (plan A8).
+// Names   camelCase fields with no underscores: uniqueViolationTargets
+//         recovers a P2002's fields by splitting the constraint name on `_`.
+//
+// Nigerian phone validation lives in the DTO layer, not here:
+//   /^(\+234|0)[789][01]\d{8}$/
+//
+// Deletion policy — every relation states onDelete explicitly; no Prisma
+// default is accepted silently.
+//   Staff       required attribution restricts; optional attribution nulls.
+//               A record that cannot exist without an actor blocks the delete;
+//               a record that merely records who touched it survives without.
+//   Ledgers     Payments, stock movements and the audit log restrict their
+//               parents. History is not deletable. An order line restricts
+//               its menu item for the same reason — the price it captured
+//               must outlive the item.
+//   Children    A row meaningless without its parent (an order's lines)
+//               cascades from that parent, and says so.
+//   onUpdate    Left at Prisma's default CASCADE on every foreign key. Every
+//               key references an immutable cuid() primary key that no code
+//               path updates, so the action is unreachable. Considered and
+//               left alone — not an oversight.
+// ---------------------------------------------------------------------------
