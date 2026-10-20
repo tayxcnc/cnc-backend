@@ -413,10 +413,33 @@ They are here so the first card that builds it starts from the rule.
   `tayxcnc-cnc`, `serviceAccountUser` on the CNC runtime. TAY's accounts are
   never reused: they hold project-wide grants, and an unscoped CNC deployer
   could delete TAY's service or overwrite TAY's images.
+- **The runtime's `cloudsql.client` is a project-level grant with a
+  condition** limiting it to `tayxcnc-staging-pg`. Cloud SQL has no
+  per-instance IAM policy, so the project is the only place it can be
+  granted; the condition keeps it to the one instance CNC uses.
+- **The project's IAM policy carries a condition, so every
+  `gcloud projects add-iam-policy-binding` on it needs `--condition=None` or
+  an explicit condition.** Without one, gcloud asks which to apply, and a
+  non-interactive shell fails at that prompt.
 - **Workload Identity Federation only.** No service-account JSON keys (org
   policy forbids creating them) and never `credentials_json` in a workflow.
-  CNC gets one new `workloadIdentityUser` binding on its deployer, for
-  `tayxcnc/cnc-backend`, on the existing pool and provider.
+  CNC gets one new `workloadIdentityUser` binding on its deployer, on the
+  existing pool and provider, **for the subject
+  `repo:tayxcnc/cnc-backend:ref:refs/heads/develop` only**, not the whole
+  repository. Only a push to `develop` deploys staging, so a workflow on any
+  other branch, including one a pull request adds, cannot impersonate the
+  deployer. The deploy job must therefore never gain an `environment:` key:
+  that changes the token's subject to `…:environment:<name>` and the binding
+  stops matching.
+- **Database users created with `gcloud sql users create` are members of
+  `cloudsqlsuperuser`, with `CREATEDB` and `CREATEROLE`.** `cnc_db` is
+  therefore created through the Admin API and handed to `cnc_app` with
+  `ALTER DATABASE … OWNER TO`, so no other user inherits its ownership, and
+  PUBLIC's `CONNECT` on it is revoked. `CREATE DATABASE` over the proxy was
+  dropped by the instance mid-statement on the shared `db-f1-micro`, which is
+  why the Admin API is used. Databases left owned by `cloudsqlsuperuser`
+  (`tay_db`, `postgres`) are owner-reachable by every such user, `cnc_app`
+  included: a TAY-side gap, reported as Q23.
 - **Every Cloud Run deploy passes `--service-account`.** Omitted, Cloud Run
   falls back to the default compute account, which holds far more authority
   than a web API should and cannot read CNC's secrets, so the deploy succeeds
@@ -443,6 +466,10 @@ They are here so the first card that builds it starts from the rule.
 - **Cloud Scheduler jobs send `Content-Length=0` and are created with
   `--format="value(name)"`** (plan §11), so the job works against Cloud Run
   and the sweep token is never printed.
+- **Each `cnc-staging-sweep-*` job is created in the card that adds its
+  route, not before.** A job pointed at a route that does not exist yet
+  fails on every run, and a scheduler log full of expected 404s hides the
+  failure that matters.
 - **Production provisioning runs from Google Cloud Shell, not a development
   machine.** Production credentials never sit on a machine where an agent has
   a shell.
@@ -461,8 +488,9 @@ must never be able to take TAY staging down:
   `TAY_COOKIE_DOMAIN`, and the unprefixed `CORS_ORIGINS`, `MAIL_FROM`,
   `RESEND_API_KEY`, `TERMII_API_KEY` and `VAPID_*`;
 - the accounts `tayxcnc-tay-runtime` and `tayxcnc-deployer`;
-- the Scheduler jobs `sweep-pitch-holds`, `sweep-notifications`,
-  `sweep-memberships`, `sweep-tokens` and `sweep-sign-ups`;
+- the Scheduler jobs `tay-staging-sweep-pitch-holds`,
+  `tay-staging-sweep-notifications`, `tay-staging-sweep-memberships`,
+  `tay-staging-sweep-tokens` and `tay-staging-sweep-sign-ups`;
 - the buckets `tayxcnc-tay-staging` and `tayxcnc-tay-staging-media`;
 - the Artifact Registry repository `tayxcnc`;
 - the `api-staging` domain mapping;
