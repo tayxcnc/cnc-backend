@@ -445,6 +445,7 @@ model Staff {
 
   passwordResetTokens PasswordResetToken[]
   auditEntries        AuditLog[]
+  approvals           ApprovalLedger[]
 
   @@index([role, isActive])
 }
@@ -606,6 +607,39 @@ model StockItem {
   menuItem MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
 
   @@index([kind])
+}
+
+// ============================== MONEY CONTROLS (§4.3, the ledger only) =====
+
+/// The Daily Approval Limit's ledger (plan §4.3, §6.2): one row per money
+/// decision a manager made that counts toward their day, written by
+/// `MoneyControlService.withinLimit` in the command's own transaction.
+///
+/// **The sum is taken and the row inserted under
+/// `pg_advisory_xact_lock` on the manager and the business date**, so two
+/// approvals racing past the limit cannot both see the old total. Rows are
+/// written while the daily limit is switched off too (D36), so switching it
+/// back on counts the day's decisions already made. The Owner is never
+/// recorded: the Owner has no daily limit.
+///
+/// `amountKobo` is the amount counted (positive: a refund counts by its
+/// size); `action` is the command (`waste.approve`) and `ref` the record's
+/// human reference. **Append-only**, by trigger as `AuditLog` is: a ledger
+/// row deleted is a manager's limit quietly raised. Restrict: a manager with
+/// approvals is never deleted (staff are deactivated).
+model ApprovalLedger {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  businessDate DateTime @db.Date
+  staffId      String
+  amountKobo   Int
+  action       String
+  ref          String?
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([staffId, businessDate])
 }
 
 // ============================== AUDIT, MESSAGES, ENQUIRIES (§4.8) ===========

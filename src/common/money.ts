@@ -57,6 +57,39 @@ export function formatKobo(amountKobo: number): string {
 }
 
 /**
+ * Format a kobo integer the way the staff app's `money()` does
+ * (`staff/lib/domain.ts`): whole naira with no decimals, otherwise two.
+ * `5000000` is `₦50,000`, `5000050` is `₦50,000.50`, `-50000` is `-₦500`.
+ *
+ * For sentences ported from the staff app byte for byte (A7): the approval
+ * limit refusals print a limit inside the message ("…above the Owner
+ * Approval Limit of ₦50,000. The Owner must approve it."), and the screens
+ * show the message as it stands, so the figure must be the one the staff
+ * app printed. The audit sentences use it too, so one screen never shows a
+ * price two ways. A receipt or a payment confirmation uses `formatKobo`.
+ *
+ * The staff app asks `Intl` for NGN currency formatting; this prepends the
+ * sign instead, for the reason `formatKobo` gives (the currency output
+ * differs by ICU build). A unit test pins the outputs against the staff
+ * app's for the same amounts.
+ */
+export function formatKoboShort(amountKobo: number): string {
+  if (!Number.isInteger(amountKobo)) {
+    throw new Error(
+      `Cannot format ${amountKobo} as money: amounts are integer kobo.`,
+    );
+  }
+
+  const digits = amountKobo % 100 === 0 ? 0 : 2;
+  const formatted = new Intl.NumberFormat('en-NG', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: 2,
+  }).format(Math.abs(amountKobo) / 100);
+
+  return `${amountKobo < 0 ? '-' : ''}${NAIRA}${formatted}`;
+}
+
+/**
  * A kobo integer as a plain naira decimal: `400000` becomes `4000.00`.
  *
  * For a spreadsheet cell, not a sentence — no sign and no grouping, so the

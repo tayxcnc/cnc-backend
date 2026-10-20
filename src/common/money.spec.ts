@@ -1,4 +1,38 @@
-import { NAIRA, formatKobo, koboToNairaDecimal } from './money';
+import {
+  NAIRA,
+  formatKobo,
+  formatKoboShort,
+  koboToNairaDecimal,
+} from './money';
+
+/**
+ * `formatKoboShort` must print what the staff app's `money()` prints
+ * (`staff/lib/domain.ts`), because the approval-limit refusals carry the
+ * figure inside a sentence kept byte for byte. The expected strings below
+ * are that function's output on Node 22 for the same amounts. They are
+ * literals, not a call to `Intl`'s NGN currency format, whose output varies
+ * by ICU build.
+ */
+describe('formatKoboShort', () => {
+  it.each([
+    [5_000_000, '₦50,000'],
+    [15_000_000, '₦150,000'],
+    [1_300_000, '₦13,000'],
+    [5_000_100, '₦50,001'],
+    [5_000_050, '₦50,000.50'],
+    [100, '₦1'],
+    [1, '₦0.01'],
+    [0, '₦0'],
+    [-50_000, '-₦500'],
+    [123_456_789, '₦1,234,567.89'],
+  ])('formats %p as %p, as the staff app does', (kobo, expected) => {
+    expect(formatKoboShort(kobo)).toBe(expected);
+  });
+
+  it('refuses a non-integer rather than rounding it', () => {
+    expect(() => formatKoboShort(100.5)).toThrow(/integer kobo/);
+  });
+});
 
 /**
  * Formatting money for display.
