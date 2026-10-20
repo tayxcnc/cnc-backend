@@ -484,6 +484,98 @@ They are here so the first card that builds it starts from the rule.
   turn a typo into an Owner. The seeded password has travelled through a
   `.env` file and a shell, so it is temporary (A14, the C3 gate's first
   step). TAY seeds its first admin with the flag off; CNC's plan does not.
+- **Every staff route uses `CncStaffGuard` (`src/auth/guards/`), and a
+  handler reads its actor with `@CurrentStaff()`, never from the token or the
+  body.** The guard reads the row on every request and leaves the live
+  `StaffPrincipal` (id, staff number, name, role) on the request, so a
+  command acts as the role the account holds now and an audit row snapshots
+  the name it has now. A role in a body is the caller's claim; a role in a
+  token is what was true when it was signed.
+- **The access token carries `sub` and `type` and nothing else: no role.**
+  A14 has the guard read the role from the row on every request, so a role
+  claim could only ever be stale, and a claim nobody may trust is one a
+  later handler eventually trusts. TAY's token carries roles "for the UI";
+  CNC's UI reads them from the session response and `GET /staff/me`.
+- **`@Roles(...)` means the demo's `requireRole`: the Owner and Managers
+  always pass, and so does every role listed; `@Roles()` with no roles is
+  managers only, and no `@Roles` at all is every active staff member.** The
+  refusal is 403, "Your current staff role cannot perform this action.",
+  byte for byte. Plan §6.2's table is written that way ("managers always pass
+  unless the row says otherwise"), so the decorator reads like the table.
+  Owner-only rules are not roles: they carry their own "Only the Owner can …"
+  sentences and live with the money controls (C3-4) and the staff rules.
+  `isManager`, `isOwner` and `roleMayRun` (`src/auth/staff-roles.ts`) are the
+  one definition of who a manager is; never restate the list.
+- **A deactivated account is refused on every staff route with "This staff
+  account has been deactivated. Ask the Owner or a manager if you believe
+  this is a mistake." (403), its refresh is the ordinary 401, and its
+  sign-in is the identical "Invalid email or password." (401).** The demo
+  has no sign-in and so no sentence for this; the C3 gate quotes its
+  opening, and the close is in the demo's voice. Sign-in checks the account
+  after the password and answers a deactivated account exactly like a wrong
+  password, so the route never tells a caller which addresses hold
+  accounts; a person already signed in has proved who they are and is told
+  the truth. The staff app signs out on both (plan §14).
+- **An unknown email at sign-in is verified against a decoy hash before the
+  401.** Returning early skips the argon2 work, and the difference in time
+  tells a caller which addresses hold accounts even when the body does not.
+  TAY's sign-in has that gap; CNC closes it for one argon2 verification per
+  miss, on a route limited to ten attempts per address.
+- **`@PasswordChangeExempt()` is on three routes only: change-password,
+  sign-out and `GET /staff/me` (C3-8).** Change-password is how the flag is
+  cleared, and `/staff/me` tells a reloading app who must change it. Sign-out
+  is CNC's addition: it only ends sessions, and a person handed a temporary
+  password at a shared till must be able to leave. A fourth exemption is a
+  question about why the change was forced.
+- **A refresh token is spent by one conditional UPDATE (`revokedAt IS
+  NULL`, unexpired, of the expected realm), and revocation runs on the
+  command's transaction client.** TAY reads the row and then writes it, so
+  two refreshes racing with one cookie (a till with two tabs) could both
+  succeed and fork the session; the single statement lets exactly one win.
+  Revoking inside the transaction makes a new password and the end of the
+  old sessions commit together: a new password with the old sessions alive
+  is the state that must never exist.
+- **Change-password refuses a new password equal to the current one**
+  ("Choose a new password that is different from the current one.", 400).
+  Otherwise a forced change could be cleared by typing the temporary
+  password twice, and the password a manager read out would stay the
+  password.
+- **The admin reset (`POST /staff/people/:id/reset-password`) sets a
+  temporary password from `generateTemporaryPassword`, forces a change at
+  first sign-in, ends every session, and returns the password once in the
+  response.** TAY emails it; CNC has no mail until C6, so the manager hands
+  it over in person, and C6 may move it to email. It is never stored in
+  plain text, logged or written to an audit row. Managers only; a Manager or
+  Owner account only by the Owner ("Only the Owner can create or change
+  Manager and Owner accounts.", the demo's `staff.save` rule); never one's
+  own account ("Use Change Password to change your own password."), because
+  change-password asks for the current password precisely so a stolen token
+  cannot take an account over. The target row is locked while the rules are
+  checked, so a role change landing at the same moment cannot slip past the
+  Owner rule. Staff creation (C3-6) issues its first password the same way.
+- **Throttling is per route: `@UseGuards(ClientAddressThrottlerGuard)` with
+  `@Throttle`, never an APP_GUARD, against a `ThrottlerModule` registered in
+  the module that owns the routes, counting in memory** (plan A18: no Redis
+  at launch; `src/auth/auth-throttle.ts`). Sign-in, change-password and the
+  admin reset allow ten per fifteen minutes per address; refresh thirty,
+  because a refused refresh signs a real person out. A global guard would
+  put every staff read under the sign-in limit as a side effect. The count
+  is per instance, so two instances allow at most twice the number, which
+  is still a number. On a route that also authenticates, the throttler is
+  listed first, so a burst is counted before any token is checked. The 429
+  says "Too many attempts. Wait a few minutes and try again.", not the
+  throttler's default, which names a class. TAY's Redis fallback storage is
+  not copied: with no Redis there is nothing to fall back from.
+- **An e2e test that calls a throttled route sends its own
+  `X-Forwarded-For` address** (`test/staff-auth.e2e-spec.ts` makes a fresh
+  one per call). Every request from the harness otherwise shares one
+  address and one count, so a suite would start answering 429 on its
+  eleventh sign-in, for a reason that has nothing to do with the test.
+- **A test that asserts something is never logged switches the app to
+  `StructuredLogger` first.** The testing module's logger drops everything
+  below error, so "nothing was logged" would pass with no logger at all; the
+  TAY-cookie test also asserts that an expected line did appear, so the
+  capture is known to be live.
 
 ## CORS
 

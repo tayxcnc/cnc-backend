@@ -79,8 +79,10 @@ src/
   app.module.ts      CncAppModule
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
-  auth/              password hashing (argon2id) shared by the seed and sign-in
-  common/            money, dates, errors, pagination, request helpers, QR tokens
+  auth/              staff sign-in, refresh, sign-out, change-password, admin reset;
+                     CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
+  common/            money, dates, errors, pagination, request helpers, QR tokens,
+                     the client-address throttler guard
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
