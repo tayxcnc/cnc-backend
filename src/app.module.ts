@@ -6,6 +6,7 @@ import { CncConfigModule } from './config/cnc-config.module';
 import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
 import { HealthController } from './health/health.controller';
 import { SERVICE_NAME } from './health/service-name.token';
+import { IdempotencyModule } from './idempotency/idempotency.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
 
@@ -29,6 +30,7 @@ import { CncPrismaService } from './prisma/cnc-prisma.service';
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
     CncConfigModule,
     CncPrismaModule,
+    IdempotencyModule,
   ],
   controllers: [HealthController],
   providers: [

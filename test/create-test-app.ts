@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, type Type, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { App } from 'supertest/types';
 import { CncAppModule } from '../src/app.module';
@@ -21,10 +21,18 @@ import { CncConfigService } from '../src/config/cnc.config';
  * Helmet and Swagger are left out: neither changes a status code or a body.
  * Later cards add fakes here for every third party (mail, Paystack, storage),
  * so no suite ever reaches one over the network.
+ *
+ * `controllers` adds test-only routes beside the real ones, for a suite that
+ * proves a piece of shared infrastructure (optimistic versions, idempotency)
+ * through HTTP before any real route uses it. They exist in that suite's app
+ * only and never in the service.
  */
-export async function createTestApp(): Promise<INestApplication<App>> {
+export async function createTestApp(
+  options: { controllers?: Type<unknown>[] } = {},
+): Promise<INestApplication<App>> {
   const moduleFixture = await Test.createTestingModule({
     imports: [CncAppModule],
+    controllers: options.controllers ?? [],
   }).compile();
 
   // `rawBody` matches bootstrap(): the Paystack webhook (C7) authenticates by
