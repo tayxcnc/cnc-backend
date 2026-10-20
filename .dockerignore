@@ -1,0 +1,45 @@
+# What never reaches the build context.
+#
+# Two jobs: keep the image small, and keep secrets and host-built artefacts out
+# of it. Anything listed here is invisible to `COPY . .` in the builder stage.
+
+# Reinstalled inside the image by `npm ci`. A host tree carries binaries built
+# for the host platform, which do not run on the Cloud Run base image.
+node_modules
+
+.git
+.github
+.githooks
+
+# Never bake configuration into an image. Cloud Run mounts every value at
+# runtime. Covers .env and .env.example alike.
+.env*
+
+# Rebuilt inside the image by `npm run build`.
+dist
+
+# Regenerated inside the image by `prisma generate`. Excluded rather than
+# copied-then-overwritten so the image can only ever contain the client this
+# commit's schema produces, never one generated on a developer's machine from
+# a different schema or for a different platform.
+generated
+
+# Emitted on boot in non-production, and gitignored. Not part of the runtime.
+openapi-cnc.json
+
+# Excluded from tsconfig.build.json: nothing in the image compiles or runs it.
+test
+coverage
+
+# Internal working documents, not part of the deliverable.
+docs
+
+# Agent tooling: regenerable, and not something to ship.
+.agents
+.claude
+.windsurf
+
+# Service-account and credential keys. There is no path by which one of these
+# belongs in an image; deploy authenticates through Workload Identity
+# Federation and holds no key at all.
+*-key.json

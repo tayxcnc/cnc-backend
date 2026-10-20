@@ -1,0 +1,223 @@
+# Continuous integration: lint, build, test.
+#
+# Without this workflow, the only thing that would ever compile this repository
+# on a push is the Docker image build inside the staging deploy, which runs
+# `nest build` as a side effect of packaging. That catches a non-compiling
+# commit by accident, after merge, and catches a lint or test failure never.
+#
+# Three jobs rather than one, deliberately. A single job stops at the first
+# failing step, so a lint error hides whether the build was also broken; three
+# parallel jobs report all three answers on the same commit and finish in about
+# the time the slowest one takes.
+#
+# No job uses a secret, and none should ever need one. Lint and tests are pure
+# functions of the checkout, and `prisma generate` reads the schema file only.
+# If a change here appears to require a credential, that is the signal that
+# something belongs in the deploy workflow instead.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+# One in-flight run per branch. Unlike the deploy workflow, where a cancelled
+# `gcloud run deploy` leaves a half-finished revision and cancelling is the
+# worse option, a superseded CI run tells you about a commit nobody is looking
+# at any more, so cancelling it is free.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only. No job here writes to the repository, opens a check run, or needs
+# an OIDC token.
+permissions:
+  contents: read
+
+jobs:
+  # =========================================================================
+  # Lint
+  # =========================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Single source of truth: `engines.node` in package.json, which
+          # setup-node reads directly. A version literal here would be a second
+          # place to update and a second place to forget.
+          node-version-file: package.json
+          # Keys the npm cache on the lockfile hash. This caches npm's download
+          # cache (~/.npm) rather than node_modules, because `npm ci` deletes
+          # node_modules before it starts: a restored node_modules would be
+          # thrown away every run.
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Not only the build job needs this. `generated/cnc-client` is
+      # gitignored, so a clean checkout does not have it, and this repository's
+      # ESLint configuration is type-aware: with the client missing, every
+      # Prisma model accessor and enum member resolves to the `error` type and
+      # the no-unsafe-* rules fire on all of it. The rules are right; the input
+      # was absent.
+      #
+      # Needs no database, same as in the build job.
+      - name: Generate the Prisma client
+        run: npx prisma generate
+
+      # `npm run lint` carries --fix, which repairs an auto-fixable violation
+      # in the runner's checkout and then exits 0, so the offence reaches
+      # develop having passed a green check. `lint:ci` is the same rule set
+      # without --fix: it reports and fails.
+      - name: Lint
+        run: npm run lint:ci
+
+      # Every variable a deploy mounts must be one the service reads, under the
+      # name it reads: a wrong name is accepted by Secret Manager and Cloud Run
+      # and fails silently in front of someone. It also fails on any
+      # `process.env` read in src/, prisma/ or scripts/ whose name is not
+      # CNC_*, PORT or NODE_ENV, because CNC shares a staging project (and
+      # later a production project) with TAY and must never read a TAY value.
+      # Reads files as text; needs no database and no credential.
+      - name: Check environment variable names
+        run: npm run check:env-names
+
+  # =========================================================================
+  # Build
+  # =========================================================================
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `generated/cnc-client` is gitignored, and the src tree imports types
+      # from it, so without this step `nest build` fails on missing modules
+      # rather than on anything real.
+      #
+      # This needs no database. `generate` resolves the schema file and nothing
+      # else; prisma.config.ts reads CNC_DB_URL from process.env and tolerates
+      # its absence, and the URL is only used when a client connects at
+      # runtime. Do not add a postgres service to this job, and do not run
+      # migrations here: the deploy workflow deliberately does not migrate
+      # either, and a migration run from CI would be applied by whichever of
+      # several concurrent runners got there first.
+      - name: Generate the Prisma client
+        run: npx prisma generate
+
+      - name: Build
+        run: npm run build
+
+  # =========================================================================
+  # Test
+  # =========================================================================
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    # The only job with a database, and it is an ephemeral one. The e2e suites
+    # boot the real CncAppModule against real tables (two cashiers settling the
+    # same bill cannot be tested any other way), so a Postgres container starts
+    # alongside the runner, is migrated from the checked-in migrations, and is
+    # discarded with the job.
+    #
+    # Postgres 16, because that is what Cloud SQL runs. A test that passes on a
+    # different major has not tested the SQL the migrations actually run in
+    # production.
+    #
+    # The credentials below are not secrets. They open a database that exists
+    # for the length of this job, on this runner's loopback interface, holding
+    # nothing but fixture rows. Do not move them into repository secrets: that
+    # would make the file harder to read for no gain and would train people to
+    # treat a throwaway value as sensitive.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cnc_app
+          POSTGRES_PASSWORD: cnc_app
+          POSTGRES_DB: cnc_test
+        ports:
+          - 5432:5432
+        # The container reports "started" before Postgres accepts connections.
+        # Without a health check the migrate step races the server's startup
+        # and fails intermittently with a connection refused that has nothing
+        # to do with the code under test.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Same shape as the local .env, pointing at the service above. The role
+      # name matches Cloud SQL's (cnc_app) so a permission assumption baked
+      # into a migration is caught here rather than on staging.
+      CNC_DB_URL: postgresql://cnc_app:cnc_app@localhost:5432/cnc_test
+      # CncConfigService refuses to boot without a signing secret of at least
+      # 32 characters. This is a fixed test value, not a credential: no token
+      # signed with it exists outside this job, and it must never be reused
+      # anywhere a real client could present a token.
+      CNC_JWT_SECRET: ci-only-signing-secret-not-a-secret-never-reuse-0000
+      NODE_ENV: test
+
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Same reason as in the lint job: the generated client is gitignored, and
+      # the suites import it, directly for enums and through every service
+      # they boot.
+      - name: Generate the Prisma client
+        run: npx prisma generate
+
+      # `migrate deploy`, never `migrate dev` or `db push`: it applies the
+      # migrations exactly as committed and creates nothing. This is the same
+      # command a person runs against staging by hand, so a migration that
+      # fails to apply cleanly from scratch is caught here first. It runs
+      # against the job's own container and nowhere else: the rule against CI
+      # applying migrations is about shared databases, and this one is not
+      # shared with anything.
+      - name: Migrate the test database
+        run: npx prisma migrate deploy
+
+      # Two runs, two configs. `npm test` is the unit suite under src/, prisma/
+      # and scripts/, which needs no database and is the one every developer
+      # runs locally. The e2e suite under test/ boots the application against
+      # the container. Kept as separate steps so a failure names which layer
+      # broke.
+      - name: Unit tests
+        run: npm test
+
+      - name: End-to-end tests
+        run: npm run test:e2e
