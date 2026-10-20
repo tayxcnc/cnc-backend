@@ -26,24 +26,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # =========================================================================
-  # CNC: switched off until C2.
-  #
-  # Defined so the shape of the deploy is settled and reviewable now, and
-  # disabled so it cannot run. `if: false` is evaluated before anything else in
-  # the job, so no step executes, no image is built and no service is created.
-  # Nothing depends on this job via `needs`, so there is no path that reaches
-  # it: deleting the `if` is the only way to enable it, which is the deliberate
-  # act C2 performs once the GCP resources it names exist (plan 12.3): the
+  # Everything this job names exists in tayxcnc-staging (plan 12.3, C2): the
   # service, the tayxcnc-cnc-runtime and tayxcnc-cnc-deployer accounts, the
   # tayxcnc-cnc Artifact Registry repository, the bucket, cnc_db and every
   # secret mounted below, plus the WIF_PROVIDER, WIF_SERVICE_ACCOUNT and
   # GCP_PROJECT_ID repository secrets.
-  # =========================================================================
+  #
+  # No `environment:` key. The deployer trusts the token subject
+  # repo:tayxcnc/cnc-backend:ref:refs/heads/develop and nothing else; an
+  # environment would change the subject and the deploy would fail to
+  # authenticate.
   cnc:
     name: Deploy CNC to staging
-    # C2 switches this on once the GCP resources exist.
-    if: false
     runs-on: ubuntu-latest
 
     permissions:
