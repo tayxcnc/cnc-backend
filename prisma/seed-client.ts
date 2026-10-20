@@ -1,5 +1,6 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/cnc-client';
+import { remoteDatabaseRefusal } from './local-database';
 
 /**
  * The client a seed script runs against.
@@ -27,4 +28,40 @@ export function createSeedClient(): PrismaClient {
   }
 
   return new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+}
+
+/**
+ * The client a seed that writes runs against: `createSeedClient`, after
+ * `remoteDatabaseRefusal` has passed.
+ *
+ * Every writing seed calls this one function with its own flag, so none can
+ * forget the check or run it after connecting. The caller passes the flag's
+ * name and its value read by that literal name
+ * (`process.env.CNC_SEED_OWNER_ALLOW_REMOTE`), so `check:env-names` sees the
+ * read. The refusal names the host and port, never the URL, which carries
+ * the password.
+ */
+export function createWritingSeedClient(
+  allowRemoteFlag: string,
+  allowRemoteValue: string | undefined,
+): PrismaClient {
+  const connectionString = process.env.CNC_DB_URL;
+
+  if (connectionString === undefined || connectionString === '') {
+    throw new Error(
+      'CNC_DB_URL is not set. Seeds read it from .env via `-r dotenv/config`.',
+    );
+  }
+
+  const refusal = remoteDatabaseRefusal(
+    connectionString,
+    allowRemoteFlag,
+    allowRemoteValue,
+  );
+
+  if (refusal !== null) {
+    throw new Error(refusal);
+  }
+
+  return createSeedClient();
 }
