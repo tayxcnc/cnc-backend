@@ -33,7 +33,8 @@ jobs:
   # GCP_PROJECT_ID repository secrets.
   #
   # No `environment:` key. The deployer trusts the token subject
-  # repo:tayxcnc/cnc-backend:ref:refs/heads/develop and nothing else; an
+  # repo:tayxcnc@312678855/cnc-backend@1415513595:ref:refs/heads/develop
+  # (GitHub's immutable form, with owner and repository ids) and nothing else; an
   # environment would change the subject and the deploy would fail to
   # authenticate.
   cnc:
