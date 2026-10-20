@@ -23,6 +23,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:seed": "ts-node -r dotenv/config prisma/seed.ts",
+    "db:seed:owner": "ts-node -r dotenv/config prisma/seed-owner.ts",
     "db:studio": "prisma studio"
   },
   "dependencies": {
@@ -31,6 +33,7 @@
     "@nestjs/core": "^11.1.28",
     "@nestjs/platform-express": "^11.1.28",
     "@nestjs/swagger": "^11.4.7",
+    "@node-rs/argon2": "2.0.2",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "class-transformer": "^0.5.1",
