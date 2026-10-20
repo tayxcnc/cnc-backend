@@ -4,8 +4,10 @@ import {
   HttpStatus,
   Param,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -14,6 +16,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { clientAddressOf } from '../common/client-address';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { AUTH_ATTEMPT_LIMIT, AUTH_ATTEMPT_WINDOW_MS } from './auth-throttle';
@@ -97,7 +100,12 @@ export class StaffPasswordResetController {
   resetPassword(
     @CurrentStaff() actor: StaffPrincipal,
     @Param('id') targetId: string,
+    @Req() httpRequest: Request,
   ): Promise<TemporaryPasswordResponse> {
-    return this.auth.resetPassword(actor, targetId);
+    return this.auth.resetPassword(
+      actor,
+      targetId,
+      clientAddressOf(httpRequest),
+    );
   }
 }

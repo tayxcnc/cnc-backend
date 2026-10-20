@@ -299,9 +299,14 @@ export class StaffAuthController {
   async changePassword(
     @CurrentStaff() actor: StaffPrincipal,
     @Body() request: ChangePasswordRequest,
+    @Req() httpRequest: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<StaffAuthResponse> {
-    const session = await this.auth.changePassword(actor, request);
+    const session = await this.auth.changePassword(
+      actor,
+      request,
+      clientAddressOf(httpRequest),
+    );
 
     setRefreshCookie(
       response,

@@ -12,7 +12,7 @@ import {
   PASSWORD_CHANGE_REQUIRED_MESSAGE,
   STAFF_DEACTIVATED_MESSAGE,
 } from '../src/auth/guards/cnc-staff.guard';
-import { hashPassword, verifyPassword } from '../src/auth/password';
+import { verifyPassword } from '../src/auth/password';
 import {
   NO_STAFF_REFRESH_COOKIE_MESSAGE,
   REFRESH_NEEDS_JSON_MESSAGE,
@@ -21,17 +21,15 @@ import {
   CURRENT_PASSWORD_INCORRECT_MESSAGE,
   INVALID_CREDENTIALS_MESSAGE,
   OWN_PASSWORD_RESET_MESSAGE,
-  OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE,
   SAME_PASSWORD_MESSAGE,
   STAFF_NOT_FOUND_MESSAGE,
 } from '../src/auth/staff-auth.service';
 import { ROLE_REFUSED_MESSAGE } from '../src/auth/staff-roles';
 import { StructuredLogger } from '../src/common/logging/structured-logger';
-import { generateQrToken } from '../src/common/qr-token';
-import { watToday } from '../src/common/wat';
+import { OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
-import { drawNumber } from '../src/prisma/sequences';
 import { createTestApp } from './create-test-app';
+import { createStaffAccount } from './staff-fixtures';
 
 /**
  * Staff sign-in, refresh, sign-out, change-password and the admin reset
@@ -81,25 +79,13 @@ describe('staff auth (e2e)', () => {
     role: StaffRole,
     options: { isActive?: boolean; mustChangePassword?: boolean } = {},
   ): Promise<Account> {
-    const email = `auth-${randomUUID()}@cnc.test`;
-    const password = `pw-${randomUUID()}`;
-
-    const staff = await prisma.staff.create({
-      data: {
-        staffNo: await drawNumber(prisma, 'staff'),
-        name: `Auth ${role.toLowerCase()}`,
-        email,
-        role,
-        isActive: options.isActive ?? true,
-        passwordHash: await hashPassword(password),
-        mustChangePassword: options.mustChangePassword ?? false,
-        qrToken: generateQrToken(),
-        joinedOn: watToday(new Date()),
-      },
-      select: { id: true },
+    const { id, email, password } = await createStaffAccount(prisma, role, {
+      ...options,
+      emailPrefix: 'auth',
+      name: `Auth ${role.toLowerCase()}`,
     });
 
-    return { id: staff.id, email, password };
+    return { id, email, password };
   }
 
   const signInCall = (email: string, password: string, from = address()) =>

@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { AuditModule } from '../audit/audit.module';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { CncConfigService } from '../config/cnc.config';
+import { MoneyControlModule } from '../money-control/money-control.module';
 import {
   AUTH_ATTEMPT_LIMIT,
   AUTH_ATTEMPT_WINDOW_MS,
@@ -36,10 +38,14 @@ import {
  * registers its own, as TAY's contact form does.
  *
  * `StaffAuthService` decides who gets a session and stays private to this
- * module.
+ * module. It audits the password change and the admin reset through
+ * `AuditModule`, and takes the Manager-and-Owner account rule from
+ * `MoneyControlModule`.
  */
 @Module({
   imports: [
+    AuditModule,
+    MoneyControlModule,
     PassportModule.register({ defaultStrategy: CNC_JWT_STRATEGY }),
     JwtModule.registerAsync({
       inject: [CncConfigService],

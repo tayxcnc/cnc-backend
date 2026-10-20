@@ -7,6 +7,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { StaffRole, SubjectType } from '../../generated/cnc-client';
+import { AuditService, staffActor } from '../audit/audit.service';
+import { MoneyControlService } from '../money-control/money-control.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import {
   CncTokenService,
@@ -24,7 +26,6 @@ import {
   verifyPassword,
 } from './password';
 import type { StaffPrincipal } from './staff-principal';
-import { isManager, isOwner } from './staff-roles';
 
 /**
  * The one sign-in refusal (401), TAY's wording: an unknown email, a wrong
@@ -47,15 +48,6 @@ export const SAME_PASSWORD_MESSAGE =
 
 /** The demo's sentence for a staff id that names nobody (`staff.photo`), 404. */
 export const STAFF_NOT_FOUND_MESSAGE = 'Staff account not found.';
-
-/**
- * The demo's `staff.save` rule (`domain.ts`), byte for byte, applied to the
- * admin reset (403): a manager may reset staff accounts, and only the Owner
- * may touch a Manager or Owner account. Resetting a manager's password is
- * taking over their account until they change it.
- */
-export const OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE =
-  'Only the Owner can create or change Manager and Owner accounts.';
 
 /**
  * The admin reset aimed at the caller's own account (403). Change-password
@@ -108,11 +100,12 @@ export interface IssuedSession<Body> {
  * Hashing is `password.ts`'s and tokens are `CncTokenService`'s; this class
  * decides who gets a session.
  *
- * **Not audited yet.** TAY writes `staff.sign_in`, `staff.sign_in_failed`,
- * `staff.password.changed` and `staff.password.reset` to its activity log.
- * CNC's `AuditService` arrives with C3-5, which records the change-password
- * and admin reset inside the transactions below; until then they are
- * unrecorded.
+ * **Audited:** a password change (`staff.changePassword`) and an admin
+ * reset (`staff.resetPassword`), each inside its own transaction, with the
+ * account's staff number as the ref and nothing but `mustChangePassword` in
+ * the change; never a password or a hash. Sign-in and refresh write no
+ * audit row: the demo has no such commands, and the application log
+ * records a failed sign-in.
  */
 @Injectable()
 export class StaffAuthService {
@@ -130,6 +123,8 @@ export class StaffAuthService {
   constructor(
     private readonly prisma: CncPrismaService,
     private readonly tokens: CncTokenService,
+    private readonly audit: AuditService,
+    private readonly money: MoneyControlService,
   ) {}
 
   /**
@@ -214,6 +209,7 @@ export class StaffAuthService {
   async changePassword(
     actor: StaffPrincipal,
     request: ChangePasswordRequest,
+    ipAddress: string,
   ): Promise<IssuedSession<StaffAuthResponse>> {
     const staff = await this.prisma.staff.findUnique({
       where: { id: actor.id },
@@ -250,6 +246,18 @@ export class StaffAuthService {
         where: { id: staff.id },
         data: { passwordHash, mustChangePassword: false },
       });
+
+      await this.audit.record(
+        {
+          actor: staffActor(actor),
+          action: 'staff.changePassword',
+          ref: staff.staffNo,
+          before: { mustChangePassword: staff.mustChangePassword },
+          after: { mustChangePassword: false },
+          ipAddress,
+        },
+        tx,
+      );
     });
 
     return this.issueSession({ ...staff, mustChangePassword: false });
@@ -275,6 +283,7 @@ export class StaffAuthService {
   async resetPassword(
     actor: StaffPrincipal,
     targetId: string,
+    ipAddress: string,
   ): Promise<TemporaryPasswordResponse> {
     if (targetId === actor.id) {
       throw new ForbiddenException(OWN_PASSWORD_RESET_MESSAGE);
@@ -284,16 +293,19 @@ export class StaffAuthService {
     const passwordHash = await hashPassword(temporaryPassword);
 
     await this.prisma.$transaction(async (tx) => {
-      const [target] = await tx.$queryRaw<{ role: StaffRole }[]>`
-        SELECT "role" FROM "Staff" WHERE "id" = ${targetId} FOR UPDATE`;
+      const [target] = await tx.$queryRaw<
+        { role: StaffRole; staffNo: string; mustChangePassword: boolean }[]
+      >`
+        SELECT "role", "staffNo", "mustChangePassword"
+          FROM "Staff" WHERE "id" = ${targetId} FOR UPDATE`;
 
       if (target === undefined) {
         throw new NotFoundException(STAFF_NOT_FOUND_MESSAGE);
       }
 
-      if (isManager(target.role) && !isOwner(actor.role)) {
-        throw new ForbiddenException(OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE);
-      }
+      // The demo's `staff.save` rule: resetting a manager's password is
+      // taking over their account until they change it.
+      this.money.mayChangeAccount(actor, { currentRole: target.role });
 
       await this.tokens.revokeAllForSubject(targetId, SubjectType.STAFF, tx);
 
@@ -301,6 +313,19 @@ export class StaffAuthService {
         where: { id: targetId },
         data: { passwordHash, mustChangePassword: true },
       });
+
+      // Never the password: it is returned once and recorded nowhere.
+      await this.audit.record(
+        {
+          actor: staffActor(actor),
+          action: 'staff.resetPassword',
+          ref: target.staffNo,
+          before: { mustChangePassword: target.mustChangePassword },
+          after: { mustChangePassword: true },
+          ipAddress,
+        },
+        tx,
+      );
     });
 
     return { temporaryPassword };
