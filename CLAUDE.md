@@ -39,6 +39,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `migrate dev` local only; `migrate deploy` by hand before the merge | Data and migrations |
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
+| Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | TAY staging resources CNC work never touches | Infrastructure → Never touched from CNC work |
@@ -79,8 +80,12 @@ src/
   app.module.ts      CncAppModule
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
+  audit/             AuditService (the one writer), GET /staff/audit and its
+                     sentences, AuditRefAccess for non-manager record reads
   auth/              staff sign-in, refresh, sign-out, change-password, admin reset;
                      CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
+  money-control/     MoneyControlService: Owner-only rules, approval limits and
+                     the daily ledger, own record, Manager/Owner accounts, last Owner
   common/            money, dates, errors, pagination, request helpers, QR tokens,
                      the client-address throttler guard
   health/            liveness and readiness
@@ -92,7 +97,7 @@ prisma/
   seed.ts, seed-owner.ts   the two seed entry points (data-seed.ts, owner-seed.ts do the work)
   menu-seed.ts       joins the copied menu sources; refuses a disagreement
   seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
-test/                e2e specs and create-test-app.ts
+test/                e2e specs, create-test-app.ts, staff-fixtures.ts
 scripts/             check-env-names.ts
 ```
 

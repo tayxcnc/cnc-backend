@@ -577,6 +577,86 @@ They are here so the first card that builds it starts from the rule.
   TAY-cookie test also asserts that an expected line did appear, so the
   capture is known to be live.
 
+## Money controls and the audit log *(from C3)*
+
+- **Every Owner-only, limit and own-record rule goes through
+  `MoneyControlService` (`src/money-control/`), and its sentences are the
+  exported constants there, never retyped** (plan §6.2). `ownerOnly` with
+  `OWNER_ONLY_ACTIONS`, `requireOwner` with the price, new-item and
+  settings sentences, `withinLimit` with `LIMITED_DECISIONS`, `notOwn` with
+  `OWN_RECORD_KINDS`, `mayChangeAccount` and `keepsAnActiveOwner` for staff
+  accounts. The screens show these refusals verbatim (A7); one home per
+  sentence is the only way two commands applying the same rule print it the
+  same way.
+- **A figure inside a ported sentence is formatted with `formatKoboShort`**
+  (`src/common/money.ts`): whole naira with no decimals, otherwise two, as
+  the staff app's `money()` prints. "…above the Owner Approval Limit of
+  ₦50,000." is a byte-for-byte sentence, and `formatKobo`'s `₦50,000.00`
+  would change it. Receipts and confirmations keep `formatKobo`.
+- **`withinLimit` runs inside the command's transaction, before the
+  command's own writes, and is the only writer of `ApprovalLedger`.** It
+  takes `pg_advisory_xact_lock` on the manager and the Lagos business date,
+  sums the day as `bigint`, refuses above the limit, and inserts the counted
+  amount, all in that transaction. Read, then insert without the lock, and
+  two approvals racing past the limit both see the old total; the e2e race
+  test fails when the lock is removed. The ledger row commits with the
+  decision it counts, or not at all.
+- **Decisions are recorded in the ledger while the daily limit is off, and
+  the Owner is never recorded** (D36). Switching the limit back on mid-day
+  then counts the day's decisions already made, and the Owner has no daily
+  limit to count against.
+- **`ApprovalLedger` is append-only by trigger, like `AuditLog`, and an
+  amount is always positive.** A deleted or lowered row is a manager's limit
+  quietly raised. A refund counts by its size, so the writer stores the
+  absolute amount.
+- **The last-Owner rule takes one advisory lock before it counts the other
+  active Owners.** Two Owners demoting each other at once would otherwise
+  both see the other still active and leave CNC with none. An advisory lock
+  rather than `SELECT … FOR UPDATE` on the Owner rows, because a command
+  that already holds its target row (`claimVersion`) would deadlock against
+  another holding the other Owner's.
+- **Every command writes its audit row with `AuditService.record(entry,
+  tx)` on its own transaction; the transaction argument is required.** An
+  audit row committed for a change that rolled back is a false record, and
+  a change without its row is invisible (A6, A13). TAY's writer falls back
+  to the base client; CNC's has no fallback to forget.
+- **An audit entry's `action` is the staff app's command name
+  (`order.settle`); the module is derived from it by the writer, and `ref`
+  is the record's human reference** (an order or purchase number, a `KOT-`
+  ref, a staff number, a menu slug). The screens file and filter history by
+  those, and a module passed in by a caller could file a row under the
+  wrong screen. New commands get a label in `audit-sentences.ts`.
+- **`before` and `after` hold plain fields and never a credential;
+  `AuditService` refuses a row that carries one** (`passwordHash`,
+  `qrToken`, `tokenHash`, a password field…), at any depth. The table is
+  append-only, so a secret written there could never be removed. Write a
+  business date as `YYYY-MM-DD`; the sentences show `*Kobo` as naira,
+  `*Bps` as a percentage and an enum value in words.
+- **`GET /staff/audit` returns sentences, never `before` and `after`**
+  (A13, D47): the response is built field by field (`toResponse`), so a raw
+  column cannot ride along. The sentences follow `jsonb`'s key order
+  (shortest key first), not the order the command wrote the fields.
+- **A Manager's audit read hides other Managers' entries by the role on the
+  row (`actorRole`), and keeps rows with no role** (plan §4.8). The role is
+  a snapshot, so an entry made as a Manager stays hidden after a promotion.
+  The filter is written as an `OR` that names `actorRole: null`, because
+  SQL's `NOT` over a null role would hide every customer and system row
+  from every manager.
+- **A non-manager's audit read is one record by `ref`, which a module
+  vouches for through `AuditRefAccess.register`; with no reader it is
+  refused** (plan §4.8, §6.1). Only the record's module knows its row
+  filters (a Bartender's Bar orders, a user's own tasks), so each C4+
+  module registers a reader for its refs in `onModuleInit`. The registry
+  fails closed: a module that forgets to register leaves its history
+  unreadable to staff, never readable by everyone. Reception's one other
+  query is `action=maintenance.save`; anything else is 403 with the role
+  sentence.
+- **An e2e suite that is not about sign-in mints its tokens with
+  `accessTokenFor` and makes its accounts with `createStaffAccount`
+  (`test/staff-fixtures.ts`).** Signing in through the route would put every
+  suite under the sign-in throttle, and one fixture keeps the account's
+  shape in one place.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by
