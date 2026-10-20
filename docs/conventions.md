@@ -425,12 +425,19 @@ They are here so the first card that builds it starts from the rule.
   policy forbids creating them) and never `credentials_json` in a workflow.
   CNC gets one new `workloadIdentityUser` binding on its deployer, on the
   existing pool and provider, **for the subject
-  `repo:tayxcnc/cnc-backend:ref:refs/heads/develop` only**, not the whole
-  repository. Only a push to `develop` deploys staging, so a workflow on any
-  other branch, including one a pull request adds, cannot impersonate the
-  deployer. The deploy job must therefore never gain an `environment:` key:
-  that changes the token's subject to `…:environment:<name>` and the binding
-  stops matching.
+  `repo:tayxcnc@312678855/cnc-backend@1415513595:ref:refs/heads/develop`
+  only**, not the whole repository. Only a push to `develop` deploys staging,
+  so a workflow on any other branch, including one a pull request adds,
+  cannot impersonate the deployer. The deploy job must therefore never gain
+  an `environment:` key: that changes the token's subject to
+  `…:environment:<name>` and the binding stops matching.
+- **This repository issues GitHub's immutable OIDC subject**, with the owner
+  and repository ids after `@` (`gh api
+  repos/tayxcnc/cnc-backend/actions/oidc/customization/sub` shows
+  `use_immutable_subject: true`). A binding written in the older
+  `repo:tayxcnc/cnc-backend:…` form never matches. The first staging deploy
+  failed that way, with `iam.serviceAccounts.getAccessToken` denied. The ids
+  also mean a renamed or recreated repository cannot inherit the binding.
 - **Database users created with `gcloud sql users create` are members of
   `cloudsqlsuperuser`, with `CREATEDB` and `CREATEROLE`.** `cnc_db` is
   therefore created through the Admin API and handed to `cnc_app` with
