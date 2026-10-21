@@ -1,7 +1,7 @@
 import { applyDecorators } from '@nestjs/common';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsEnum, IsIn, ValidateIf } from 'class-validator';
+import { IsEnum, IsIn } from 'class-validator';
 import { StockLocation } from '../../../generated/cnc-client';
 import { AdminReason, REASON_MAX_LENGTH } from '../../common/admin-reason';
 import { Checked, requiredText, wholeNumber } from '../../common/checked';
@@ -10,7 +10,7 @@ import {
   ValidLines,
 } from '../../common/command-lines';
 import { VersionedWriteDto } from '../../common/dto/versioned-write.dto';
-import { isSent } from '../../common/is-sent';
+import { OptionalText } from '../../common/optional-text';
 import { trimText } from '../../common/trim-text';
 import {
   ADJUST_DIRECTION_MESSAGE,
@@ -44,21 +44,6 @@ export const ISSUE_DESTINATIONS = [
 /** A stock item id, refused with the command's own sentence. */
 const StockItemId = (message: string) =>
   Checked(requiredText(message, 64, message));
-
-/** Optional free text: absent, or text of at most `max` characters. */
-function OptionalText(name: string, max: number): PropertyDecorator {
-  return applyDecorators(
-    Transform(({ value }) => trimText(value)),
-    ValidateIf(isSent),
-    Checked((value) => {
-      if (typeof value !== 'string') return `${name} must be text.`;
-
-      return value.length > max
-        ? `${name} must be ${max} characters or fewer.`
-        : null;
-    }),
-  );
-}
 
 /** Body of `POST /staff/stock/issues`: `stock.issue`, the Storekeeper's direct issue. */
 export class StockIssueRequest {

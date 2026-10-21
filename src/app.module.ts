@@ -11,6 +11,7 @@ import { SERVICE_NAME } from './health/service-name.token';
 import { IdempotencyModule } from './idempotency/idempotency.module';
 import { SweepsModule } from './internal/sweeps.module';
 import { MenuModule } from './menu/menu.module';
+import { OrdersModule } from './orders/orders.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
 import { SettingsModule } from './settings/settings.module';
@@ -45,6 +46,7 @@ import { StockModule } from './stock/stock.module';
     SettingsModule,
     MenuModule,
     StockModule,
+    OrdersModule,
     ShellModule,
     SweepsModule,
   ],
