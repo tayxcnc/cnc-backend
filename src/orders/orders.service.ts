@@ -43,6 +43,7 @@ import type {
 } from './dto/order.response';
 import {
   BAR_NO_DOCKETS_MESSAGE,
+  BELOW_PAID_MESSAGE,
   CONFIRM_EMPTY_MESSAGE,
   CONFIRM_OPEN_MESSAGE,
   ORDER_NOT_FOUND_MESSAGE,
@@ -333,6 +334,8 @@ export class OrdersService {
 
       const after = await this.lines(tx, id);
 
+      await this.assertCoversPaid(tx, order, after);
+
       await this.audit.record(
         {
           actor: staffActor(actor),
@@ -603,6 +606,39 @@ export class OrdersService {
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: LINE_COLUMNS,
     });
+  }
+
+  /** Money received against one bill, reversed payments excluded (`paidSoFar`). */
+  async paidSoFar(client: Reader, orderId: string): Promise<number> {
+    const sum = await client.payment.aggregate({
+      where: { orderId, reversed: false },
+      _sum: { amountKobo: true },
+    });
+
+    return sum._sum.amountKobo ?? 0;
+  }
+
+  /**
+   * Refuse (409) a bill whose due amount, with these lines and this
+   * discount, would be less than the money already taken against it. A
+   * reopened part-paid bill could otherwise be cut below its payments, and
+   * then no settle (exact cover of a negative balance), cancel (part paid)
+   * or reversal (not settled) could ever close it, nor its table be
+   * released. Line changes, the discount and Proceed to Payment all check.
+   */
+  async assertCoversPaid(
+    tx: Tx,
+    order: OrderRow,
+    lines: readonly { qty: number; unitPriceKobo: number }[],
+    discountKobo: number = order.discountKobo,
+  ): Promise<void> {
+    const paidKobo = await this.paidSoFar(tx, order.id);
+
+    if (paidKobo === 0) return;
+
+    const { dueKobo } = orderTotals({ ...order, discountKobo, lines });
+
+    if (dueKobo < paidKobo) throw new ConflictException(BELOW_PAID_MESSAGE);
   }
 
   /** Money received per bill, reversed payments excluded (`paidSoFar`). */

@@ -250,10 +250,12 @@ describe('Stock core (e2e)', () => {
     location: StockLocation,
     counts: unknown,
     reason?: string,
+    key: string = randomUUID(),
   ) =>
     request(server())
       .post('/api/v1/staff/stock/counts')
       .set(auth(role))
+      .set('Idempotency-Key', key)
       .send({ location, counts, ...(reason ? { reason } : {}) });
 
   const issue = (
@@ -608,6 +610,105 @@ describe('Stock core (e2e)', () => {
         ref: StockLocation.BAR,
         businessDate: watToday(new Date()),
       });
+    });
+
+    /** A run-unique drink and its paired Bar stock item of 12 servings a batch. */
+    async function pairedDrink(label: string, priceKobo: number) {
+      const drink = await prisma.menuItem.create({
+        data: {
+          slug: `stock-${label}-${tag}`,
+          department: Department.BAR,
+          ...drinksCategory,
+          name: `Stock ${label} ${tag}`,
+          priceKobo,
+        },
+      });
+
+      return prisma.stockItem.create({
+        data: {
+          name: `Stock ${label} ${tag}`,
+          kind: StockKind.BAR,
+          unit: 'serving',
+          pack: 'batch',
+          factor: 12,
+          minimum: 12,
+          menuItemId: drink.id,
+        },
+      });
+    }
+
+    it('values a Store count of Bar batches as servings: packs × How Many in One × price (Q28)', async () => {
+      // One batch is worth six times the limit; one serving half of it.
+      const dear = await pairedDrink(
+        'half-limit',
+        Math.floor(approvalLimitKobo / 2),
+      );
+
+      const refused = await count(StaffRole.STOREKEEPER, StockLocation.STORE, [
+        { stockItemId: dear.id, counted: 1 },
+      ]).expect(403);
+      expect(messageOf(refused)).toBe(
+        approvalLimitMessage(LIMITED_DECISIONS.stockCount, approvalLimitKobo),
+      );
+      expect((await balanceOf(dear.id, StockLocation.STORE)).qty).toBe(0);
+
+      // Within the limit, the day's ledger holds the servings' value.
+      const cheap = await pairedDrink('store-cheap', 10000);
+      await count(StaffRole.STOREKEEPER, StockLocation.STORE, [
+        { stockItemId: cheap.id, counted: 2 },
+      ]).expect(201);
+
+      const row = await prisma.approvalLedger.findFirstOrThrow({
+        where: { staffId: staffId.STOREKEEPER, action: 'stock.count' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      expect(row).toMatchObject({
+        amountKobo: 2 * 12 * 10000,
+        ref: StockLocation.STORE,
+      });
+    });
+
+    it('needs an Idempotency-Key, and a retry replays the first count instead of undoing later moves', async () => {
+      const item = await kitchenItem({ factor: 10 });
+      await opening(item.id, StockLocation.KITCHEN, 12);
+      await opening(item.id, StockLocation.STORE, 1);
+      const counts = [{ stockItemId: item.id, counted: 10 }];
+
+      const missing = await request(server())
+        .post('/api/v1/staff/stock/counts')
+        .set(auth(StaffRole.MANAGER))
+        .send({ location: StockLocation.KITCHEN, counts })
+        .expect(400);
+      expect(messageOf(missing)).toBe(IDEMPOTENCY_KEY_REQUIRED);
+
+      const key = randomUUID();
+      const first = await count(
+        StaffRole.MANAGER,
+        StockLocation.KITCHEN,
+        counts,
+        undefined,
+        key,
+      ).expect(201);
+      expect((await balanceOf(item.id, StockLocation.KITCHEN)).qty).toBe(10);
+
+      // A pack reaches the Kitchen before the lost response is retried.
+      await issue(StaffRole.STOREKEEPER, {
+        location: StockLocation.KITCHEN,
+        stockItemId: item.id,
+        qty: 1,
+      }).expect(201);
+
+      const replay = await count(
+        StaffRole.MANAGER,
+        StockLocation.KITCHEN,
+        counts,
+        undefined,
+        key,
+      ).expect(201);
+
+      expect(replay.body).toEqual(first.body);
+      expect((await balanceOf(item.id, StockLocation.KITCHEN)).qty).toBe(20);
+      await expectLedgerHolds(item.id, StockLocation.KITCHEN);
     });
   });
 

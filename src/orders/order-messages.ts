@@ -166,6 +166,16 @@ export const REOPEN_STAGE_MESSAGE =
 export const REOPEN_PREVIOUS_DAY_MESSAGE =
   'Previous-day items remain locked. Create a new order for new items.';
 
+/**
+ * A line change, a discount or Proceed to Payment that would leave a bill
+ * owing less than the money already taken against it (409). New, not the
+ * demo's: the demo let a reopened part-paid bill fall below its part
+ * payments, after which nothing could settle, cancel or reverse it (C4
+ * review). In the demo's form.
+ */
+export const BELOW_PAID_MESSAGE =
+  'This bill cannot total less than the part payments already taken.';
+
 /** `order.reverse` on a bill that is not a settled till bill (409). */
 export const REVERSE_STAGE_MESSAGE = 'Select a settled POS order.';
 

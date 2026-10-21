@@ -24,6 +24,7 @@ import {
 import { PREVIOUS_DAY_MESSAGE } from '../src/orders/order-messages';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp } from './create-test-app';
+import { fakeDateOnly } from './fake-date';
 import {
   createIsolatedDatabase,
   type IsolatedDatabase,
@@ -169,26 +170,7 @@ describe('C4 demo ports (e2e)', () => {
     }));
 
     // Only Date is faked; it runs on from the real time until a test moves it.
-    jest.useFakeTimers({
-      now: Date.now(),
-      advanceTimers: true,
-      doNotFake: [
-        'hrtime',
-        'nextTick',
-        'performance',
-        'queueMicrotask',
-        'requestAnimationFrame',
-        'cancelAnimationFrame',
-        'requestIdleCallback',
-        'cancelIdleCallback',
-        'setImmediate',
-        'clearImmediate',
-        'setInterval',
-        'clearInterval',
-        'setTimeout',
-        'clearTimeout',
-      ],
-    });
+    fakeDateOnly(Date.now());
     await mintTokens();
   }, 120_000);
 
@@ -215,6 +197,7 @@ describe('C4 demo ports (e2e)', () => {
     await request(server())
       .post('/api/v1/staff/stock/counts')
       .set(as('owner'))
+      .set('Idempotency-Key', randomUUID())
       .send({ location, counts: [{ stockItemId, counted }] })
       .expect(201);
   }

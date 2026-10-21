@@ -24,6 +24,7 @@ import {
 } from '../src/reception/reception-messages';
 import { insufficientStockMessage } from '../src/stock/stock-messages';
 import { createTestApp } from './create-test-app';
+import { fakeDateOnly, nextNoonInJos } from './fake-date';
 import {
   createIsolatedDatabase,
   type IsolatedDatabase,
@@ -113,6 +114,12 @@ describe('C4 races (e2e)', () => {
 
     await seedData(prisma);
 
+    // Only Date is faked, at the next 12:00 in Jos, so no race depends on
+    // the wall clock: the booking against a walk-in books today at 23:59,
+    // which the real clock refuses as past in the last minute of a day.
+    // Tokens are minted after, so they live at the suite's time.
+    fakeDateOnly(nextNoonInJos());
+
     for (const actor of Object.keys(ROLE) as Actor[]) {
       const made = await createStaffAccount(prisma, ROLE[actor], {
         emailPrefix: 'c4-races',
@@ -164,6 +171,7 @@ describe('C4 races (e2e)', () => {
   }, 120_000);
 
   afterAll(async () => {
+    jest.useRealTimers();
     await app?.close();
 
     if (originalUrl === undefined) delete process.env.CNC_DB_URL;
@@ -190,6 +198,7 @@ describe('C4 races (e2e)', () => {
     await request(server())
       .post('/api/v1/staff/stock/counts')
       .set(as('owner'))
+      .set('Idempotency-Key', randomUUID())
       .send({ location, counts: [{ stockItemId, counted }] })
       .expect(201);
   }

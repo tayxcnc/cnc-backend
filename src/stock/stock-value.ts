@@ -24,7 +24,10 @@ type Reader = Pick<Prisma.TransactionClient, 'menuItem'>;
  *   known it counts as zero, as in the demo.
  *
  * The quantity's size is valued; a caller passes a signed difference and
- * gets a positive value.
+ * gets a positive value. **The quantity is in units** (servings, portions):
+ * the Store holds packs, so a caller valuing Store stock multiplies by the
+ * item's `factor` first (C4 review: a Store count of Bar batches was
+ * otherwise valued as single servings).
  */
 export async function stockValueKobo(
   tx: Reader,

@@ -368,120 +368,137 @@ export class StockService {
    *   (`stockValueKobo`) and checked like a money decision: above the Owner
    *   Approval Limit only the Owner may record them, and the value counts
    *   toward the Daily Approval Limit. A count with no difference decides
-   *   nothing and is never limited.
+   *   nothing and is never limited. A Store count is in packs, so its
+   *   difference is valued as packs × How Many in One units.
+   *
+   * The role rule is checked before the idempotency service runs, as
+   * Correct Balance's Owner rule is.
    */
-  async count(
-    actor: StaffPrincipal,
-    request: StockCountRequest,
-    ipAddress: string,
-  ): Promise<StockCountResponse> {
+  assertMayCount(actor: StaffPrincipal, location: StockLocation): void {
     const storekeeperAtStore =
-      actor.role === StaffRole.STOREKEEPER &&
-      request.location === StockLocation.STORE;
+      actor.role === StaffRole.STOREKEEPER && location === StockLocation.STORE;
 
     if (!isManager(actor.role) && !storekeeperAtStore) {
       throw new ForbiddenException(COUNT_ROLE_MESSAGE);
     }
+  }
 
-    return this.prisma.$transaction(async (tx) => {
-      const ids = request.counts.map((line) => line.stockItemId);
-      const items = await tx.stockItem.findMany({
-        where: { id: { in: ids } },
-        select: {
-          id: true,
-          name: true,
-          kind: true,
-          factor: true,
-          menuItemId: true,
-        },
-      });
-      const byId = new Map(items.map((item) => [item.id, item]));
+  /**
+   * Runs inside the idempotency service's transaction: a count writes
+   * `counted − recorded` as read at the time, so a retry after a lost
+   * response would undo any sale or issue that landed in between. The key
+   * makes the retry replay the first answer instead.
+   */
+  async count(
+    tx: Tx,
+    actor: StaffPrincipal,
+    request: StockCountRequest,
+    ipAddress: string,
+  ): Promise<StockCountResponse> {
+    this.assertMayCount(actor, request.location);
 
-      for (const line of request.counts) {
-        const item = byId.get(line.stockItemId);
-
-        if (item === undefined) {
-          throw new NotFoundException(STOCK_ITEM_NOT_FOUND_MESSAGE);
-        }
-
-        if (!locationHolds(item.kind, request.location)) {
-          throw new BadRequestException(LOCATION_ITEM_MESSAGE);
-        }
-      }
-
-      const recorded = await this.ledger.lockBalances(
-        tx,
-        ids,
-        request.location,
-      );
-
-      const changes: StockCountChangeResponse[] = [];
-      let valueKobo = 0;
-
-      for (const line of request.counts) {
-        const item = byId.get(line.stockItemId);
-        if (item === undefined) continue;
-
-        const before = recorded.get(item.id) ?? 0;
-        const difference = line.counted - before;
-
-        if (difference === 0) continue;
-
-        changes.push({
-          stockItemId: item.id,
-          name: item.name,
-          recorded: before,
-          counted: line.counted,
-          difference,
-        });
-        valueKobo += await stockValueKobo(tx, item, difference);
-      }
-
-      if (changes.length > 0) {
-        await this.money.withinLimit(tx, actor, {
-          amountKobo: valueKobo,
-          what: LIMITED_DECISIONS.stockCount,
-          count: true,
-          action: 'stock.count',
-          ref: request.location,
-        });
-      }
-
-      const ref = request.reason || 'Stock count';
-
-      for (const change of changes) {
-        await this.ledger.move(tx, {
-          stockItemId: change.stockItemId,
-          location: request.location,
-          qty: change.difference,
-          type: StockMovementType.STOCK_COUNT,
-          ref,
-          staffId: actor.id,
-        });
-      }
-
-      await this.audit.record(
-        {
-          actor: staffActor(actor),
-          action: 'stock.count',
-          ref: request.location,
-          after: {
-            location: request.location,
-            changes: changes.map((change) => ({
-              item: change.name,
-              recorded: change.recorded,
-              counted: change.counted,
-              difference: change.difference,
-            })),
-          },
-          reason: request.reason ?? null,
-          ipAddress,
-        },
-        tx,
-      );
-
-      return { location: request.location, changes };
+    const ids = request.counts.map((line) => line.stockItemId);
+    const items = await tx.stockItem.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        name: true,
+        kind: true,
+        factor: true,
+        menuItemId: true,
+      },
     });
+    const byId = new Map(items.map((item) => [item.id, item]));
+
+    for (const line of request.counts) {
+      const item = byId.get(line.stockItemId);
+
+      if (item === undefined) {
+        throw new NotFoundException(STOCK_ITEM_NOT_FOUND_MESSAGE);
+      }
+
+      if (!locationHolds(item.kind, request.location)) {
+        throw new BadRequestException(LOCATION_ITEM_MESSAGE);
+      }
+    }
+
+    const recorded = await this.ledger.lockBalances(tx, ids, request.location);
+
+    const changes: StockCountChangeResponse[] = [];
+    let valueKobo = 0;
+
+    for (const line of request.counts) {
+      const item = byId.get(line.stockItemId);
+      if (item === undefined) continue;
+
+      const before = recorded.get(item.id) ?? 0;
+      const difference = line.counted - before;
+
+      if (difference === 0) continue;
+
+      changes.push({
+        stockItemId: item.id,
+        name: item.name,
+        recorded: before,
+        counted: line.counted,
+        difference,
+      });
+
+      // The Store counts packs; the Kitchen and the Bar count units.
+      // `stockValueKobo` values units, so a Store difference is turned into
+      // units first (packs × How Many in One).
+      const units =
+        request.location === StockLocation.STORE
+          ? difference * item.factor
+          : difference;
+
+      valueKobo += await stockValueKobo(tx, item, units);
+    }
+
+    if (changes.length > 0) {
+      await this.money.withinLimit(tx, actor, {
+        amountKobo: valueKobo,
+        what: LIMITED_DECISIONS.stockCount,
+        count: true,
+        action: 'stock.count',
+        ref: request.location,
+      });
+    }
+
+    const ref = request.reason || 'Stock count';
+
+    for (const change of changes) {
+      await this.ledger.move(tx, {
+        stockItemId: change.stockItemId,
+        location: request.location,
+        qty: change.difference,
+        type: StockMovementType.STOCK_COUNT,
+        ref,
+        staffId: actor.id,
+      });
+    }
+
+    await this.audit.record(
+      {
+        actor: staffActor(actor),
+        action: 'stock.count',
+        ref: request.location,
+        after: {
+          location: request.location,
+          changes: changes.map((change) => ({
+            item: change.name,
+            recorded: change.recorded,
+            counted: change.counted,
+            difference: change.difference,
+          })),
+        },
+        reason: request.reason ?? null,
+        ipAddress,
+      },
+      tx,
+    );
+
+    return { location: request.location, changes };
   }
 
   /**

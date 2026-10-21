@@ -25,6 +25,7 @@ import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { STALE_VERSION_MESSAGE } from '../src/prisma/optimistic-version';
 import { ALREADY_RESERVED_MESSAGE } from '../src/reception/reception-messages';
 import { createTestApp } from './create-test-app';
+import { fakeDateOnly, nextNoonInJos } from './fake-date';
 import {
   createIsolatedDatabase,
   type IsolatedDatabase,
@@ -62,7 +63,6 @@ describe('the C4 gate (e2e)', () => {
   const originalUrl = process.env.CNC_DB_URL;
 
   const MINUTE = 60_000;
-  const HOUR = 60 * MINUTE;
 
   type Actor =
     | 'owner'
@@ -171,23 +171,6 @@ describe('the C4 gate (e2e)', () => {
   const STORE_OPENING = 5;
   const BAR_OPENING = 24;
 
-  /** The next 12:00 in Jos after the real time: the walk's first instant. */
-  const nextNoonInJos = (): number => {
-    const now = Date.now();
-    const at = new Date(now);
-    // Jos is UTC+1 all year: 11:00 UTC is 12:00 WAT.
-    let noon = Date.UTC(
-      at.getUTCFullYear(),
-      at.getUTCMonth(),
-      at.getUTCDate(),
-      11,
-    );
-
-    while (noon <= now) noon += 24 * HOUR;
-
-    return noon;
-  };
-
   /** Fresh access tokens for everyone, minted at the clock's time. */
   async function mintTokens(): Promise<void> {
     for (const actor of Object.keys(ROLE) as Actor[]) {
@@ -269,26 +252,8 @@ describe('the C4 gate (e2e)', () => {
     };
 
     // Only Date is faked; every timer stays real (see the suite's comment).
-    jest.useFakeTimers({
-      now: nextNoonInJos(),
-      advanceTimers: true,
-      doNotFake: [
-        'hrtime',
-        'nextTick',
-        'performance',
-        'queueMicrotask',
-        'requestAnimationFrame',
-        'cancelAnimationFrame',
-        'requestIdleCallback',
-        'cancelIdleCallback',
-        'setImmediate',
-        'clearImmediate',
-        'setInterval',
-        'clearInterval',
-        'setTimeout',
-        'clearTimeout',
-      ],
-    });
+    // The walk's first instant is the next 12:00 in Jos.
+    fakeDateOnly(nextNoonInJos());
     await mintTokens();
   }, 120_000);
 
@@ -317,6 +282,7 @@ describe('the C4 gate (e2e)', () => {
     request(server())
       .post('/api/v1/staff/stock/counts')
       .set(as('owner'))
+      .set('Idempotency-Key', randomUUID())
       .send({ location, counts: [{ stockItemId, counted }] });
 
   async function balance(

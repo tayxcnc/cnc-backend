@@ -56,6 +56,7 @@ import {
   VENUE_MESSAGE,
 } from '../src/reception/reception-messages';
 import { createTestApp } from './create-test-app';
+import { fakeDateOnly, nextNoonInJos } from './fake-date';
 import {
   createIsolatedDatabase,
   type IsolatedDatabase,
@@ -159,6 +160,11 @@ describe('Reception (e2e)', () => {
 
     await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
 
+    // Only Date is faked, at the next 12:00 in Jos: a booking for today at
+    // 23:45 or 23:59 is refused as past in the last minutes of a Lagos day
+    // on the real clock. Tokens are minted after, at the suite's time.
+    fakeDateOnly(nextNoonInJos());
+
     for (const role of Object.values(StaffRole)) {
       const made = await createStaffAccount(prisma, role, {
         emailPrefix: 'reception',
@@ -204,6 +210,7 @@ describe('Reception (e2e)', () => {
   }, 120_000);
 
   afterAll(async () => {
+    jest.useRealTimers();
     await app?.close();
 
     if (originalUrl === undefined) delete process.env.CNC_DB_URL;

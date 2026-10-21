@@ -31,6 +31,7 @@ import {
 } from '../src/money-control/money-control.service';
 import {
   BAR_POS_ONLY_MESSAGE,
+  BELOW_PAID_MESSAGE,
   CANCEL_PART_PAID_MESSAGE,
   CANCEL_STAGE_MESSAGE,
   DEPOSIT_INVALID_MESSAGE,
@@ -818,6 +819,62 @@ describe('Order payments and corrections (e2e)', () => {
       expect(await movementsFor(order.number)).toEqual([]);
     });
 
+    it('names the first short drink on the bill, as the demo does, whatever the stock ids', async () => {
+      // Two drinks the Bar holds none of, the later id first on the bill.
+      const drinks: {
+        menuItemId: string;
+        stockItemId: string;
+        name: string;
+      }[] = [];
+      for (const label of ['Zobo', 'Chapman']) {
+        const drink = await prisma.menuItem.findFirstOrThrow({
+          where: { id: lagerId },
+          select: { menuCategoryId: true, staffCategoryId: true },
+        });
+        const made = await prisma.menuItem.create({
+          data: {
+            slug: `payments-${label.toLowerCase()}-${tag}`,
+            department: Department.BAR,
+            menuCategoryId: drink.menuCategoryId,
+            staffCategoryId: drink.staffCategoryId,
+            name: `${label} ${tag}`,
+            priceKobo: 100000,
+          },
+        });
+        const stock = await prisma.stockItem.create({
+          data: {
+            name: made.name,
+            kind: StockKind.BAR,
+            unit: 'serving',
+            pack: 'batch',
+            factor: 12,
+            minimum: 12,
+            menuItemId: made.id,
+          },
+        });
+        drinks.push({
+          menuItemId: made.id,
+          stockItemId: stock.id,
+          name: made.name,
+        });
+      }
+      drinks.sort((a, b) => (a.stockItemId < b.stockItemId ? 1 : -1));
+      const [first, second] = drinks;
+
+      let order = await line(await open(), first.menuItemId, 1);
+      order = await line(order, second.menuItemId, 1);
+      order = (await proceed(StaffRole.CASHIER, order).expect(200))
+        .body as Order;
+
+      const refused = await settle(StaffRole.CASHIER, order, [
+        cash(order.totals.totalKobo),
+      ]).expect(409);
+      expect(messageOf(refused)).toBe(
+        insufficientStockMessage(StockLocation.BAR, first.name),
+      );
+      expect(await movementsFor(order.number)).toEqual([]);
+    });
+
     it('refuses a drink with no paired Bar stock item, and records nothing', async () => {
       let order = await line(await open(), unpairedDrinkId, 1);
       order = (await proceed(StaffRole.CASHIER, order).expect(200))
@@ -866,9 +923,77 @@ describe('Order payments and corrections (e2e)', () => {
     });
 
     it('food settlement never repeats a kitchen deduction', async () => {
-      const order = await foodBill();
+      // Rice has a comparison rule and a kitchen portion with a balance, so
+      // a settle that deducted food by the rule, or repeated the kitchen
+      // entry, would have something to move.
+      const portion = await prisma.stockItem.create({
+        data: {
+          name: `Rice portion ${tag}`,
+          kind: StockKind.KITCHEN,
+          unit: 'portion',
+          pack: 'tray',
+          factor: 10,
+          minimum: 10,
+        },
+      });
+      await prisma.$transaction((tx) =>
+        ledger.move(tx, {
+          stockItemId: portion.id,
+          location: StockLocation.KITCHEN,
+          qty: 20,
+          type: StockMovementType.STOCK_COUNT,
+          ref: 'Opening balance',
+          staffId: staffId[StaffRole.OWNER]!,
+        }),
+      );
+      await request(server())
+        .put(`/api/v1/staff/kitchen-mappings/${riceId}`)
+        .set(auth(StaffRole.OWNER))
+        .send({ lines: [{ stockItemId: portion.id, qty: 1 }] })
+        .expect(200);
+
+      const sent = await confirm(
+        await line(await open(Department.RESTAURANT), riceId, 2),
+      );
+      const docketRef = sent.latestDocket!.ref;
+
+      await request(server())
+        .put(`/api/v1/staff/kitchen/entries/${encodeURIComponent(docketRef)}`)
+        .set(auth(StaffRole.KITCHEN))
+        .send({ lines: [{ stockItemId: portion.id, qty: 2 }] })
+        .expect(200);
+
+      const movements = () =>
+        prisma.stockMovement.count({
+          where: {
+            OR: [
+              { stockItemId: portion.id },
+              { ref: { in: [sent.number, docketRef] } },
+            ],
+          },
+        });
+      const kitchenBalance = async () =>
+        (
+          await prisma.stockBalance.findUniqueOrThrow({
+            where: {
+              stockItemId_location: {
+                stockItemId: portion.id,
+                location: StockLocation.KITCHEN,
+              },
+            },
+            select: { qty: true },
+          })
+        ).qty;
+      const movementsBefore = await movements();
+      const balanceBefore = await kitchenBalance();
+      expect(balanceBefore).toBe(18);
+
+      const order = (await proceed(StaffRole.CASHIER, sent).expect(200))
+        .body as Order;
       await settleInFull(order);
-      expect(await movementsFor(order.number)).toEqual([]);
+
+      expect(await movements()).toBe(movementsBefore);
+      expect(await kitchenBalance()).toBe(balanceBefore);
     });
 
     it('settles a bill discounted to nothing with no payment', async () => {
@@ -1305,6 +1430,74 @@ describe('Order payments and corrections (e2e)', () => {
         carried,
       ).expect(409);
       expect(messageOf(yesterday)).toBe(REOPEN_PREVIOUS_DAY_MESSAGE);
+    });
+
+    it('a reopened part-paid bill cannot be cut below its part payments, and still settles', async () => {
+      // What three lagers come to with this suite's rates.
+      const threeKobo = (await line(await open(), lagerId, 3)).totals.totalKobo;
+      const order = await barBill(4);
+      const start = await barBalance(lagerStockId);
+
+      let bill = (
+        await partPay(StaffRole.CASHIER, order, [cash(threeKobo)]).expect(201)
+      ).body as Order;
+      bill = (await correct('reopen', StaffRole.MANAGER, bill).expect(200))
+        .body as Order;
+
+      // Two lagers would leave the guest owing less than they paid.
+      const cut = await request(server())
+        .put(`/api/v1/staff/orders/${bill.id}/lines`)
+        .set(auth(StaffRole.CASHIER))
+        .send({ version: bill.version, menuItemId: lagerId, qty: 2 })
+        .expect(409);
+      expect(messageOf(cut)).toBe(BELOW_PAID_MESSAGE);
+
+      // A discount of one lager would bring it to exactly what was paid;
+      // a naira more is below it.
+      const discounted = await discount(
+        StaffRole.MANAGER,
+        bill,
+        LAGER_PRICE + 100,
+      ).expect(409);
+      expect(messageOf(discounted)).toBe(BELOW_PAID_MESSAGE);
+
+      const unchanged = await read(bill.id);
+      expect(unchanged.totals.subtotalKobo).toBe(4 * LAGER_PRICE);
+      expect(unchanged.discountKobo).toBe(0);
+      expect(unchanged.version).toBe(bill.version);
+
+      // Down to exactly what was paid is allowed, and settles with nothing.
+      bill = await line(bill, lagerId, 3);
+      expect(bill.totals.balanceKobo).toBe(0);
+      bill = (await proceed(StaffRole.CASHIER, bill).expect(200)).body as Order;
+
+      const settled = (await settle(StaffRole.CASHIER, bill, []).expect(200))
+        .body as Order;
+      expect(settled.status).toBe(OrderStatus.SETTLED);
+      expect(settled.payments.map((p) => p.amountKobo)).toEqual([threeKobo]);
+      expect(await barBalance(lagerStockId)).toBe(start - 3);
+    });
+
+    it('refuses Proceed to Payment on a bill owing less than was paid', async () => {
+      // No route reaches this state now; a repaired row stands in for it.
+      const order = await line(await open(), lagerId, 1);
+      await prisma.$transaction(async (tx) =>
+        tx.payment.create({
+          data: {
+            number: await drawNumber(tx, 'payment'),
+            orderId: order.id,
+            method: PaymentMethod.CASH,
+            amountKobo: order.totals.totalKobo + 1,
+            part: true,
+            staffId: staffId[StaffRole.CASHIER]!,
+            businessDate: today(),
+          },
+        }),
+      );
+
+      const refused = await proceed(StaffRole.CASHIER, order).expect(409);
+      expect(messageOf(refused)).toBe(BELOW_PAID_MESSAGE);
+      expect((await read(order.id)).status).toBe(OrderStatus.OPEN);
     });
   });
 

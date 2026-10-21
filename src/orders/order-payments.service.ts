@@ -25,7 +25,10 @@ import {
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { drawNumber } from '../prisma/sequences';
 import { StockLedgerService } from '../stock/stock-ledger.service';
-import { STOCK_ITEM_NOT_FOUND_MESSAGE } from '../stock/stock-messages';
+import {
+  insufficientStockMessage,
+  STOCK_ITEM_NOT_FOUND_MESSAGE,
+} from '../stock/stock-messages';
 import { docketItem, sameDocketItems } from './docket-items';
 import { DocketsService } from './dockets.service';
 import type {
@@ -133,6 +136,8 @@ export class OrderPaymentsService {
         }
       }
 
+      await this.orders.assertCoversPaid(tx, order, lines);
+
       await tx.order.update({
         where: { id },
         data: { status: OrderStatus.PAYMENT },
@@ -174,7 +179,7 @@ export class OrderPaymentsService {
 
     const lines = await this.orders.lines(tx, id);
     const totals = orderTotals({ ...order, lines });
-    const paidKobo = await this.paidSoFar(tx, id);
+    const paidKobo = await this.orders.paidSoFar(tx, id);
     const balanceKobo = totals.dueKobo - paidKobo;
     const judged = judgePayments(request.payments, {
       kind: 'part',
@@ -228,7 +233,7 @@ export class OrderPaymentsService {
 
     const lines = await this.orders.lines(tx, id);
     const totals = orderTotals({ ...order, lines });
-    const paidKobo = await this.paidSoFar(tx, id);
+    const paidKobo = await this.orders.paidSoFar(tx, id);
     const depositKobo = request.depositKobo ?? 0;
 
     if (depositKobo > totals.totalKobo - paidKobo) {
@@ -323,6 +328,8 @@ export class OrderPaymentsService {
         throw new BadRequestException(DISCOUNT_INVALID_MESSAGE);
       }
 
+      await this.orders.assertCoversPaid(tx, order, lines, request.amountKobo);
+
       await this.money.withinLimit(tx, actor, {
         amountKobo: request.amountKobo,
         what: LIMITED_DECISIONS.discount,
@@ -381,7 +388,7 @@ export class OrderPaymentsService {
         throw new ConflictException(CANCEL_STAGE_MESSAGE);
       }
 
-      if ((await this.paidSoFar(tx, id)) !== 0) {
+      if ((await this.orders.paidSoFar(tx, id)) !== 0) {
         throw new ConflictException(CANCEL_PART_PAID_MESSAGE);
       }
 
@@ -429,7 +436,8 @@ export class OrderPaymentsService {
   /**
    * `order.reopen` (M+r): a bill awaiting payment goes back to open so its
    * items can change, on its opening date only (a carried bill's items stay
-   * frozen). Part payments stay on the bill.
+   * frozen). Part payments stay on the bill, and no later change may bring
+   * the bill below them (`OrdersService.assertCoversPaid`).
    */
   async reopen(
     actor: StaffPrincipal,
@@ -507,7 +515,7 @@ export class OrderPaymentsService {
         throw new ConflictException(REVERSE_STAGE_MESSAGE);
       }
 
-      const paidKobo = await this.paidSoFar(tx, id);
+      const paidKobo = await this.orders.paidSoFar(tx, id);
 
       await tx.payment.updateMany({
         where: { orderId: id, reversed: false },
@@ -555,16 +563,6 @@ export class OrderPaymentsService {
 
       return this.orders.readOrder(tx, id);
     });
-  }
-
-  /** Money received against a bill, reversed payments excluded (`paidSoFar`). */
-  private async paidSoFar(tx: Tx, orderId: string): Promise<number> {
-    const sum = await tx.payment.aggregate({
-      where: { orderId, reversed: false },
-      _sum: { amountKobo: true },
-    });
-
-    return sum._sum.amountKobo ?? 0;
   }
 
   /**
@@ -655,6 +653,12 @@ export class OrderPaymentsService {
    * demo's line-by-line moves would. The items move in id order, so two
    * settlements sharing drinks take their balance locks in the same order
    * and cannot deadlock each other.
+   *
+   * A sale first locks the drinks' Bar balances (`lockBalances`, id order)
+   * and walks the bill's lines in bill order, so a Bar short of several
+   * drinks names the first short one on the bill, as the demo's
+   * line-by-line moves do, not the first by id. The ledger's conditional
+   * decrement still guards every move.
    */
   private async moveBarStock(
     tx: Tx,
@@ -676,11 +680,35 @@ export class OrderPaymentsService {
 
     const paired = await tx.stockItem.findMany({
       where: { menuItemId: { in: [...qtyByDish.keys()] }, kind: StockKind.BAR },
-      select: { id: true, menuItemId: true },
+      select: { id: true, name: true, menuItemId: true },
     });
 
     if (paired.length !== qtyByDish.size) {
       throw new NotFoundException(STOCK_ITEM_NOT_FOUND_MESSAGE);
+    }
+
+    if (direction === 'sale') {
+      const left = await this.ledger.lockBalances(
+        tx,
+        paired.map((item) => item.id),
+        StockLocation.BAR,
+      );
+      const byDish = new Map(paired.map((item) => [item.menuItemId, item]));
+
+      for (const line of lines) {
+        const item = byDish.get(line.menuItemId);
+        if (item === undefined) continue;
+
+        const qty = left.get(item.id) ?? 0;
+
+        if (qty < line.qty) {
+          throw new ConflictException(
+            insufficientStockMessage(StockLocation.BAR, item.name),
+          );
+        }
+
+        left.set(item.id, qty - line.qty);
+      }
     }
 
     const moves = paired

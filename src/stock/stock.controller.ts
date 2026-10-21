@@ -259,15 +259,18 @@ export class StockController {
 
   @Post('counts')
   @HttpCode(HttpStatus.CREATED)
+  @IdempotentRoute()
   @ApiOperation({
     operationId: 'staffStockCount',
     summary: 'Record a stock count (stock.count)',
     description:
       'The Storekeeper counts the Store; managers count any location. Only ' +
       'the differences are written. By Q28’s default the differences are ' +
-      'valued as waste is valued: above the Owner Approval Limit only the ' +
-      'Owner may record them, and they count toward the Daily Approval ' +
-      'Limit. A repeat finds nothing left to change, so no key is needed.',
+      'valued as waste is valued (a Store count’s packs × How Many in ' +
+      'One): above the Owner Approval Limit only the Owner may record ' +
+      'them, and they count toward the Daily Approval Limit. Takes an ' +
+      'Idempotency-Key, so a retry after a lost response replays the first ' +
+      'answer instead of undoing stock moved in between.',
   })
   @ApiResponse({ status: 201, type: StockCountResponse })
   @ApiResponse({
@@ -275,8 +278,8 @@ export class StockController {
     description:
       '"Choose a stock location.", "Enter at least one counted figure.", ' +
       '"Counted figures must be whole numbers of zero or more.", ' +
-      '"Combine duplicate items into one quantity." or "Choose an item for ' +
-      'this location."',
+      '"Combine duplicate items into one quantity.", "Choose an item for ' +
+      'this location.", or a missing Idempotency-Key.',
     type: ApiErrorResponse,
   })
   @ApiResponse(UNAUTHORISED)
@@ -293,12 +296,26 @@ export class StockController {
     description: '"Stock item not found."',
     type: ApiErrorResponse,
   })
-  count(
+  async count(
     @CurrentStaff() actor: StaffPrincipal,
+    @IdempotencyKey() idempotency: IdempotencyRequest,
     @Body() request: StockCountRequest,
     @Req() httpRequest: Request,
+    @Res({ passthrough: true }) response: Response,
   ): Promise<StockCountResponse> {
-    return this.stock.count(actor, request, clientAddressOf(httpRequest));
+    this.stock.assertMayCount(actor, request.location);
+
+    const ipAddress = clientAddressOf(httpRequest);
+    const result = await this.idempotency.execute({
+      ...idempotency,
+      scope: idempotencyScope.staff(actor.id),
+      status: HttpStatus.CREATED,
+      work: (tx) => this.stock.count(tx, actor, request, ipAddress),
+    });
+
+    response.status(result.status);
+
+    return result.body;
   }
 
   @Post('adjustments')
