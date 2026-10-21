@@ -13,9 +13,11 @@ import { IdempotencyModule } from './idempotency/idempotency.module';
 import { KitchenModule } from './kitchen/kitchen.module';
 import { SweepsModule } from './internal/sweeps.module';
 import { MenuModule } from './menu/menu.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { OrdersModule } from './orders/orders.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
+import { ReceptionModule } from './reception/reception.module';
 import { SettingsModule } from './settings/settings.module';
 import { ShellModule } from './shell/shell.module';
 import { StaffModule } from './staff/staff.module';
@@ -51,6 +53,8 @@ import { StockModule } from './stock/stock.module';
     OrdersModule,
     KitchenModule,
     CashModule,
+    ReceptionModule,
+    NotificationsModule,
     ShellModule,
     SweepsModule,
   ],
