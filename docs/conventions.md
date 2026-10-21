@@ -678,6 +678,61 @@ They are here so the first card that builds it starts from the rule.
   issuance caps (C6) count those rows; deleting them the moment they
   expire would let a caller reset their own count by waiting out a code.
   A cap window longer than a day must raise the constant with it.
+- **The credential limits count the account, not the address; this
+  replaces the per-address counts in the throttling rule above**
+  (`src/auth/auth-throttle.ts`). Sign-in counts the submitted email at the
+  caller's address (10), the email from every address (30) and the address
+  over every email (100); change-password and the admin reset count the
+  signed-in account (10); refresh counts the address only (600). Every till,
+  tablet and phone in the venue reaches Cloud Run from one public address,
+  so per address the eleventh person at a shift change was refused, a guest
+  on the Wi-Fi could lock the whole building out with ten bad sign-ins, and
+  about thirty devices refreshing began signing people out. The windows
+  (15 minutes), the in-memory count (A18) and the 429 sentence are TAY's
+  and unchanged. Each route takes its decorator from `auth-throttle.ts`
+  (`SignInThrottle`, `SignedInCredentialThrottle`, `RefreshThrottle`),
+  which names all three counts the module registers, because a route under
+  the guard runs every registered count it does not skip.
+- **On change-password and the admin reset, `CncStaffGuard` runs before the
+  throttler; this replaces "the throttler is listed first" above.** The count
+  is the account the guard verified (`signedInStaffTracker`, which throws if
+  the guard has not run). Counted before the token was checked, requests
+  with no token used up the venue's attempts and blocked forced first
+  changes; counted on the token's unverified `sub`, a forged token could
+  spend a named person's attempts. A request without a valid token cannot
+  guess a password, so nothing is lost by refusing it uncounted.
+- **A refresh that carries the refresh cookie's name more than once is
+  refused (401), spends neither token, and clears both copies**
+  (`readRefreshCookie`, `clearShadowingRefreshCookies`). Any other
+  `tayxcnc.com` host can set a cookie of the same name at
+  `Domain=.tayxcnc.com`, and the browser sends the one with the longer path
+  first, so reading the first would let that host pick the session: its own
+  token, and the person at the till works as another account. The planted
+  copy is cleared at `Domain=tayxcnc.com` on every prefix of the refresh
+  paths; CNC still never sets a cookie with a `Domain`.
+- **A rotated refresh token presented again more than
+  `REFRESH_REUSE_GRACE_MS` (10 s) after its rotation ends every session of
+  its subject** (`CncTokenService.redeemRefreshToken`; `RefreshToken.rotated`).
+  The browser keeps only the newest token, so an older one comes back only
+  as a copy; without this a thief who refreshed first kept a self-renewing
+  session while the real person saw an ordinary sign-out. The grace window
+  is the two-tab race. A token revoked by a sign-out or an account change
+  (`rotated` false) is stale, not copied, and ends nothing.
+- **Correction to the staff ID card rule above: the SVG keeps the QR token
+  out of a text field, not out of the response.** Any QR library decodes it
+  from the body, so the card is a credential: both card routes answer
+  `Cache-Control: no-store`, and a Manager's or the Owner's card opens only
+  for the Owner and its holder (`MoneyControlService.mayReadCard`, "Only the
+  Owner can open a Manager or Owner Staff ID."). The demo showed every card
+  to every manager; once the attendance scan (C5-7) exists, a decoded card
+  clocks its holder in and out, and Manager and Owner accounts are the
+  Owner's (plan §5.4).
+- **Whether the refresh cookie carries `Secure` is
+  `CncConfigService.secureCookies` (`NODE_ENV=production`), never a check
+  written at a call site.** Staging runs `NODE_ENV=production` with
+  `CNC_ENV=staging`, so a check on `cncEnv` would drop `Secure` on staging
+  while every e2e suite (`NODE_ENV=test`) still passed; the getter's spec
+  fails if it moves.
 
 ## Money controls and the audit log *(from C3)*
 
@@ -769,6 +824,19 @@ They are here so the first card that builds it starts from the rule.
   form; changing the rule is moving these keys, not rewording a refusal.
   When a save changes both kinds, the money keys are checked first, as the
   demo checks them.
+- **A request body is validated before any Owner rule that depends on the
+  stored record, so a non-Owner sending a malformed Owner-only value is told
+  what is malformed (400), and the Owner sentence (403) follows once the
+  value is well formed.** This is a deliberate change of order from the
+  demo, whose `settings.save` and `staff.save` check the Owner first. The
+  ValidationPipe runs before any service, the settings rule depends on the
+  row's current values (an unchanged value passes), and running Owner rules
+  on an unvalidated body in a guard would copy each rule outside the
+  transaction that holds the row. Only a hand-made request sees the
+  difference: the demo's screens do not offer a non-Owner the Owner-only
+  fields. "The money keys are checked first" above holds for well-formed
+  input; `test/staff-demo-ports.e2e-spec.ts` pins the order. Role checks
+  (`@Roles`) are guards and still come first, as `requireRole` does.
 
 ## CORS
 
