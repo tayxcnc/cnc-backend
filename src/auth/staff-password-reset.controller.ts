@@ -15,11 +15,10 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
 import { clientAddressOf } from '../common/client-address';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
-import { AUTH_ATTEMPT_LIMIT, AUTH_ATTEMPT_WINDOW_MS } from './auth-throttle';
+import { SignedInCredentialThrottle } from './auth-throttle';
 import { CurrentStaff } from './decorators/current-staff.decorator';
 import { Roles } from './decorators/roles.decorator';
 import { TemporaryPasswordResponse } from './dto/temporary-password.response';
@@ -44,12 +43,11 @@ export class StaffPasswordResetController {
 
   @Post(':id/reset-password')
   @HttpCode(HttpStatus.OK)
-  // Throttler first, then the staff guard: counted before the token is
-  // looked at, like change-password.
-  @UseGuards(ClientAddressThrottlerGuard, CncStaffGuard)
-  @Throttle({
-    default: { limit: AUTH_ATTEMPT_LIMIT, ttl: AUTH_ATTEMPT_WINDOW_MS },
-  })
+  // The staff guard first, then the throttler, which counts the manager the
+  // guard verified, like change-password: one manager's resets never use up
+  // another's, and a request without a valid token is never counted.
+  @UseGuards(CncStaffGuard, ClientAddressThrottlerGuard)
+  @SignedInCredentialThrottle()
   @Roles()
   @ApiParam({
     name: 'id',
@@ -65,7 +63,7 @@ export class StaffPasswordResetController {
       'password stops working at once. The temporary password is returned ' +
       'once, to hand over in person; it cannot be read again. Use ' +
       'change-password for your own account. Ten resets per fifteen ' +
-      'minutes per address.',
+      'minutes per manager.',
   })
   @ApiResponse({
     status: 200,
@@ -94,7 +92,7 @@ export class StaffPasswordResetController {
   })
   @ApiResponse({
     status: 429,
-    description: 'Too many resets from this address in fifteen minutes.',
+    description: 'Too many resets by this manager in fifteen minutes.',
     type: ApiErrorResponse,
   })
   resetPassword(

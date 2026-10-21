@@ -9,6 +9,7 @@ import { MoneyControlModule } from '../money-control/money-control.module';
 import {
   AUTH_ATTEMPT_LIMIT,
   AUTH_ATTEMPT_WINDOW_MS,
+  THROTTLERS,
   TOO_MANY_ATTEMPTS_MESSAGE,
 } from './auth-throttle';
 import { CncTokenService } from './cnc-token.service';
@@ -55,8 +56,15 @@ import {
         verifyOptions: { algorithms: ['HS256'] },
       }),
     }),
+    // Every named count, at the tightest number; each route's decorator in
+    // `auth-throttle.ts` sets its own numbers and skips the counts it does
+    // not use.
     ThrottlerModule.forRoot({
-      throttlers: [{ limit: AUTH_ATTEMPT_LIMIT, ttl: AUTH_ATTEMPT_WINDOW_MS }],
+      throttlers: Object.values(THROTTLERS).map((name) => ({
+        name,
+        limit: AUTH_ATTEMPT_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+      })),
       errorMessage: TOO_MANY_ATTEMPTS_MESSAGE,
     }),
   ],

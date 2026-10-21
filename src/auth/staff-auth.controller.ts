@@ -8,6 +8,7 @@ import {
   Post,
   Req,
   Res,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -16,17 +17,17 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { clientAddressOf } from '../common/client-address';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { CncConfigService } from '../config/cnc.config';
 import {
-  AUTH_ATTEMPT_LIMIT,
-  AUTH_ATTEMPT_WINDOW_MS,
-  REFRESH_ATTEMPT_LIMIT,
+  RefreshThrottle,
+  SignedInCredentialThrottle,
+  SignInThrottle,
 } from './auth-throttle';
+import { INVALID_REFRESH_TOKEN_MESSAGE } from './cnc-token.service';
 import { CurrentStaff } from './decorators/current-staff.decorator';
 import { PasswordChangeExempt } from './decorators/password-change-exempt.decorator';
 import { ChangePasswordRequest } from './dto/change-password.request';
@@ -35,6 +36,7 @@ import { StaffSignInRequest } from './dto/staff-sign-in.request';
 import { CncStaffGuard } from './guards/cnc-staff.guard';
 import {
   clearRefreshCookie,
+  clearShadowingRefreshCookies,
   isJsonContentType,
   readRefreshCookie,
   setRefreshCookie,
@@ -51,13 +53,16 @@ export const NO_STAFF_REFRESH_COOKIE_MESSAGE =
 export const REFRESH_NEEDS_JSON_MESSAGE =
   'A refresh from the cookie must be sent with Content-Type: application/json.';
 
-const TOO_MANY = {
-  status: 429,
-  description:
-    'Too many attempts from this address in fifteen minutes, counted per ' +
-    'route. The body says to wait and try again.',
-  type: ApiErrorResponse,
-} as const;
+/** The 429 of a throttled route; `counted` says what the route counts. */
+function tooMany(counted: string) {
+  return {
+    status: 429,
+    description:
+      `Too many attempts in fifteen minutes (${counted}). The body says to ` +
+      'wait and try again.',
+    type: ApiErrorResponse,
+  } as const;
+}
 
 /**
  * The staff session (plan §5.3): sign-in, refresh, sign-out and
@@ -82,15 +87,13 @@ export class StaffAuthController {
 
   /** `Secure` on every built container, staging included (A16). */
   private get isProduction(): boolean {
-    return this.config.nodeEnv === 'production';
+    return this.config.secureCookies;
   }
 
   @Post('sign-in')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ClientAddressThrottlerGuard)
-  @Throttle({
-    default: { limit: AUTH_ATTEMPT_LIMIT, ttl: AUTH_ATTEMPT_WINDOW_MS },
-  })
+  @SignInThrottle()
   @ApiOperation({
     operationId: 'staffSignIn',
     summary: 'Sign in with a work email and password',
@@ -101,7 +104,8 @@ export class StaffAuthController {
       'wrong password and a deactivated account all answer the identical ' +
       '401. When `staff.mustChangePassword` is true, go straight to ' +
       'change-password: every other staff route answers 403 until then. Ten ' +
-      'attempts per fifteen minutes per address.',
+      'attempts per fifteen minutes per email from one address, thirty per ' +
+      'email from all addresses, and a hundred per address over all emails.',
   })
   @ApiResponse({
     status: 200,
@@ -120,7 +124,7 @@ export class StaffAuthController {
       'password and a deactivated account.',
     type: ApiErrorResponse,
   })
-  @ApiResponse(TOO_MANY)
+  @ApiResponse(tooMany('per email at one address, per email, and per address'))
   async signIn(
     @Body() request: StaffSignInRequest,
     @Req() httpRequest: Request,
@@ -144,12 +148,10 @@ export class StaffAuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   // Unauthenticated and state-changing (it spends a token), so it is
-  // counted, at three times the credential limit: a refused refresh signs a
-  // real person out.
+  // counted, per address, at a ceiling a venue full of devices stays far
+  // below: a refused refresh signs a real person out.
   @UseGuards(ClientAddressThrottlerGuard)
-  @Throttle({
-    default: { limit: REFRESH_ATTEMPT_LIMIT, ttl: AUTH_ATTEMPT_WINDOW_MS },
-  })
+  @RefreshThrottle()
   @ApiOperation({
     operationId: 'refreshStaffSession',
     summary: 'Rotate the staff refresh cookie',
@@ -157,8 +159,11 @@ export class StaffAuthController {
       'Reads the `cnc_staff_refresh_token` cookie and no other (a TAY cookie ' +
       'is ignored), spends it, writes its replacement to the cookie, and ' +
       'returns a new access token with the staff summary. Each token works ' +
-      'once. Must be sent with `Content-Type: application/json` (a CSRF ' +
-      'defence: it forces a preflight). A deactivated account is refused.',
+      'once; a used token presented again after a few seconds ends every ' +
+      'session the account holds (a copy is being replayed). Must be sent ' +
+      'with `Content-Type: application/json` (a CSRF defence: it forces a ' +
+      'preflight). A deactivated account is refused, and so is a request ' +
+      'carrying the cookie name twice.',
   })
   @ApiResponse({
     status: 200,
@@ -176,7 +181,9 @@ export class StaffAuthController {
     status: 401,
     description:
       'The token is unknown, expired, already used, or belongs to a ' +
-      'deactivated account. One answer for all of them.',
+      'deactivated account; or the cookie name came twice, when neither ' +
+      'token is spent and both copies are cleared. One answer for all of ' +
+      'them.',
     type: ApiErrorResponse,
   })
   @ApiResponse({
@@ -185,14 +192,14 @@ export class StaffAuthController {
       'Sent without `Content-Type: application/json`. The token is not spent.',
     type: ApiErrorResponse,
   })
-  @ApiResponse(TOO_MANY)
+  @ApiResponse(tooMany('per address'))
   async refresh(
     @Req() httpRequest: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<StaffAuthResponse> {
     const presented = readRefreshCookie(httpRequest, STAFF_REFRESH_COOKIE);
 
-    if (presented === undefined) {
+    if (presented.kind === 'absent') {
       throw new BadRequestException(NO_STAFF_REFRESH_COOKIE_MESSAGE);
     }
 
@@ -200,7 +207,20 @@ export class StaffAuthController {
       throw new ForbiddenException(REFRESH_NEEDS_JSON_MESSAGE);
     }
 
-    const session = await this.auth.refresh(presented);
+    // Two cookies of this name: one was planted by another tayxcnc.com host
+    // (`readRefreshCookie`). Neither is spent, both are cleared, and the
+    // person signs in again on a clean jar.
+    if (presented.kind === 'shadowed') {
+      clearShadowingRefreshCookies(
+        response,
+        STAFF_REFRESH_COOKIE,
+        this.isProduction,
+      );
+
+      throw new UnauthorizedException(INVALID_REFRESH_TOKEN_MESSAGE);
+    }
+
+    const session = await this.auth.refresh(presented.token);
 
     setRefreshCookie(
       response,
@@ -252,13 +272,12 @@ export class StaffAuthController {
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
   @PasswordChangeExempt()
-  // The throttler runs first, so a burst is counted and refused before the
-  // token is looked at: the route takes a current password, so it is a
-  // place to guess one.
-  @UseGuards(ClientAddressThrottlerGuard, CncStaffGuard)
-  @Throttle({
-    default: { limit: AUTH_ATTEMPT_LIMIT, ttl: AUTH_ATTEMPT_WINDOW_MS },
-  })
+  // The staff guard runs first and the throttler counts the account it
+  // verified: the route takes a current password, so it is a place to guess
+  // one, and only a valid token's holder can guess. Counted by address, a
+  // burst without a token used up the whole venue's attempts.
+  @UseGuards(CncStaffGuard, ClientAddressThrottlerGuard)
+  @SignedInCredentialThrottle()
   @ApiBearerAuth()
   @ApiOperation({
     operationId: 'changeStaffPassword',
@@ -269,7 +288,7 @@ export class StaffAuthController {
       'fresh one: a new access token in the body and a new ' +
       '`cnc_staff_refresh_token` cookie, so the caller stays signed in. ' +
       'Allowed while a password change is pending (it is the route that ' +
-      'clears it). Ten attempts per fifteen minutes per address.',
+      'clears it). Ten attempts per fifteen minutes per account.',
   })
   @ApiResponse({
     status: 200,
@@ -295,7 +314,7 @@ export class StaffAuthController {
     description: 'A customer token, or a deactivated staff account.',
     type: ApiErrorResponse,
   })
-  @ApiResponse(TOO_MANY)
+  @ApiResponse(tooMany('per account'))
   async changePassword(
     @CurrentStaff() actor: StaffPrincipal,
     @Body() request: ChangePasswordRequest,

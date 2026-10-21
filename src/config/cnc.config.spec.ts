@@ -374,3 +374,36 @@ describe('getters', () => {
     expect(config.contactEmail).toBeUndefined();
   });
 });
+
+describe('secureCookies (A16)', () => {
+  const STAGING: Record<string, string> = {
+    CNC_ENV: 'staging',
+    CNC_JWT_SECRET: SECRET,
+    CNC_SWEEP_TOKEN: 'b'.repeat(64),
+    CNC_CORS_ORIGINS: 'https://cnc-staging.tayxcnc.com',
+  };
+
+  // Staging is a built container: NODE_ENV=production, CNC_ENV=staging. A
+  // getter that read CNC_ENV would answer false here and every e2e suite,
+  // which runs with NODE_ENV=test, would still pass.
+  it('is on in a built container on staging', () => {
+    environment(STAGING);
+    process.env.NODE_ENV = 'production';
+
+    expect(new CncConfigService().secureCookies).toBe(true);
+  });
+
+  it('is on in a built container in production', () => {
+    environment(PRODUCTION);
+    process.env.NODE_ENV = 'production';
+
+    expect(new CncConfigService().secureCookies).toBe(true);
+  });
+
+  it.each(['test', 'development'])('is off with NODE_ENV=%s', (nodeEnv) => {
+    environment({ CNC_JWT_SECRET: SECRET });
+    process.env.NODE_ENV = nodeEnv;
+
+    expect(new CncConfigService().secureCookies).toBe(false);
+  });
+});

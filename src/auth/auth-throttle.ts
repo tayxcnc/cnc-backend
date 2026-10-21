@@ -1,37 +1,80 @@
-/**
- * Rate limits for the staff credential routes, copied from TAY's
- * `auth-throttle.ts` (plan §11: ten per fifteen minutes; refresh thirty).
- *
- * Counted per client address (`clientAddressOf`) and per route, in memory in
- * each instance (plan A18: no Redis at launch). Two instances at most means a
- * caller gets at most twice the number below, which is still a number and
- * not "unlimited".
- *
- * Applied per route with `@UseGuards(ClientAddressThrottlerGuard)` and
- * `@Throttle`, never as an APP_GUARD: a global guard would put every read in
- * the staff app under the sign-in limit, silently, as a side effect of
- * protecting sign-in.
- */
+import { applyDecorators } from '@nestjs/common';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
+import { clientAddressOf } from '../common/client-address';
+import { normaliseEmail } from '../common/normalise-email';
+import { STAFF_PRINCIPAL_KEY, type StaffRequest } from './staff-principal';
 
 /**
- * Attempts per window, per client address, on sign-in, change-password and
- * the admin password reset. Generous enough for a person mistyping three
- * times; tight enough that a credential-stuffing run from one address gets
- * ten guesses, not ten thousand.
+ * Rate limits for the staff credential routes. TAY's numbers (plan §11: ten
+ * per fifteen minutes) and TAY's in-memory counting (plan A18: no Redis at
+ * launch), **counted by account rather than by address**.
+ *
+ * TAY counts every credential route per client address, which suits TAY's
+ * few staff. CNC's staff work in one building, and every till, tablet,
+ * kitchen screen and staff phone on the venue's network reaches Cloud Run
+ * from one public address. Counted per address, the eleventh person signing
+ * in at a shift change was refused, and anyone on the guest Wi-Fi could send
+ * ten bad sign-ins and lock every staff member in the building out, again
+ * and again. So each route counts what it protects:
+ *
+ * - **Sign-in** counts the submitted email at the caller's address (ten: a
+ *   person mistyping, never their colleagues), the email from anywhere
+ *   (thirty: a guessing run spread across addresses, or one that can choose
+ *   its address, still meets a number), and the address over all emails
+ *   (a hundred: a shift change of thirty people with typos is far below it,
+ *   while a run spraying one password across every account, or spending the
+ *   server's argon2 work on made-up emails, is not).
+ * - **Change-password and the admin reset** count the signed-in account,
+ *   after `CncStaffGuard` has verified who that is: ten per person, from any
+ *   address. A request without a valid token is refused before it is
+ *   counted, so nobody can spend another person's attempts.
+ * - **Refresh** counts the address only, at a ceiling far above what a venue
+ *   of devices produces (each refreshes about every fifteen minutes, plus
+ *   reloads), because a refused refresh signs a real person out. The token
+ *   is 256 random bits and single-use, so there is nothing to guess; the
+ *   ceiling only keeps an unauthenticated, state-changing route a number.
+ *
+ * Counts are per route and per instance. Two instances at most means a
+ * caller gets at most twice each number, which is still a number.
+ *
+ * Applied per route with `@UseGuards(ClientAddressThrottlerGuard)` and one
+ * of the decorators below, never as an APP_GUARD: a global guard would put
+ * every staff read under the sign-in limit, silently.
  */
-export const AUTH_ATTEMPT_LIMIT = 10;
 
-/** The window, in milliseconds. Fifteen minutes. */
+/** The window every count below runs over, in milliseconds. Fifteen minutes. */
 export const AUTH_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 
 /**
- * Refreshes per window, per client address. A refused refresh signs a real
- * person out, so this is three times the credential limit: a till with
- * several tabs, or a tablet waking from sleep, refreshes a handful of times
- * in a minute. It still turns an unauthenticated, state-changing route from
- * unlimited into a number (TAY's Phase 4 brief §6.2).
+ * Attempts per account in the window: sign-in per email at one address,
+ * change-password and the admin reset per signed-in account. Generous
+ * enough for a person mistyping three times; tight enough that guessing one
+ * account's password gets ten tries, not ten thousand.
  */
-export const REFRESH_ATTEMPT_LIMIT = 30;
+export const AUTH_ATTEMPT_LIMIT = 10;
+
+/** Sign-ins per email from every address together, in the window. */
+export const SIGN_IN_ACCOUNT_LIMIT = 30;
+
+/** Sign-ins per address over every email, in the window. */
+export const SIGN_IN_ADDRESS_LIMIT = 100;
+
+/** Refreshes per address in the window. */
+export const REFRESH_ATTEMPT_LIMIT = 600;
+
+/**
+ * The named counts `ThrottlerModule` registers (`cnc-auth.module.ts`). Every
+ * route under `ClientAddressThrottlerGuard` runs every one of them unless it
+ * skips it, so each decorator below names all three.
+ */
+export const THROTTLERS = {
+  /** Keyed by the client address. */
+  address: 'address',
+  /** Keyed by the account, at the address for sign-in. */
+  account: 'account',
+  /** Keyed by the submitted email alone. */
+  accountAnywhere: 'accountAnywhere',
+} as const;
 
 /**
  * The refusal every throttled route answers with (429). A fixed sentence,
@@ -40,3 +83,110 @@ export const REFRESH_ATTEMPT_LIMIT = 30;
  */
 export const TOO_MANY_ATTEMPTS_MESSAGE =
   'Too many attempts. Wait a few minutes and try again.';
+
+/**
+ * The submitted sign-in email, as the sign-in DTO will normalise it.
+ *
+ * Read from the raw body, because the throttler runs before the validation
+ * pipe. Anything that is not a string counts under one empty key, which is
+ * a 400 anyway.
+ */
+function submittedEmail(req: Record<string, unknown>): string {
+  const body = req.body;
+  const email =
+    typeof body === 'object' && body !== null
+      ? normaliseEmail((body as Record<string, unknown>).email)
+      : undefined;
+
+  return typeof email === 'string' ? email : '';
+}
+
+/** Sign-in, per email at the caller's address. */
+export function signInAtAddressTracker(req: Record<string, unknown>): string {
+  return `${clientAddressOf(req)}|${submittedEmail(req)}`;
+}
+
+/** Sign-in, per email from anywhere. */
+export function signInAnywhereTracker(req: Record<string, unknown>): string {
+  return submittedEmail(req);
+}
+
+/**
+ * The signed-in account, as `CncStaffGuard` verified it.
+ *
+ * Throws when the guard has not run, which is a route listing the throttler
+ * before `CncStaffGuard`: counting on the token's unverified claim would let
+ * anyone spend a named person's attempts with a forged token, and counting
+ * everyone in one bucket would bring back the venue-wide lockout. The e2e
+ * suite runs each such route, so the mistake cannot ship quietly.
+ */
+export function signedInStaffTracker(req: Record<string, unknown>): string {
+  const principal = (req as StaffRequest)[STAFF_PRINCIPAL_KEY];
+
+  if (principal === undefined) {
+    throw new Error(
+      'signedInStaffTracker ran before CncStaffGuard. List the throttler ' +
+        'after the staff guard on this route.',
+    );
+  }
+
+  return principal.id;
+}
+
+/** `POST /auth/staff/sign-in`. */
+export function SignInThrottle(): MethodDecorator {
+  return applyDecorators(
+    Throttle({
+      [THROTTLERS.address]: {
+        limit: SIGN_IN_ADDRESS_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+      },
+      [THROTTLERS.account]: {
+        limit: AUTH_ATTEMPT_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+        getTracker: signInAtAddressTracker,
+      },
+      [THROTTLERS.accountAnywhere]: {
+        limit: SIGN_IN_ACCOUNT_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+        getTracker: signInAnywhereTracker,
+      },
+    }),
+  );
+}
+
+/**
+ * Change-password and the admin reset. The route lists
+ * `@UseGuards(CncStaffGuard, ClientAddressThrottlerGuard)`, in that order.
+ */
+export function SignedInCredentialThrottle(): MethodDecorator {
+  return applyDecorators(
+    Throttle({
+      [THROTTLERS.account]: {
+        limit: AUTH_ATTEMPT_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+        getTracker: signedInStaffTracker,
+      },
+    }),
+    SkipThrottle({
+      [THROTTLERS.address]: true,
+      [THROTTLERS.accountAnywhere]: true,
+    }),
+  );
+}
+
+/** `POST /auth/staff/refresh`. */
+export function RefreshThrottle(): MethodDecorator {
+  return applyDecorators(
+    Throttle({
+      [THROTTLERS.address]: {
+        limit: REFRESH_ATTEMPT_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+      },
+    }),
+    SkipThrottle({
+      [THROTTLERS.account]: true,
+      [THROTTLERS.accountAnywhere]: true,
+    }),
+  );
+}

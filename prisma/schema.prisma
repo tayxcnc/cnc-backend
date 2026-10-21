@@ -533,6 +533,11 @@ model OtpCode {
 /// `tokenHash` is `sha256(rawToken)` as hex, not argon2: the raw token is 256
 /// random bits with nothing to brute-force, and a deterministic digest is
 /// itself the lookup key. Single-use and rotated on every refresh.
+///
+/// `rotated` is true only on a row spent by a refresh, never on one revoked
+/// by a sign-out, a password change or an account change. A rotated token
+/// presented again is a copy being replayed (reuse detection,
+/// `CncTokenService.redeemRefreshToken`); a signed-out one is just stale.
 model RefreshToken {
   id          String      @id @default(cuid())
   createdAt   DateTime    @default(now())
@@ -542,6 +547,7 @@ model RefreshToken {
   subjectType SubjectType
   expiresAt   DateTime
   revokedAt   DateTime?
+  rotated     Boolean     @default(false)
 
   @@index([subjectId, subjectType])
   @@index([expiresAt])

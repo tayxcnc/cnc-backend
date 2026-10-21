@@ -50,9 +50,24 @@ export function readCookie(
   header: string | undefined,
   name: string,
 ): string | undefined {
+  return readCookieValues(header, name)[0];
+}
+
+/**
+ * Every value the `Cookie` header carries under the exact name, in header
+ * order. A browser sends one pair per matching cookie, so two pairs of one
+ * name are two different cookies, set with different `Domain` or `Path`
+ * attributes.
+ */
+export function readCookieValues(
+  header: string | undefined,
+  name: string,
+): string[] {
   if (header === undefined || header === '') {
-    return undefined;
+    return [];
   }
+
+  const values: string[] = [];
 
   for (const pair of header.split(';')) {
     const separator = pair.indexOf('=');
@@ -68,22 +83,67 @@ export function readCookie(
     const value = pair.slice(separator + 1).trim();
 
     try {
-      return decodeURIComponent(value);
+      values.push(decodeURIComponent(value));
     } catch {
-      return value;
+      values.push(value);
     }
   }
 
-  return undefined;
+  return values;
 }
 
-/** The refresh token from the named cookie, if the request carries one. */
+/** What a request carries under a refresh cookie's name. */
+export type PresentedRefreshCookie =
+  { kind: 'absent' } | { kind: 'one'; token: string } | { kind: 'shadowed' };
+
+/**
+ * The refresh token from the named cookie, or `shadowed` when the request
+ * carries the name more than once.
+ *
+ * CNC's cookie is host-only, but any other `tayxcnc.com` host (TAY's site
+ * and API, the entrance, or a script injected into one of them) can set a
+ * cookie of the same name with `Domain=.tayxcnc.com`, and the browser sends
+ * both. It sends the one with the longer `Path` first, so taking the first
+ * would let that host choose the token: its own valid one, and the person at
+ * the till then works as somebody else's account, or junk, and they are
+ * signed out on every refresh. Two of one name cannot be told apart from
+ * here, so neither is spent; the caller refuses and clears them
+ * (`clearShadowingRefreshCookies`).
+ */
 export function readRefreshCookie(
   request: Request,
   name: RefreshCookieName,
-): string | undefined {
-  return readCookie(request.headers.cookie, name);
+): PresentedRefreshCookie {
+  const values = readCookieValues(request.headers.cookie, name);
+
+  if (values.length === 0) return { kind: 'absent' };
+  if (values.length === 1) return { kind: 'one', token: values[0] };
+
+  return { kind: 'shadowed' };
 }
+
+/**
+ * The registrable domain every CNC and TAY host shares. Used only to clear
+ * a cookie another host planted at that scope; CNC never sets a cookie with
+ * a `Domain` (A16).
+ */
+export const SHARED_PARENT_DOMAIN = 'tayxcnc.com';
+
+/**
+ * The paths a planted cookie could carry and still be sent to a refresh
+ * route: every prefix of `/api/v1/auth/staff/refresh`. A browser deletes a
+ * cookie only when the clear names its exact domain and path, and the path
+ * a planted cookie was set with is not visible from here, so each is cleared.
+ */
+export const SHADOWING_COOKIE_PATHS = [
+  '/',
+  '/api',
+  '/api/v1',
+  REFRESH_COOKIE_PATH,
+  `${REFRESH_COOKIE_PATH}/staff`,
+  `${REFRESH_COOKIE_PATH}/staff/refresh`,
+  `${REFRESH_COOKIE_PATH}/refresh`,
+] as const;
 
 /**
  * Whether a request's `Content-Type` is JSON: the CSRF check every refresh by
@@ -168,4 +228,30 @@ export function clearRefreshCookie(
   isProduction: boolean,
 ): void {
   response.clearCookie(name, refreshCookieAttributes(isProduction));
+}
+
+/**
+ * Clear every copy of a shadowed refresh cookie (`readRefreshCookie`): CNC's
+ * own host-only one, with the attributes it was set with, and a planted one
+ * at `Domain=tayxcnc.com` on each path it could have been set with.
+ *
+ * Best effort for the planted copy: a cookie set on a path not listed here
+ * survives, and the next refresh is refused again, which is still never a
+ * session for the wrong account. A browser ignores the `Domain` clears on a
+ * host outside `tayxcnc.com` (local development), which is harmless.
+ */
+export function clearShadowingRefreshCookies(
+  response: Response,
+  name: RefreshCookieName,
+  isProduction: boolean,
+): void {
+  clearRefreshCookie(response, name, isProduction);
+
+  for (const path of SHADOWING_COOKIE_PATHS) {
+    response.clearCookie(name, {
+      ...refreshCookieAttributes(isProduction),
+      domain: SHARED_PARENT_DOMAIN,
+      path,
+    });
+  }
 }

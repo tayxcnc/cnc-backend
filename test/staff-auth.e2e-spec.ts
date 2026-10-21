@@ -4,8 +4,18 @@ import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { StaffRole } from '../generated/cnc-client';
-import { TOO_MANY_ATTEMPTS_MESSAGE } from '../src/auth/auth-throttle';
-import { INVALID_REFRESH_TOKEN_MESSAGE } from '../src/auth/cnc-token.service';
+import {
+  AUTH_ATTEMPT_LIMIT,
+  REFRESH_ATTEMPT_LIMIT,
+  SIGN_IN_ACCOUNT_LIMIT,
+  SIGN_IN_ADDRESS_LIMIT,
+  TOO_MANY_ATTEMPTS_MESSAGE,
+} from '../src/auth/auth-throttle';
+import {
+  CncTokenService,
+  INVALID_REFRESH_TOKEN_MESSAGE,
+  REFRESH_REUSE_GRACE_MS,
+} from '../src/auth/cnc-token.service';
 import {
   ACCOUNT_GONE_MESSAGE,
   CUSTOMER_TOKEN_ON_STAFF_ROUTE_MESSAGE,
@@ -239,21 +249,80 @@ describe('staff auth (e2e)', () => {
       );
     });
 
-    it('allows ten attempts per address in the window, then answers 429', async () => {
+    it('allows ten attempts per email at one address in the window, then answers 429', async () => {
       const account = await createStaff(StaffRole.KITCHEN);
+      const colleague = await createStaff(StaffRole.KITCHEN);
       const from = address();
 
-      for (let attempt = 1; attempt <= 10; attempt++) {
+      for (let attempt = 1; attempt <= AUTH_ATTEMPT_LIMIT; attempt++) {
         await signInCall(account.email, 'wrong-password', from).expect(401);
       }
 
-      const refused = await signInCall(account.email, account.password, from);
+      // Counted on the email as the DTO normalises it.
+      const refused = await signInCall(
+        `  ${account.email.toUpperCase()} `,
+        account.password,
+        from,
+      );
       expect(refused.status).toBe(429);
       expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
 
-      // Another address has its own count, and the right password works.
+      // A colleague at the same address is not held up by those attempts,
+      // and another address has its own count for the first account.
+      await signInCall(colleague.email, colleague.password, from).expect(200);
       await signInCall(account.email, account.password, address()).expect(200);
     });
+
+    it('lets a whole shift sign in from one venue address', async () => {
+      // Every device in the building reaches the API from the venue's one
+      // public address. Counted per address, the eleventh was refused.
+      const from = address();
+      const shift = await Promise.all(
+        Array.from({ length: AUTH_ATTEMPT_LIMIT + 5 }, () =>
+          createStaff(StaffRole.WAITER),
+        ),
+      );
+
+      for (const person of shift) {
+        await signInCall(person.email, 'mistyped', from).expect(401);
+        await signInCall(person.email, person.password, from).expect(200);
+      }
+    }, 120_000);
+
+    it('caps one email across addresses, so moving address does not buy more guesses', async () => {
+      const account = await createStaff(StaffRole.BARTENDER);
+
+      for (let attempt = 1; attempt <= SIGN_IN_ACCOUNT_LIMIT; attempt++) {
+        await signInCall(account.email, 'wrong-password', address()).expect(
+          401,
+        );
+      }
+
+      const refused = await signInCall(
+        account.email,
+        account.password,
+        address(),
+      );
+      expect(refused.status).toBe(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+    });
+
+    it('caps one address across every email', async () => {
+      const from = address();
+
+      for (let attempt = 1; attempt <= SIGN_IN_ADDRESS_LIMIT; attempt++) {
+        await signInCall(
+          `spray-${randomUUID()}@example.com`,
+          'Summer2026!',
+          from,
+        ).expect(401);
+      }
+
+      const account = await createStaff(StaffRole.RECEPTION);
+      const refused = await signInCall(account.email, account.password, from);
+      expect(refused.status).toBe(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+    }, 120_000);
   });
 
   describe('refresh', () => {
@@ -319,6 +388,29 @@ describe('staff auth (e2e)', () => {
       await refreshCall(cookie).expect(200);
     });
 
+    it('counts refreshes per address, far above what a venue of devices sends', async () => {
+      // Thirty was the old ceiling: about thirty devices refreshing every
+      // fifteen minutes from the venue's one address, plus reloads, began
+      // signing people out.
+      expect(REFRESH_ATTEMPT_LIMIT).toBeGreaterThanOrEqual(300);
+
+      const from = address();
+      const noCookie = () =>
+        request(server())
+          .post('/api/v1/auth/staff/refresh')
+          .set('X-Forwarded-For', from)
+          .set('Content-Type', 'application/json')
+          .send({});
+
+      for (let attempt = 1; attempt <= REFRESH_ATTEMPT_LIMIT; attempt++) {
+        await noCookie().expect(400);
+      }
+
+      const refused = await noCookie();
+      expect(refused.status).toBe(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+    }, 120_000);
+
     it('answers 400 with no staff cookie, and an unknown token 401', async () => {
       const missing = await request(server())
         .post('/api/v1/auth/staff/refresh')
@@ -343,6 +435,98 @@ describe('staff auth (e2e)', () => {
       expect(response.status).toBeLessThan(300);
       expect(response.headers['access-control-allow-origin']).toBe(ALLOWED);
       expect(response.headers['access-control-allow-credentials']).toBe('true');
+    });
+
+    /** Move a spent token's revocation back past the reuse grace window. */
+    async function spentLongAgo(cookie: string): Promise<void> {
+      await prisma.refreshToken.update({
+        where: { tokenHash: CncTokenService.digest(cookie) },
+        data: {
+          revokedAt: new Date(Date.now() - REFRESH_REUSE_GRACE_MS - 60_000),
+        },
+      });
+    }
+
+    it('ends every session when a rotated token comes back after the grace window', async () => {
+      const account = await createStaff(StaffRole.CASHIER);
+      const stolen = await signIn(account);
+      const other = await signIn(account);
+
+      // The thief refreshes first; the copy they hold is now spent.
+      const thiefs = refreshCookieOf(
+        await refreshCall(stolen.cookie).expect(200),
+      );
+      await spentLongAgo(stolen.cookie);
+
+      // The real client presents the same token later: refused, and every
+      // chain the account holds ends with it, the thief's included.
+      const replayed = await refreshCall(stolen.cookie).expect(401);
+      expect(messageOf(replayed)).toBe(INVALID_REFRESH_TOKEN_MESSAGE);
+
+      await refreshCall(thiefs).expect(401);
+      await refreshCall(other.cookie).expect(401);
+
+      // Signing in again starts a session that works.
+      const fresh = await signIn(account);
+      await refreshCall(fresh.cookie).expect(200);
+    });
+
+    it('ends nothing when a signed-out token comes back', async () => {
+      const account = await createStaff(StaffRole.CASHIER);
+      const before = await signIn(account);
+
+      await signOutCall(before.accessToken).expect(204);
+      await spentLongAgo(before.cookie);
+
+      const after = await signIn(account);
+
+      // Revoked by the sign-out, not by a refresh: stale, not copied.
+      await refreshCall(before.cookie).expect(401);
+      await refreshCall(after.cookie).expect(200);
+    });
+
+    it('refuses a cookie name sent twice, spends neither, and clears both scopes', async () => {
+      const victim = await createStaff(StaffRole.WAITER);
+      const planter = await createStaff(StaffRole.WAITER);
+      const mine = await signIn(victim);
+      const planted = await signIn(planter);
+
+      // What a browser sends after another tayxcnc.com host set the same
+      // name at Domain=.tayxcnc.com on a longer path: that one first.
+      const response = await request(server())
+        .post('/api/v1/auth/staff/refresh')
+        .set('X-Forwarded-For', address())
+        .set(
+          'Cookie',
+          `cnc_staff_refresh_token=${planted.cookie}; ` +
+            `cnc_staff_refresh_token=${mine.cookie}`,
+        )
+        .set('Content-Type', 'application/json')
+        .send({})
+        .expect(401);
+      expect(messageOf(response)).toBe(INVALID_REFRESH_TOKEN_MESSAGE);
+
+      const lines = (response.headers['set-cookie'] as unknown as string[])
+        .filter((line) => line.startsWith('cnc_staff_refresh_token=;'))
+        .map((line) => line.toLowerCase());
+      expect(
+        lines.some(
+          (line) =>
+            !line.includes('domain=') && line.includes('path=/api/v1/auth;'),
+        ),
+      ).toBe(true);
+      expect(
+        lines.some(
+          (line) =>
+            line.includes('domain=tayxcnc.com') &&
+            line.includes('path=/api/v1/auth/staff;'),
+        ),
+      ).toBe(true);
+
+      // Neither token was spent: each still works on its own.
+      const own = await refreshCall(mine.cookie).expect(200);
+      expect((own.body as { staff: { id: string } }).staff.id).toBe(victim.id);
+      await refreshCall(planted.cookie).expect(200);
     });
   });
 
@@ -449,6 +633,59 @@ describe('staff auth (e2e)', () => {
       // None of them changed anything.
       await signInCall(account.email, account.password).expect(200);
     });
+
+    it('allows ten attempts per account from any address, then answers 429', async () => {
+      const account = await createStaff(StaffRole.KITCHEN);
+      const colleague = await createStaff(StaffRole.KITCHEN, {
+        mustChangePassword: true,
+      });
+      const { accessToken } = await signIn(account);
+      const from = address();
+
+      for (let attempt = 1; attempt <= AUTH_ATTEMPT_LIMIT; attempt++) {
+        await changePasswordCall(
+          accessToken,
+          {
+            currentPassword: `${account.password}x`,
+            newPassword: `new-${randomUUID()}`,
+          },
+          address(),
+        ).expect(401);
+      }
+
+      // Moving address does not buy more guesses at this account.
+      const refused = await changePasswordCall(
+        accessToken,
+        {
+          currentPassword: account.password,
+          newPassword: `new-${randomUUID()}`,
+        },
+        address(),
+      );
+      expect(refused.status).toBe(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+
+      // Requests with no valid token, from the same address, are refused
+      // before they are counted, so a colleague's forced first change there
+      // still goes through.
+      for (let attempt = 1; attempt <= AUTH_ATTEMPT_LIMIT + 1; attempt++) {
+        await changePasswordCall(
+          'not-a-token',
+          { currentPassword: 'x', newPassword: `new-${randomUUID()}` },
+          from,
+        ).expect(401);
+      }
+
+      const forced = await signIn(colleague);
+      await changePasswordCall(
+        forced.accessToken,
+        {
+          currentPassword: colleague.password,
+          newPassword: `new-${randomUUID()}`,
+        },
+        from,
+      ).expect(200);
+    }, 60_000);
   });
 
   describe('the guard', () => {
@@ -654,19 +891,24 @@ describe('staff auth (e2e)', () => {
         .expect(401);
     });
 
-    it('allows ten resets per address in the window, then answers 429', async () => {
+    it('allows ten resets per manager in the window, then answers 429', async () => {
       const manager = await createStaff(StaffRole.MANAGER);
+      const otherManager = await createStaff(StaffRole.MANAGER);
       const cashier = await createStaff(StaffRole.CASHIER);
       const { accessToken } = await signIn(manager);
+      const other = await signIn(otherManager);
       const from = address();
 
-      for (let attempt = 1; attempt <= 10; attempt++) {
-        await resetCall(accessToken, cashier.id, from).expect(200);
+      for (let attempt = 1; attempt <= AUTH_ATTEMPT_LIMIT; attempt++) {
+        await resetCall(accessToken, cashier.id, address()).expect(200);
       }
 
       const refused = await resetCall(accessToken, cashier.id, from);
       expect(refused.status).toBe(429);
       expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+
+      // Another manager at the same address has a count of their own.
+      await resetCall(other.accessToken, cashier.id, from).expect(200);
     });
   });
 

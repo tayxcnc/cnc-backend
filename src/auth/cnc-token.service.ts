@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { type Prisma, SubjectType } from '../../generated/cnc-client';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
@@ -12,6 +12,14 @@ export const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Entropy of a raw refresh token: 32 bytes, 256 bits. */
 const REFRESH_TOKEN_BYTES = 32;
+
+/**
+ * How long after its rotation a spent refresh token may come back without
+ * being treated as a replay: two tabs refreshing with one cookie at the same
+ * moment send it twice, and the loser arrives within a round trip. Ten
+ * seconds covers a slow network; a copy used later is reuse.
+ */
+export const REFRESH_REUSE_GRACE_MS = 10_000;
 
 /**
  * The one refusal for a refresh token that cannot be spent: unknown,
@@ -69,6 +77,8 @@ type TokenWriter = Pick<Prisma.TransactionClient, 'refreshToken'>;
  */
 @Injectable()
 export class CncTokenService {
+  private readonly logger = new Logger(CncTokenService.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly prisma: CncPrismaService,
@@ -106,8 +116,9 @@ export class CncTokenService {
    * Spend a refresh token and say whose it was.
    *
    * Single use: the row is revoked by the same statement that checks it, so
-   * a stolen token works at most once, and the theft shows the next time the
-   * real client refreshes and is refused. A token of the other realm matches
+   * a stolen token works at most once, and a spent token presented again
+   * ends every session its subject holds (`endSessionsOnReplay`), so the
+   * theft does not outlive its discovery. A token of the other realm matches
    * nothing and is refused **without** being revoked, so a customer cookie
    * sent to the staff route signs nobody out.
    */
@@ -125,10 +136,12 @@ export class CncTokenService {
         revokedAt: null,
         expiresAt: { gt: now },
       },
-      data: { revokedAt: now },
+      data: { revokedAt: now, rotated: true },
     });
 
     if (count !== 1) {
+      await this.endSessionsOnReplay(tokenHash, subjectType, now);
+
       throw new UnauthorizedException(INVALID_REFRESH_TOKEN_MESSAGE);
     }
 
@@ -138,6 +151,64 @@ export class CncTokenService {
     });
 
     return record.subjectId;
+  }
+
+  /**
+   * Reuse detection: a token already spent by a refresh, presented again,
+   * ends every session its subject holds.
+   *
+   * Rotation means the browser's cookie jar holds only the newest token, so
+   * an older one comes back only as a copy: a stolen cookie whose thief
+   * refreshed first, or the real client after the thief did. Either way one
+   * of the two chains belongs to someone else, and without this the thief's
+   * chain renews itself for as long as they like while the real person sees
+   * only an ordinary sign-out. Revoking everything ends both; the real
+   * person signs in again, the thief cannot.
+   *
+   * Not a replay: an unknown digest, the other realm's token (it signs
+   * nobody out, as above), an expired one, or one revoked by a sign-out, a
+   * password change or an account change (`rotated` false: stale, not
+   * copied). And not within `REFRESH_REUSE_GRACE_MS` of its rotation, which
+   * is the loser of two tabs refreshing with one cookie at the same moment.
+   */
+  private async endSessionsOnReplay(
+    tokenHash: string,
+    subjectType: SubjectType,
+    now: Date,
+  ): Promise<void> {
+    const spent = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+      select: {
+        subjectId: true,
+        subjectType: true,
+        revokedAt: true,
+        rotated: true,
+        expiresAt: true,
+      },
+    });
+
+    if (
+      spent === null ||
+      spent.subjectType !== subjectType ||
+      !spent.rotated ||
+      spent.revokedAt === null ||
+      spent.expiresAt <= now ||
+      now.getTime() - spent.revokedAt.getTime() <= REFRESH_REUSE_GRACE_MS
+    ) {
+      return;
+    }
+
+    const revoked = await this.revokeAllForSubject(
+      spent.subjectId,
+      subjectType,
+    );
+
+    // The subject, never the token: a log line is not a place for a
+    // credential, even a spent one.
+    this.logger.warn(
+      `A rotated refresh token was presented again; ended ${revoked} ` +
+        `session(s) of ${subjectType} ${spent.subjectId}.`,
+    );
   }
 
   /**
