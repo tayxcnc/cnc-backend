@@ -145,6 +145,23 @@ They are here so the first card that builds it starts from the rule.
   any name not on the list, and a unit test fails when the list and the
   schema's versioned models differ, so the check cannot be forgotten for a
   new model.
+- **A photo upload, a photo removal and a staff ID reissue are versioned
+  writes like any other: they claim the row and move its `version`.** A
+  person replacing their photo over one a manager uploaded a minute ago, or
+  a second manager reissuing an ID the first has just printed, is the lost
+  update A8 exists to stop. A multipart upload sends `version` as a form
+  field, read through `PhotoUploadRequest` (`src/images/photo-upload.ts`),
+  which converts the string before `VersionedWriteDto`'s checks run.
+- **The one write to a versioned row that neither checks nor moves
+  `version` is a person's own overview layout (`Staff.overviewPrefs`,
+  `PUT /staff/me/preferences/overview`).** It is one person's view of their
+  own dashboard, not a record two people edit, so the last save wins; and
+  moving `Staff.version` would make a manager's edit of the account stale
+  because its holder rearranged a dashboard.
+- **The opening hours have no `version`: a save replaces the whole week
+  under an advisory lock, and the last save wins** (TAY's design, plan
+  §4.1). A8 lists no hours, the week is written only by the Owner, and the
+  lock already stops two saves interleaving their days.
 
 ## Idempotency
 
@@ -191,6 +208,14 @@ They are here so the first card that builds it starts from the rule.
   key**: an email, a Paystack call. It is keyed separately (the
   `OutboundMessage` and `CustomerNotification` `dedupeKey`, Paystack's
   reference) or happens after the commit.
+- **Beyond A9's list, a create whose retry would make a second record takes
+  the key; a create whose response carries a credential does not.**
+  `POST /staff/menu` takes it: a retry after a lost response would add a
+  second dish with a `-2` slug. `POST /staff/people` does not: its response
+  carries the account's temporary password, which must never be stored, so
+  it could not be replayed; a retry is refused on the email instead, and a
+  password lost with its response is replaced with the admin reset. An
+  update is covered by its `version` and needs no key.
 
 ## Configuration
 
@@ -409,6 +434,30 @@ They are here so the first card that builds it starts from the rule.
   (a stock item already holding its name) rolls the whole run back with the
   item's slug. A Bar sale deducts the paired item, so an unpaired Bar item is
   one that can be sold and never counted.
+- **The paired Bar stock item's shape lives once, in `BAR_STOCK_SHAPE`
+  (`src/menu/bar-stock.ts`), and both writers use it: the data seed and
+  `menu.save`.** Two copies of four numbers drift, and a drink the Owner
+  adds in the app would then be stocked differently from one seeded beside
+  it. `menu.save` creates the pair in the item's own transaction, and a
+  stock item already holding the name, ignoring case, refuses the whole
+  create with 409 "This stock item already exists."
+- **A new menu item's slug is made from its name by `uniqueSlug`
+  (`src/menu/menu-slug.ts`), under an advisory lock, and is never reused:
+  a second "Zobo Spritz" is `zobo-spritz-2`.** Items are never deleted, so
+  every slug ever issued is still in the table; a link or a saved cart that
+  names a slug must keep meaning the same dish. The lock stops two creates
+  of one name both finding the same slug free.
+- **Inside an interactive transaction, read a row's relations with separate
+  queries awaited in turn, never a nested `select` or `include`**
+  (`readMenuItems` in `src/menu/menu.service.ts` is the pattern). Prisma 7
+  sends a nested select's queries on the transaction's one connection at
+  the same time; `pg` 8 queues them with a deprecation warning, and `pg` 9
+  will refuse them. Outside a transaction the queries go to the pool and a
+  nested select is fine.
+- **A request field written to an `Int` column is capped at `INT4_MAX`
+  (`src/prisma/int4.ts`) in its DTO.** A larger number reaches Postgres as
+  an out-of-range error and answers 500; capped, it is a 400 the caller can
+  act on.
 
 ## Auth *(from C3)*
 
@@ -576,6 +625,27 @@ They are here so the first card that builds it starts from the rule.
   below error, so "nothing was logged" would pass with no logger at all; the
   TAY-cookie test also asserts that an expected line did appear, so the
   capture is known to be live.
+- **`staff.save` changes only the fields it is sent; the status changes
+  only when `isActive` is sent** (plan §17, R2). The demo set an account
+  Active whenever no status came with the save, so a name fix silently
+  re-enabled a deactivated person.
+- **`staff.save` revokes every refresh token the account holds when its
+  role, email or status changes, inside the command's transaction** (A14).
+  The guard refuses a deactivated or re-roled account on its next request
+  anyway; revoking means no refresh can mint a session for the old state
+  either, and a change that rolls back leaves the sessions as they were.
+  A name correction ends nothing.
+- **A new staff account gets a temporary password from
+  `generateTemporaryPassword`, returned once in the create response, and
+  must change it at first sign-in, exactly as the admin reset does.** One
+  way to hand over a password, so the sign-in and forced-change screens
+  serve both; it is never stored in plain text, logged or audited.
+- **The staff QR token is minted only by `generateQrToken`, and reissuing
+  it (`POST /staff/people/:id/qr/regenerate`) changes the token alone: the
+  staff number and attendance are kept** (D44, Q12). A Manager or Owner ID
+  is reissued only by the Owner, as every other change to such an account
+  is. Neither the token nor any part of it is ever returned or audited;
+  the audit row records `qrRegeneratedAt`.
 
 ## Money controls and the audit log *(from C3)*
 
@@ -656,6 +726,17 @@ They are here so the first card that builds it starts from the rule.
   (`test/staff-fixtures.ts`).** Signing in through the route would put every
   suite under the sign-in throttle, and one fixture keeps the account's
   shape in one place.
+- **An Owner-only settings key is refused to a Manager only when its value
+  changes; sent unchanged it passes** (the demo's `settings.save`). The
+  Settings screen sends the whole form, and a Manager saving the printer
+  must not be refused for the VAT field beside it.
+- **The six booking and ordering times and the opening hours are the
+  Owner's, refused with `OWNER_ONLY_TIMES_MESSAGE`, until Q29 is
+  answered** (its default: "the Owner only, like VAT and fees"). The demo
+  had neither, so the sentence is new and follows the settings sentence's
+  form; changing the rule is moving these keys, not rewording a refusal.
+  When a save changes both kinds, the money keys are checked first, as the
+  demo checks them.
 
 ## CORS
 
@@ -769,6 +850,26 @@ They are here so the first card that builds it starts from the rule.
   (A17). A stored signed URL expires and becomes a link that worked once.
   Signing needs `serviceAccountTokenCreator` on the runtime account, granted
   to itself: without it uploads succeed and every download fails.
+- **Every photo goes through `PhotoStore` (`src/images/`), and only
+  `ImagesModule` imports `StorageModule`.** One door into the bucket, and
+  one place for the rules (A17): the file is judged by its bytes, never its
+  name or declared type; it is resized (staff 320 pixels square, menu inside
+  800) with every piece of metadata, GPS position included, removed; it is
+  stored under a fresh random name; and a response signs it through
+  `signedUrlOrNull`, which answers null rather than failing when signing
+  fails.
+- **A photo is uploaded before the command's transaction opens, the old
+  object is removed after the commit, and a command that fails removes the
+  new one.** An upload is a network call no transaction should hold a row
+  lock across; deleting the old object first and then failing would leave
+  a row pointing at nothing, while this order's worst case is an orphaned
+  object nobody references.
+- **The bucket sits behind `MediaStorage` (`src/storage/media-storage.ts`),
+  bound to `GcsMediaStorage` in the service and to `FakeMediaStorage` in
+  every e2e app by `createTestApp`.** No test writes to a real bucket or
+  needs Google credentials, and a suite can read back the exact bytes that
+  were stored. The Google client is made on first use, so booting and the
+  health checks never depend on credentials.
 - **Cloud Scheduler jobs send `Content-Length=0` and are created with
   `--format="value(name)"`** (plan §11), so the job works against Cloud Run
   and the sweep token is never printed.
@@ -904,6 +1005,18 @@ here.
   runs failed on connection timeouts that were not in the code. CI keeps its
   own configuration and is the authority on green. The suite must also pass
   with `--runInBand`.
+- **An e2e suite that saves the one-row tables (`Settings`, `Business`) or
+  the opening hours through their routes holds `lockSharedRows`
+  (`test/shared-rows-lock.ts`) for the whole suite and puts back every
+  value it changed in `afterAll`; the seed suite holds the same lock while
+  it asserts on those rows.** Those writes commit and every suite shares
+  the rows, so without the lock a parallel run shows the seed suite a
+  version it did not move. Such a suite never changes the approval limits,
+  which other suites read live.
+- **An e2e suite never edits a seeded menu item, category or stock item;
+  it makes run-unique ones of its own.** The seed suite holds the seeded
+  menu to its sources field by field, and a fresh CI database may not have
+  been seeded when the suite runs.
 - **`openapi-cnc.json` is written by the app when it boots outside
   production, and by nothing else.** It is gitignored. To refresh it after a
   contract change, start the app once and stop it when the log says the spec

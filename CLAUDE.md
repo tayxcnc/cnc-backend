@@ -42,6 +42,9 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
+| Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
+| Staff accounts: R2, session revocation, first passwords, QR reissue | Auth |
+| Shared-row e2e suites, seeded rows in tests | Local environment |
 | TAY staging resources CNC work never touches | Infrastructure → Never touched from CNC work |
 | Editor tools only, no `sed`/`awk`/`perl` | Making changes to source files |
 | Branches, merges, PRs, commit identity, hooks, attribution | Git and workflow |
@@ -90,6 +93,13 @@ src/
                      the client-address throttler guard
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
+  images/            PhotoStore: byte inspection, sharp resizing, the upload route
+                     decorator; the only importer of storage/
+  storage/           MediaStorage and its Cloud Storage binding (gs:// URIs, V4 links)
+  staff/             Staff & Access: staff.save, staff.photo, the ID reissue
+  settings/          settings.save, business details, opening hours
+  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item
+  shell/             GET /staff/me, GET /staff/reference, the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
@@ -97,7 +107,8 @@ prisma/
   seed.ts, seed-owner.ts   the two seed entry points (data-seed.ts, owner-seed.ts do the work)
   menu-seed.ts       joins the copied menu sources; refuses a disagreement
   seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
-test/                e2e specs, create-test-app.ts, staff-fixtures.ts
+test/                e2e specs, create-test-app.ts, staff-fixtures.ts,
+                     fake-media-storage.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts
 ```
 
