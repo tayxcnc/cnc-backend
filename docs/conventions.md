@@ -879,6 +879,25 @@ They are here so the first card that builds it starts from the rule.
   stock balance.", not the role sentence; a `@Roles()` guard would answer
   the other sentence first. The rule is checked before the idempotent
   transaction opens, as `menu.save`'s new-item rule is.
+- **Printing happens in the browser from data the API already serves; the
+  server only records it, through `POST /staff/audit/print`** (from C4,
+  `src/audit/print.service.ts`, plan §5.3 and A19). A receipt is the bill
+  read (`GET /staff/orders/:id`: lines, totals, every payment) plus the
+  business lines on `GET /staff/reference`; a docket is
+  `GET /staff/dockets/:ref`. No print-shaped endpoint repeats them, so a
+  printed figure can never disagree with the screen's. The record is the
+  demo's audit-only `print` row: action `print`, the ref the screen sent,
+  after `{document, revision}` and the period for an attendance print. Any
+  staff role may print (the demo's `print` names every non-manager role),
+  so the route has no `@Roles`. It takes no version and no Idempotency-Key
+  because it changes nothing: a retried print is a second print, and the
+  history should say so.
+- **The print record accepts only the documents a screen can print**
+  (`PRINT_DOCUMENTS`: docket, bill, receipt, purchase, staff, attendance,
+  CSV export), with a ref of at most 120 characters. The demo stored any
+  text, and a history row naming a document nobody can print would mislead
+  its reader. Its four refusal sentences are new and marked so in
+  `print-documents.ts`.
 
 ## Stock *(from C4)*
 
@@ -1611,6 +1630,36 @@ here.
   and the test failed intermittently. Tests that must see another
   transaction's commit after a lock (the approval ledger races) stay READ
   COMMITTED.
+- **A suite that needs a later time fakes `Date` and nothing else:
+  `jest.useFakeTimers({ now, advanceTimers: true, doNotFake: [...every
+  timer...] })`, then `jest.setSystemTime` only forwards, with fresh access
+  tokens after each jump** (from C4: `test/c4-gate.e2e-spec.ts`,
+  `test/c4-demo-ports.e2e-spec.ts`). The server reads the time through
+  `new Date()` in the same process, so it sees the test's clock with no
+  clock injected into production code. Faking any timer would stall the
+  pool, the HTTP server and Postgres I/O. Moving backwards would let a row
+  stamped by Postgres's own `now()` sort before one written earlier. An
+  access token lives 15 minutes, so one minted before a jump of hours is
+  already expired after it. Such a suite runs on `createIsolatedDatabase`:
+  the bills it dates on another day must not meet another suite's.
+- **The C4 gate walk (`test/c4-gate.e2e-spec.ts`) is one test per gate
+  step, in the plan's order, sharing state; the cross-command races live in
+  `test/c4-races.e2e-spec.ts`** (from C4). Both seed their own database
+  with the real seeds (`seedData`), so the gate uses the venue's own Diner
+  B1, Lounge TS1 and a real dish with a choice, and every balance a race
+  asserts is that suite's alone. One test per step makes a failure name
+  the step the founder will walk. Each command suite keeps its own single
+  race. The races suite repeats the acceptance races over several rows
+  and adds those across commands (a booking against a walk-in, settles
+  against issues on one balance), because a race that passes once can still
+  lose one time in five.
+- **Every C4 race test was seen failing with its guard removed** (from C4):
+  the conditional decrement (the shortfall test), a read-then-write balance
+  update in place of `qty = qty + delta` (all four stock races), the
+  version claim in `claimOrder` (both settle races and gate step 6), and
+  the per-table lock (the booking-against-walk-in race, in each of three
+  runs). Repeat that check after changing any of those guards, because a
+  race test that passes with its guard removed proves nothing.
 
 ## Verification
 

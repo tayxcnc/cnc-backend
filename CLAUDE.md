@@ -54,6 +54,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Staff accounts: R2, session revocation, first passwords, QR reissue | Auth |
 | Staff ID cards and the QR payload; the sweep routes and the tokens sweep | Auth |
 | Suites that need a database of their own (`createIsolatedDatabase`) | Local environment |
+| The print record (`POST /staff/audit/print`); printing from API data | Money controls and the audit log |
+| A controlled clock in tests (fake `Date` only); the C4 gate walk and race suites | Local environment |
 | Shared-row e2e suites, seeded rows in tests | Local environment |
 | TAY staging resources CNC work never touches | Infrastructure → Never touched from CNC work |
 | Editor tools only, no `sed`/`awk`/`perl` | Making changes to source files |
@@ -94,7 +96,8 @@ src/
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
   audit/             AuditService (the one writer), GET /staff/audit and its
-                     sentences, AuditRefAccess for non-manager record reads
+                     sentences, AuditRefAccess for non-manager record reads,
+                     POST /staff/audit/print (the print record)
   auth/              staff sign-in, refresh, sign-out, change-password, admin reset;
                      CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
   money-control/     MoneyControlService: Owner-only rules, approval limits and
@@ -135,7 +138,8 @@ prisma/
   seed.ts, seed-owner.ts   the two seed entry points (data-seed.ts, owner-seed.ts do the work)
   menu-seed.ts       joins the copied menu sources; refuses a disagreement
   seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
-test/                e2e specs, create-test-app.ts, staff-fixtures.ts,
+test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
+                     acceptance races), create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts
