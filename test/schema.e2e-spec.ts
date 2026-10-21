@@ -3,10 +3,12 @@ import { INestApplication } from '@nestjs/common';
 import { App } from 'supertest/types';
 import { Prisma } from '../generated/cnc-client';
 import { canonicalNigerianPhone } from '../src/common/nigerian-phone';
+import { CncConfigService } from '../src/config/cnc.config';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { drawNumber, SEQUENCES } from '../src/prisma/sequences';
 import { uniqueViolationTargets } from '../src/prisma/unique-violation';
 import { createTestApp } from './create-test-app';
+import { lockSharedRows } from './shared-rows-lock';
 
 /**
  * What the C3 core migration adds by hand, checked against Postgres: the
@@ -196,14 +198,31 @@ describe('C3 core schema (e2e)', () => {
   });
 
   describe('opening hours', () => {
+    // The settings suite commits an edited week through
+    // `PUT /staff/opening-hours` (deleting and recreating the days) and puts
+    // the original back in its `afterAll`, under the shared-rows lock. Held
+    // here too, so these two tests never read or update a day in the middle
+    // of that, which they did in a parallel run.
+    let unlockSharedRows: (() => Promise<void>) | undefined;
+
+    beforeAll(async () => {
+      unlockSharedRows = await lockSharedRows(
+        app.get(CncConfigService).databaseUrl,
+      );
+    });
+
+    afterAll(async () => {
+      await unlockSharedRows?.();
+    });
+
     it('starts with every day open 08:00 to midnight', async () => {
       const days = await prisma.openingHoursDay.findMany({
         orderBy: { dayOfWeek: 'asc' },
       });
 
       expect(days.map((d) => d.dayOfWeek)).toEqual([0, 1, 2, 3, 4, 5, 6]);
-      // Read-only here: no suite edits the week yet, so the migration's
-      // values still stand.
+      // Every suite that edits the week restores it before it releases the
+      // lock, so the migration's values stand while this block holds it.
       for (const day of days) {
         expect(day).toMatchObject({
           isClosed: false,
