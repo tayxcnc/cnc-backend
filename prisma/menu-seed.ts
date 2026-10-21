@@ -1,4 +1,5 @@
 import { Department, MenuCategoryKind } from '../generated/cnc-client';
+import { BAR_STOCK_SHAPE } from '../src/menu/bar-stock';
 import { STAFF_ID_MAP } from './seed-data/staff-id-map';
 import { STAFF_MENU, type StaffMenuItem } from './seed-data/staff-menu';
 import {
@@ -95,13 +96,12 @@ export interface MenuSources {
   };
 }
 
-/** The paired Bar stock item's fixed shape (`domain.ts`, `seed` and `menu.save`). */
-export const BAR_STOCK_SHAPE = {
-  unit: 'serving',
-  pack: 'batch',
-  factor: 12,
-  minimum: 12,
-} as const;
+/**
+ * The paired Bar stock item's fixed shape, from `src/menu/bar-stock.ts`, the
+ * one home `menu.save` shares. Re-exported so the seed's callers keep one
+ * import.
+ */
+export { BAR_STOCK_SHAPE };
 
 /**
  * The two customer categories that hold drinks; every other one holds food.

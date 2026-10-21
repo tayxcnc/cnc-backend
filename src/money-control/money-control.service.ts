@@ -58,6 +58,17 @@ export const OWNER_ONLY_SETTINGS_MESSAGE =
   'Only the Owner can change tax, service charge, delivery fees or the approval limits.';
 
 /**
+ * `settings.save` by a manager changing one of the six booking and ordering
+ * times (last arrival, last order slot, slot step, the three lead times),
+ * and `PUT /staff/opening-hours` by a manager (C3-7). Owner-only by Q29's
+ * default, "like VAT and fees, because the owner confirmed them". The demo
+ * had neither the times nor editable hours, so it has no sentence; this one
+ * follows the form of the settings sentence above.
+ */
+export const OWNER_ONLY_TIMES_MESSAGE =
+  'Only the Owner can change the opening hours or the booking and ordering times.';
+
+/**
  * `staff.save` (and the admin reset) by a manager on a Manager or Owner
  * account, or making one.
  */

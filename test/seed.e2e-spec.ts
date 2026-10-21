@@ -11,8 +11,10 @@ import { buildMenuSeed } from '../prisma/menu-seed';
 import { OwnerSeedRefusal, seedOwnerInTransaction } from '../prisma/owner-seed';
 import { BUSINESS, SETTINGS, VENUES } from '../prisma/seed-data/reference';
 import { hashPassword, verifyPassword } from '../src/auth/password';
+import { CncConfigService } from '../src/config/cnc.config';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp } from './create-test-app';
+import { lockSharedRows } from './shared-rows-lock';
 
 /**
  * The seeds against Postgres (C3-2): the reference data and menu land as the
@@ -99,10 +101,22 @@ describe('seeds (e2e)', () => {
       };
     }
 
+    // The settings suite saves the settings, business and hours rows
+    // through their routes; holding the shared-rows lock for this block
+    // keeps those saves from moving a version between the snapshots.
+    let unlockSharedRows: (() => Promise<void>) | undefined;
+
     beforeAll(async () => {
+      unlockSharedRows = await lockSharedRows(
+        app.get(CncConfigService).databaseUrl,
+      );
       first = await seedData(prisma);
       before = await snapshot();
       second = await seedData(prisma);
+    });
+
+    afterAll(async () => {
+      await unlockSharedRows?.();
     });
 
     it('accounts for every row on each run', () => {

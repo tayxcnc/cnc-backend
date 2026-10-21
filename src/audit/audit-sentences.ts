@@ -51,8 +51,10 @@ export const AUDIT_MODULES: readonly string[] = [
 ];
 
 /**
- * Display labels for the commands (the demo's `LABELS`), plus the two
- * password commands the server adds (C3-3), which the demo did not have.
+ * Display labels for the commands (the demo's `LABELS`), plus the commands
+ * the server adds, which the demo did not have: the two password commands
+ * (C3-3), the staff ID reissue, the menu photo and the opening hours (C3-6,
+ * C3-7).
  */
 const LABELS: Readonly<Record<string, string>> = {
   'order.create': 'Order Opened',
@@ -107,10 +109,13 @@ const LABELS: Readonly<Record<string, string>> = {
   'staff.photo': 'Photo Changed',
   'staff.changePassword': 'Password Changed',
   'staff.resetPassword': 'Password Reset',
+  'staff.regenerateQr': 'Staff ID Reissued',
   'attendance.scan': 'Attendance Scanned',
   'attendance.correct': 'Attendance Corrected',
   'menu.save': 'Menu Item Saved',
+  'menu.photo': 'Photo Changed',
   'settings.save': 'Settings Saved',
+  'settings.openingHours': 'Opening Hours Saved',
   'task.save': 'Task Saved',
 };
 

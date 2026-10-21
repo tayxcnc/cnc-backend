@@ -9,8 +9,12 @@ import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
 import { HealthController } from './health/health.controller';
 import { SERVICE_NAME } from './health/service-name.token';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { MenuModule } from './menu/menu.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
+import { SettingsModule } from './settings/settings.module';
+import { ShellModule } from './shell/shell.module';
+import { StaffModule } from './staff/staff.module';
 
 /**
  * Root module for the CNC Cloud Run service.
@@ -35,6 +39,10 @@ import { CncPrismaService } from './prisma/cnc-prisma.service';
     IdempotencyModule,
     CncAuthModule,
     AuditViewerModule,
+    StaffModule,
+    SettingsModule,
+    MenuModule,
+    ShellModule,
   ],
   controllers: [HealthController],
   providers: [
