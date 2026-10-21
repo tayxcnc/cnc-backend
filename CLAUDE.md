@@ -44,6 +44,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
 | Bills, lines, totals, dockets, reprints, order history readers | Orders and dockets |
+| Payments, settle and its race, Bar stock on settle and reverse, discounts, cancel, reopen | Payments, settlement and bill corrections |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -113,7 +114,8 @@ src/
                      Correct Balance, stock items, kitchen comparison rules
   orders/            Point of Sale: bills and lines (claimOrder, readOrder,
                      orderTotals), kitchen dockets (DocketsService, the one
-                     docket writer), the bill and docket history readers
+                     docket writer), the bill and docket history readers;
+                     payments, settle and the corrections (OrderPaymentsService)
   shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/

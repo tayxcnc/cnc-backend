@@ -1028,6 +1028,85 @@ They are here so the first card that builds it starts from the rule.
   the orders needed it: absent, or trimmed text up to a length, one
   sentence per problem, `null` refused.
 
+## Payments, settlement and bill corrections *(from C4)*
+
+- **Every money and correction command on a bill (`order.payment`,
+  `partPay`, `settle`, `discount`, `cancel`, `reopen`, `reverse`) is in
+  `OrderPaymentsService` (`src/orders/order-payments.service.ts`) and takes
+  its bill through `OrdersService.claimOrder` first.** One claim per
+  command is what makes two settles of one bill end as one settlement and
+  one 409 "This record changed. Refresh and try again." (the A8 acceptance
+  case): the second names a version the first moved. The e2e race test
+  fails when the claim is removed.
+- **Part payment and settle take both an `Idempotency-Key` and the bill's
+  `version`** (A8, A9). The key makes a till's own retry of a lost response
+  replay the first answer instead of taking the money again; the version
+  makes a second till's settle of the same bill a stale 409. Neither covers
+  the other's case.
+- **The routes live in `OrderPaymentsController`, beside
+  `OrdersController`, with a `@Roles` on each route and none on the
+  reversal.** The demo's `order.reverse` calls `ownerOnly` first, so every
+  non-Owner, a Waiter included, is told "Only the Owner can reverse a paid
+  bill."; a class-level `@Roles` would answer the role sentence first (the
+  `stock.adjust` rule in *Money controls*).
+- **A payment list is checked as a list in the request (`payments` must be
+  a list of objects, else "Payment information is missing.") and judged in
+  the service by `judgePayments` (`src/orders/payment-rules.ts`), in the
+  demo's order: the sum first, then each payment.** No nested validator
+  can compare a sum with the bill's balance, and the order is visible: a
+  transfer for the wrong amount is told about the amount, not its missing
+  sender. The till's methods are Cash, Card and Transfer; `ONLINE` is
+  Paystack's alone (C7) and is refused at the till.
+- **A settlement's payments equal the balance to the kobo: the bill's
+  `orderTotals` total less non-reversed payments and any deposit credit.**
+  The receipt, the list and the settle must agree (*Orders and dockets*,
+  `orderTotals`); a settle may carry no payment only when nothing is left
+  to pay, a bill discounted to zero.
+- **Each payment draws its own `PAY-` number from the sequence and is
+  dated today in Lagos, not with the bill's business date.** The cash count
+  (C4-8) compares a day's cash payments with the drawer, so a carried bill
+  settled after midnight belongs to the day the money was taken.
+- **A Bar bill's drinks leave the Bar at `order.settle` and return at
+  `order.reverse`, through `StockLedgerService.move` in the same
+  transaction, one movement per paired stock item in id order** (plan
+  §7.2). The settle's state check and version claim make the deduction
+  happen once per settlement; the reversal's "Select a settled POS order."
+  makes the return happen once. Movements in id order cannot deadlock two
+  settles sharing drinks, and a drink on two lines moves once by their sum,
+  which the ledger allows or refuses exactly as the demo's line-by-line
+  moves would. A drink with no paired stock item refuses the settlement
+  (404 "Stock item not found."). The e2e suite proves both state checks by
+  removal.
+- **A reversal marks every payment reversed (with `reversedAt`) and never
+  deletes one; settling again takes fresh payments.** Money that was taken
+  and given back is history the cash count and the reports must still
+  show.
+- **A discount is checked by `MoneyControlService.withinLimit` as
+  `LIMITED_DECISIONS.discount` on its whole amount, and only its increase
+  over the bill's previous discount counts toward the day** (the demo's
+  `withinLimit(c.amount, 'This discount', true, max(0, amount − old))`).
+  Lowering a discount decides nothing and writes no ledger row; the Owner
+  is never recorded.
+- **Deposit credit at settle is the demo's logic, kept for its tests (D38):
+  the booking must be checked in or completed at the bill's table, and the
+  use is one conditional `UPDATE … WHERE "depositKobo" - "depositUsedKobo"
+  >= $credit`.** Two bills spending the same credit cannot both pass a
+  read-then-write. The update does not move the booking's `version`: the
+  credit is the till's counter, not a field Reception edits, so a settle
+  must not make Reception's next save of the booking stale. A reversal
+  gives the credit back.
+- **A cancelled Restaurant bill the kitchen was sent gets a cancellation
+  docket (revision n+1, no items) through `DocketsService.write`; a Bar
+  bill or a bill never confirmed gets none, and no stock moves.** The
+  kitchen's own entries stay its own to correct (C4-6); the empty revision
+  is what tells the kitchen's paper the bill is gone.
+- **The bill's audit rows carry the demo's `before`/`after`: status for
+  payment, reopen and cancel, `paidKobo`/`balanceKobo` for a part payment,
+  `discountKobo` for a discount, and status, money and deposit for settle
+  and reverse; the correction's reason goes in the row's `reason`.** The
+  history then reads "Status changed from Open to Payment." in the staff
+  app's words, and no payment detail beyond money reaches the log.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by
@@ -1326,6 +1405,22 @@ here.
   contract change, start the app once and stop it when the log says the spec
   was written. Never edit it by hand: `npm run mock` and the frontends read it
   as what the controllers say.
+- **An isolated test database is dropped by ending this role's own sessions
+  on it and then a plain `DROP DATABASE`, never `WITH (FORCE)`** (from C4,
+  `test/isolated-database.ts`). On Postgres 16, FORCE refuses the whole drop
+  with "permission denied to terminate process" when an autovacuum worker is
+  visiting the database, because the worker carries no role the test user
+  may signal; a freshly seeded database invites one, and the suite then
+  fails after all its tests passed. A plain drop stops autovacuum workers
+  itself.
+- **A test that counts every Owner (or any rows other suites create) inside
+  a rolled-back transaction runs it at REPEATABLE READ** (from C4: the seed
+  suite's first-Owner tests and the money-control last-Owner tests). Suites
+  run in parallel and commit Owner accounts of their own; under READ
+  COMMITTED one committed after the test demoted every Owner was counted,
+  and the test failed intermittently. Tests that must see another
+  transaction's commit after a lock (the approval ledger races) stay READ
+  COMMITTED.
 
 ## Verification
 
