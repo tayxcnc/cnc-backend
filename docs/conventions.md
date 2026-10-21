@@ -950,6 +950,84 @@ They are here so the first card that builds it starts from the rule.
   last save wins; the lock stops two saves interleaving their portions. The
   rule never fills in a kitchen entry or moves stock.
 
+## Orders and dockets *(from C4)*
+
+- **Every order command takes its bill through `OrdersService.claimOrder`
+  (`src/orders/orders.service.ts`): the order must exist (404 "Order not
+  found."), a Bartender reaches Bar bills only (403 "Bartenders can operate
+  Bar POS only."), and then the request's `version` is claimed.** That is
+  the demo's `order()` in its own order, and the claim is the row lock the
+  rest of the command runs under (*Optimistic concurrency*). The
+  department is read before the claim because it never changes; a
+  Bartender is told the Bar sentence, not a stale-version one, for a bill
+  that was never theirs. C4-5's payment and correction commands use the
+  same method, so the rule is written once.
+- **Lines, details and confirm name the order's `version`; only
+  `order.create` takes an `Idempotency-Key`** (A9). A retried create would
+  open a second bill; a retried line, detail or confirm names a version the
+  first attempt already moved, so it is refused with the stale sentence
+  instead of being applied twice. A reprint claims the version too and so
+  moves it: one rule for every order command, and the reprint answers the
+  bill with its new version.
+- **A line is a dish plus its option; `option` is `""` for a dish with no
+  choice, a dish with a choice needs one of its options, and each option is
+  its own line** (`lineProblem`, `src/orders/order-rules.ts`). A line may
+  always be set to zero, even for a dish taken off sale, so it can be taken
+  off a bill. A new line snapshots the dish's name and price; an existing
+  line keeps its price when its quantity changes (plan §4.1: a price change
+  applies to new lines only).
+- **Lines and details change only on an open bill of today
+  (`assertEditable`, the demo's `allowOrder`): an earlier day's bill is 409
+  "This order belongs to a previous day…", any other is 409 "This order is
+  locked…".** Food added on a previous day is locked (plan §7.1 step 7);
+  409, because the request is well formed and the bill's state refuses it
+  (A7). Confirm is not held to the date: a carried bill confirms its frozen
+  items after midnight, and its docket keeps the bill's business date.
+- **`order.details` changes only the fields it is sent; `null` is
+  refused.** The demo blanked a field left out of the command. The screen
+  sends both, so nothing it does changes, while a client that sends only
+  the notes no longer wipes the guest's name (the same reasoning as
+  `staff.save`, R2).
+- **Every docket row is written by `DocketsService.write`
+  (`src/orders/dockets.service.ts`), and a revision is never changed after
+  it is written.** The confirmed lines are the latest docket's items (there
+  is no `confirmed` column), so the payment check (C4-5), the cancellation
+  docket (C4-5), the web docket (C7) and the crosscheck (C4-6) all read the
+  one snapshot shape (`docket-items.ts`). A revision changed in place would
+  let the kitchen's paper and the record disagree.
+- **A confirm whose lines equal the latest docket writes no revision and
+  answers that docket with `reprint: true`; otherwise it writes revision
+  n+1 with the full list.** The comparison (`sameDocketItems`) covers every
+  snapshot field (dish, option, quantity, name, price) and ignores the order
+  lines were added in, which in the demo was an accident of its array.
+  Notes alone do not make a new revision, as in the demo.
+- **A bill's figures are `orderTotals` (`src/orders/order-totals.ts`), the
+  demo's `totals()` figure for figure, and nothing else computes them.**
+  The list, the detail, the receipt and settlement's exact cover (C4-5)
+  must agree to the kobo; one pure function is the only way they cannot
+  drift.
+- **The till's Part Paid filter is "a non-reversed payment above zero".**
+  The demo's `paidSoFar > 0` is a sum, which a where clause cannot page
+  over; on a till bill the only payments before settlement are part
+  payments, so the two agree. A refund (negative) is a web order's (C7).
+- **An order command's audit `ref` is the order number, and a docket's is
+  its `KOT-` ref; lines are audited as `{ items: [...] }`.** The demo's
+  `ref` for every `order.*` command is the order, so the bill's history
+  shows its confirms; the kitchen's entries (C4-6) are filed under the
+  docket. Wrapping the lines in an object gives the history the demo's
+  "Order items updated (n lines)." rather than "Changed from 1 entry to 2
+  entries.".
+- **`OrdersModule` registers the `AuditRefAccess` readers for bill numbers
+  (`CNCR-`, `CNCB-`: Cashier, Waiter, and a Bartender for Bar bills) and
+  docket refs (`KOT-`: Kitchen, Cashier, Waiter), and both require the
+  record to exist** (`src/orders/order-audit-readers.ts`). Those are the
+  roles plan §6.1 lets open the till and the kitchen; a ref nobody issued
+  has no history to read, so it gets the registry's refusal.
+- **An optional text field in a request is `OptionalText`
+  (`src/common/optional-text.ts`)**, moved out of the stock requests when
+  the orders needed it: absent, or trimmed text up to a length, one
+  sentence per problem, `null` refused.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by

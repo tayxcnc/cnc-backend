@@ -43,6 +43,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
+| Bills, lines, totals, dockets, reprints, order history readers | Orders and dockets |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -110,6 +111,9 @@ src/
   stock/             the stock core: StockLedgerService (the one writer of balances
                      and movements), balances and movements reads, issue, count,
                      Correct Balance, stock items, kitchen comparison rules
+  orders/            Point of Sale: bills and lines (claimOrder, readOrder,
+                     orderTotals), kitchen dockets (DocketsService, the one
+                     docket writer), the bill and docket history readers
   shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
