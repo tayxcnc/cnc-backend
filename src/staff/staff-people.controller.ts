@@ -31,6 +31,7 @@ import { VersionedWriteDto } from '../common/dto/versioned-write.dto';
 import { PhotoUpload, PhotoUploadRequest } from '../images/photo-upload';
 import type { UploadedImageFile } from '../images/uploaded-image';
 import { CreateStaffRequest } from './dto/create-staff.request';
+import { StaffCardResponse } from './dto/staff-card.response';
 import { StaffListQuery } from './dto/staff-list.query';
 import {
   StaffCreatedResponse,
@@ -38,6 +39,7 @@ import {
   StaffPersonResponse,
 } from './dto/staff-person.response';
 import { UpdateStaffRequest } from './dto/update-staff.request';
+import { StaffCardService } from './staff-card.service';
 import { StaffPeopleService } from './staff-people.service';
 
 const UNAUTHORISED = {
@@ -76,7 +78,10 @@ const ID_PARAM = {
 @UseGuards(CncStaffGuard)
 @Controller('staff/people')
 export class StaffPeopleController {
-  constructor(private readonly people: StaffPeopleService) {}
+  constructor(
+    private readonly people: StaffPeopleService,
+    private readonly cards: StaffCardService,
+  ) {}
 
   @Get()
   @Roles()
@@ -101,6 +106,29 @@ export class StaffPeopleController {
   })
   list(@Query() query: StaffListQuery): Promise<StaffPageResponse> {
     return this.people.list(query);
+  }
+
+  @Get(':id/card')
+  @Roles()
+  @ApiParam(ID_PARAM)
+  @ApiOperation({
+    operationId: 'staffPeopleCard',
+    summary: 'A staff ID card',
+    description:
+      'Managers only, for any account, as the Staff & Access card view and ' +
+      'its printed ID. The QR code arrives only as an SVG; its token is ' +
+      'never sent. Everyone reads their own through GET /staff/me/card.',
+  })
+  @ApiResponse({ status: 200, type: StaffCardResponse })
+  @ApiResponse(UNAUTHORISED)
+  @ApiResponse({
+    status: 403,
+    description: 'Not a manager, or the caller may not use staff routes.',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse(NOT_FOUND)
+  card(@Param('id') id: string): Promise<StaffCardResponse> {
+    return this.cards.card(id);
   }
 
   @Post()

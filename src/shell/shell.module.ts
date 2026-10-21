@@ -3,6 +3,7 @@ import { CncAuthModule } from '../auth/cnc-auth.module';
 import { ImagesModule } from '../images/images.module';
 import { MenuModule } from '../menu/menu.module';
 import { SettingsModule } from '../settings/settings.module';
+import { StaffModule } from '../staff/staff.module';
 import { ShellController } from './shell.controller';
 import { ShellService } from './shell.service';
 
@@ -13,7 +14,13 @@ import { ShellService } from './shell.service';
  * answer.
  */
 @Module({
-  imports: [CncAuthModule, ImagesModule, SettingsModule, MenuModule],
+  imports: [
+    CncAuthModule,
+    ImagesModule,
+    SettingsModule,
+    MenuModule,
+    StaffModule,
+  ],
   controllers: [ShellController],
   providers: [ShellService],
 })

@@ -3,6 +3,7 @@ import { AuditModule } from '../audit/audit.module';
 import { CncAuthModule } from '../auth/cnc-auth.module';
 import { ImagesModule } from '../images/images.module';
 import { MoneyControlModule } from '../money-control/money-control.module';
+import { StaffCardService } from './staff-card.service';
 import { StaffPeopleController } from './staff-people.controller';
 import { StaffPeopleService } from './staff-people.service';
 
@@ -15,6 +16,8 @@ import { StaffPeopleService } from './staff-people.service';
 @Module({
   imports: [CncAuthModule, AuditModule, MoneyControlModule, ImagesModule],
   controllers: [StaffPeopleController],
-  providers: [StaffPeopleService],
+  providers: [StaffPeopleService, StaffCardService],
+  // The shell's My Staff ID reads the same card.
+  exports: [StaffCardService],
 })
 export class StaffModule {}

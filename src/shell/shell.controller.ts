@@ -10,6 +10,8 @@ import { PasswordChangeExempt } from '../auth/decorators/password-change-exempt.
 import { CncStaffGuard } from '../auth/guards/cnc-staff.guard';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
+import { StaffCardResponse } from '../staff/dto/staff-card.response';
+import { StaffCardService } from '../staff/staff-card.service';
 import { OverviewPreferencesDto } from './dto/overview-preferences.dto';
 import { ReferenceResponse } from './dto/reference.response';
 import { StaffMeResponse } from './dto/staff-me.response';
@@ -39,7 +41,10 @@ const REFUSED = {
 @UseGuards(CncStaffGuard)
 @Controller('staff')
 export class ShellController {
-  constructor(private readonly shell: ShellService) {}
+  constructor(
+    private readonly shell: ShellService,
+    private readonly cards: StaffCardService,
+  ) {}
 
   @Get('me')
   @PasswordChangeExempt()
@@ -56,6 +61,22 @@ export class ShellController {
   @ApiResponse(REFUSED)
   me(@CurrentStaff() actor: StaffPrincipal): Promise<StaffMeResponse> {
     return this.shell.me(actor);
+  }
+
+  @Get('me/card')
+  @ApiOperation({
+    operationId: 'staffMeCard',
+    summary: 'My Staff ID',
+    description:
+      'The signed-in person’s ID card: photo, name, role, staff number and ' +
+      'the attendance QR code as an SVG. The token in the code is never ' +
+      'sent as text.',
+  })
+  @ApiResponse({ status: 200, type: StaffCardResponse })
+  @ApiResponse(UNAUTHORISED)
+  @ApiResponse(REFUSED)
+  myCard(@CurrentStaff() actor: StaffPrincipal): Promise<StaffCardResponse> {
+    return this.cards.card(actor.id);
   }
 
   @Get('reference')
