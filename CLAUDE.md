@@ -45,6 +45,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
 | Bills, lines, totals, dockets, reprints, order history readers | Orders and dockets |
 | Payments, settle and its race, Bar stock on settle and reverse, discounts, cancel, reopen | Payments, settlement and bill corrections |
+| Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
+| Business dates in requests (`calendarDate`) | Errors |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -116,6 +118,10 @@ src/
                      orderTotals), kitchen dockets (DocketsService, the one
                      docket writer), the bill and docket history readers;
                      payments, settle and the corrections (OrderPaymentsService)
+  kitchen/           Kitchen: kitchen.save and kitchen.close (KitchenService),
+                     the entries and day reads, the Kitchen Crosscheck report
+                     (crosscheck(), the demo's function)
+  cash/              cash.count and the Cash Reconciliation report
   shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/

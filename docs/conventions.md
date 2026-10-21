@@ -130,6 +130,12 @@ They are here so the first card that builds it starts from the rule.
   duplicates, quantities), then the command's own sentence for a bad item
   id. The lines stay plain objects, and a service reads only the keys the
   rules name.
+- **A business date in a request or query is checked with
+  `@Checked(calendarDate(sentence))` (`src/common/checked.ts`)** (from C4).
+  It accepts a real `YYYY-MM-DD` day only (`parseIsoDate`) and answers the
+  field's own sentence once ("Enter a valid kitchen date.", "Enter a valid
+  reconciliation date."); the docket, kitchen and report queries share it,
+  so no two routes disagree on what a date is.
 
 ## Optimistic concurrency
 
@@ -1106,6 +1112,100 @@ They are here so the first card that builds it starts from the rule.
   and reverse; the correction's reason goes in the row's `reason`.** The
   history then reads "Status changed from Open to Payment." in the staff
   app's words, and no payment detail beyond money reaches the log.
+
+## Kitchen entries, the kitchen day and the cash count *(from C4)*
+
+- **A kitchen entry takes its order, revision and date from the latest
+  docket under the ref the kitchen typed (`DocketsService.latestByRef`),
+  never from the screen; a non-manager who sends one that differs is told
+  it is "assigned by the system"** (`src/kitchen/kitchen.service.ts`, the
+  demo's `kitchen.save`). The paper docket's number is the only thing the
+  kitchen knows for certain, and an entry filed under the wrong revision or
+  order would make the crosscheck lie. `revision` and `orderNumber` stay in
+  the request only so that sentence is answered as the demo answers it.
+- **`PUT /staff/kitchen/entries/:docketRef` without a `version` records the
+  docket's first entry; with one, it corrects the existing entry through
+  `claimVersion`** (A8). A second first entry is 409 "This docket already
+  exists. Edit its existing kitchen entry.", whether it is seen by the
+  service's check or, when two arrive together, by the unique `docketRef`
+  index (the first entry is inserted before any stock moves, so the clash
+  comes before a balance is touched). A `version` for a docket with no entry
+  is 404 "Kitchen entry not found." (new; the demo turned an id that matched
+  nothing into a create). No Idempotency-Key: a retried first entry is
+  refused as a duplicate and a retried correction names a version the first
+  attempt moved. The e2e races (two first entries, two corrections) fail
+  when the check and the claim are removed.
+- **A save moves the Kitchen by the old quantity less the new one for each
+  item, through `StockLedgerService.move`, in stock item id order
+  (`kitchenStockChanges`, `src/kitchen/kitchen-rules.ts`)** (plan §4.6): a
+  first entry takes its portions (`KITCHEN_ENTRY`), a correction returns
+  what it removed and takes what it added (`KITCHEN_CORRECTION`), with the
+  docket ref as the movement's ref. An item short of stock refuses the whole
+  save (409 "Insufficient kitchen stock for …"), so the kitchen cannot
+  record portions the Kitchen never received. Id order means two saves
+  sharing portions cannot deadlock. An empty list is allowed only to clear
+  an existing entry (a cancelled docket); a first entry with none is "Add at
+  least one item.".
+- **A save is a manager's correction with a reason when the entry is dated
+  away from its docket or from today, when its day is closed, or when an
+  existing entry is from another day, from a closed day, or is moved to a new
+  date** (`isKitchenCorrection`, the demo's `admin()` condition). The
+  Kitchen is refused with the role sentence (403) and a manager without a
+  reason with "An admin correction requires a reason." (400). The reason is
+  optional in the request (`OptionalText`, not `@AdminReason`), because
+  whether one is needed depends on the stored docket and day.
+- **A kitchen day's close and the saves that check it take one advisory
+  lock per date (`cnc:kitchen-day`): a save holds it shared for each date it
+  touches, a close holds it exclusively.** Without it a close could commit
+  between a save's "is the day closed?" read and its commit, and the
+  Kitchen would have written into a closed day. The close is today in Lagos
+  only, once: "Only the current kitchen day can be closed." (400) and "This
+  kitchen day is already closed." (409, also from the unique date when two
+  closes race; the e2e race fails when the check and the clash mapping are
+  removed). Nothing on the till reads the day, so bills stay payable.
+- **An entry's audit `ref` is its `KOT-` ref, and its `before`/`after` are
+  the order number, revision, kitchen date and each portion by name.** The
+  orders module's docket reader already lets the Kitchen, Cashier and
+  Waiter read that history (plan §4.8), and the sentences read "Business
+  Date changed from … to …." and "Lines updated (n).". A close is audited
+  under the date, with the demo's `after` of "Closed"; it has no reader,
+  because §4.8 does not open a day to non-managers.
+- **The Kitchen Crosscheck is `crosscheck()` (`src/kitchen/kitchen-crosscheck.ts`),
+  the demo's function result for result, computed on read
+  (`GET /staff/reports/kitchen-crosscheck`, managers only; A20).** Seven
+  results in the demo's order (missing, reference, revision, rule,
+  quantity, matched, then unexplained entries), spelt `UPPER_SNAKE` (A5).
+  A dish with no comparison rule is "Mapping required", never passed, and
+  the rules are read as they stand now, as the demo reads them. Rows are
+  the latest revision of every ref dated in the range (every revision of a
+  ref carries its bill's date), in the order those revisions were written.
+  One pure function, so the overview's Needs Attention count (C8) and the
+  report can never disagree.
+- **A cash count's expected figure is the date's non-reversed `CASH`
+  payments, refunds included, summed as `bigint` when the count is
+  recorded, and the count keeps it** (plan §4.3; `src/cash/`). Payments are
+  dated the day the money was taken (*Payments*), so the figure is that
+  day's drawer; a later payment changes the next count's figure, never an
+  earlier count's. The CHECK holds `differenceKobo` to counted − expected.
+- **`POST /staff/cash-counts` takes an Idempotency-Key** (the *Idempotency*
+  rule for creates): several counts per date are allowed, so a retry after
+  a lost response would otherwise record the drawer twice. It is R(Cashier)
+  (plan §6.2): the Cashier and managers; the report
+  (`GET /staff/reports/cash`) is the same roles (plan §5.4, the Cashier's
+  three reports). No `AuditRefAccess` reader is registered for `CASH-`
+  refs, because §4.8's list does not include them; the Cashier reads counts
+  through the report.
+- **The two reports built with these cards sit under `staff/reports` and
+  take `from`/`to` through `resolveDateRange` (today when absent, at most
+  366 days).** C8's other reports join them there with the same range rule,
+  so every report answers a bad range in the same words.
+- **A suite that closes a kitchen day or pins a date's cash figures runs on
+  `createIsolatedDatabase`** (`test/kitchen.e2e-spec.ts`,
+  `test/cash-count.e2e-spec.ts`). A close is one row for the whole database
+  and the shared test database is reused on every run, so a close committed
+  there would make every later kitchen save that day a manager's
+  correction; and every suite takes cash on the shared database, so no
+  expected figure could be pinned.
 
 ## CORS
 
