@@ -127,6 +127,41 @@ They are here so the first card that builds it starts from the rule.
   lock taken by the command's transaction.** A read-then-compare in two
   statements lets two writers both pass the check, which is the race the
   version exists to stop.
+- **Use `claimVersion` (`src/prisma/optimistic-version.ts`) as the first
+  statement of the command's transaction, and never increment `version`
+  again in the command's own update.** It is the one statement that compares
+  and increments, and it leaves the row locked until the transaction ends,
+  so the rest of the command runs on a row nobody else can change (the same
+  protection as `SELECT … FOR UPDATE`). A second increment would skip a
+  version and make the client's next write look stale. Outside a
+  transaction the lock is released at once, and the command's write is
+  unguarded.
+- **A request that writes a versioned row extends `VersionedWriteDto`**
+  (`src/common/dto/versioned-write.dto.ts`), so `version` is required,
+  validated and documented once. A write that names no version has nothing
+  to be stale against and silently overwrites a change it never saw.
+- **A model that gains a `version` column is added to `VERSIONED_TABLES` in
+  the same change.** `claimVersion` interpolates the table name and refuses
+  any name not on the list, and a unit test fails when the list and the
+  schema's versioned models differ, so the check cannot be forgotten for a
+  new model.
+- **A photo upload, a photo removal and a staff ID reissue are versioned
+  writes like any other: they claim the row and move its `version`.** A
+  person replacing their photo over one a manager uploaded a minute ago, or
+  a second manager reissuing an ID the first has just printed, is the lost
+  update A8 exists to stop. A multipart upload sends `version` as a form
+  field, read through `PhotoUploadRequest` (`src/images/photo-upload.ts`),
+  which converts the string before `VersionedWriteDto`'s checks run.
+- **The one write to a versioned row that neither checks nor moves
+  `version` is a person's own overview layout (`Staff.overviewPrefs`,
+  `PUT /staff/me/preferences/overview`).** It is one person's view of their
+  own dashboard, not a record two people edit, so the last save wins; and
+  moving `Staff.version` would make a manager's edit of the account stale
+  because its holder rearranged a dashboard.
+- **The opening hours have no `version`: a save replaces the whole week
+  under an advisory lock, and the last save wins** (TAY's design, plan
+  §4.1). A8 lists no hours, the week is written only by the Owner, and the
+  lock already stops two saves interleaving their days.
 
 ## Idempotency
 
@@ -145,6 +180,42 @@ They are here so the first card that builds it starts from the rule.
   send a preflight first; a header missing from the allowlist fails that
   preflight, the call never reaches the API, and every test that calls the API
   directly still passes. TAY shipped this class of defect once, with `PUT`.
+- **A route that takes the key uses `@IdempotencyKey()` for the request,
+  `@IdempotentRoute()` for the document, and runs its command through
+  `IdempotencyService.execute`** (`src/idempotency/`). The service inserts
+  the key row inside the command's own transaction, before the command, and
+  stores the response before the commit. So the key and the command commit
+  together or not at all, and a duplicate that arrives while the first is
+  still running waits on the unique index and then replays, instead of
+  running the command a second time. `test/idempotency.e2e-spec.ts`
+  preflights every route the API document shows with the header, so
+  `@IdempotentRoute()` is what puts a route under that test.
+- **Only a successful command stores a response.** A refused or failed
+  command rolls back with its key, and a retry under the same key runs
+  again. Storing a refusal would replay a "This record changed" 409 for ever
+  to a client that has since refreshed and resent the same key.
+- **The same key with a different request is `409` "This Idempotency-Key was
+  already used for a different request."**, and a missing or malformed key
+  is `400` "An Idempotency-Key header holding a UUID is required for this
+  request." The request is fingerprinted from its route parameters, query
+  and body with keys sorted, so a retry that rebuilt its JSON in another
+  order is the same request, and a key reused by mistake never returns the
+  answer to some other request.
+- **The scope comes from the authenticated subject on the server
+  (`idempotencyScope`), never from the request.** A client that could name
+  its scope could replay another caller's response by sending their key.
+- **Anything a command does outside its transaction is not covered by the
+  key**: an email, a Paystack call. It is keyed separately (the
+  `OutboundMessage` and `CustomerNotification` `dedupeKey`, Paystack's
+  reference) or happens after the commit.
+- **Beyond A9's list, a create whose retry would make a second record takes
+  the key; a create whose response carries a credential does not.**
+  `POST /staff/menu` takes it: a retry after a lost response would add a
+  second dish with a `-2` slug. `POST /staff/people` does not: its response
+  carries the account's temporary password, which must never be stored, so
+  it could not be replayed; a retry is refused on the email instead, and a
+  password lost with its response is replaced with the admin reset. An
+  update is covered by its `version` and needs no key.
 
 ## Configuration
 
@@ -302,6 +373,91 @@ They are here so the first card that builds it starts from the rule.
   `CNC_SEED_OWNER_PASSWORD`, kept off Prisma's `seed` key** (plan §12.1,
   from C3). `migrate reset` runs the `seed` key, and a reset must never
   create a credential.
+- **Draw a human number with `drawNumber(prisma, '<kind>')`
+  (`src/prisma/sequences.ts`), never by spelling a sequence name or a prefix
+  at the call site.** `SEQUENCES` is the one list of sequence, prefix and
+  digit count, and a unit test holds it in step with the migrations that
+  create the sequences. Two call sites spelling a format would print one
+  kind of record two ways.
+- **What Prisma cannot express is written by hand at the end of the
+  migration, under a "Hand-written below" line, and `prisma migrate diff
+  --from-config-datasource --to-schema prisma/schema.prisma --script` must
+  still print an empty migration afterwards.** CHECKs, expression indexes,
+  triggers and sequences are invisible to the schema; the line tells a
+  reviewer which part was generated, and an empty diff proves the
+  hand-written part did not drift the schema.
+- **The audit log is append-only in the database** (A13): a trigger on
+  `AuditLog` raises on UPDATE, DELETE and TRUNCATE. Rows are only ever
+  inserted, by `AuditService` inside the command's transaction, and nothing
+  (a test, a seed, a sweep) may try to tidy them. A foreign key into it must
+  restrict, never cascade or set null: either would be an UPDATE or DELETE
+  the trigger refuses. The table's owner can still drop the trigger; that is
+  a reviewed migration, not an accident.
+- **One-row tables (`Settings`, `Business`) carry a `singleton` column that
+  is unique and held true by a CHECK, and are read by `singleton: true`.** A
+  second row cannot be inserted by any path, so there is never a question of
+  which settings row is the real one.
+- **A customer's phone is stored as `0` plus 10 digits, written by
+  `canonicalNigerianPhone`** (plan §4.2), and a CHECK on `Customer.phone`
+  refuses any other spelling. Requests accept `0…` and `+234…`; storing both
+  would let one number be two customers. TAY's copy of the helper returns
+  `+234…`; CNC follows its own plan, and the two services never compare
+  numbers.
+- **Emails that identify a person (`Staff.email`, `Customer.email`) are
+  stored lower case, and a CHECK refuses anything else.** The unique index
+  is case-sensitive, so `Ada@x.com` and `ada@x.com` would otherwise be two
+  accounts.
+- **A seed inserts what is missing and never updates a row**
+  (`createMany({ skipDuplicates: true })`, keyed on each table's natural
+  key: a slug, a room and code, a menu item). Once the Owner has changed a
+  price or a manager a description in the staff app, the database is the
+  record; a seed that wrote its values again would quietly undo their work,
+  and "re-running changes nothing" is then true by construction, with no
+  `version` or `updatedAt` moved.
+- **Every seed that writes builds its client with `createWritingSeedClient`
+  (`prisma/seed-client.ts`), passing its own `CNC_SEED_<X>_ALLOW_REMOTE`
+  flag by literal name.** The remote-database check then runs before any
+  connection in every seed, and a new seed cannot forget it. Today:
+  `CNC_SEED_DATA_ALLOW_REMOTE` (`npm run db:seed`) and
+  `CNC_SEED_OWNER_ALLOW_REMOTE` (`npm run db:seed:owner`).
+- **The menu is seeded from copies of `cnc-frontend`'s sources in
+  `prisma/seed-data/`, joined by `buildMenuSeed` (`prisma/menu-seed.ts`), which
+  throws when the website and the staff app disagree on a price, a signature
+  or a choice.** The website wins on every field it shows (the shared
+  contract's slugs, names and descriptions); the staff file adds the staff id,
+  category, department and availability. A seed that silently picked one of
+  two prices would be setting a price, which is the founder's decision (Q7),
+  not a script's. The copies are not edited to change the menu: after the
+  first seed, the menu changes in the staff app.
+- **Every Bar menu item has its paired Bar stock item in the same write**,
+  and the data seed checks it before committing: a Bar item left unpaired
+  (a stock item already holding its name) rolls the whole run back with the
+  item's slug. A Bar sale deducts the paired item, so an unpaired Bar item is
+  one that can be sold and never counted.
+- **The paired Bar stock item's shape lives once, in `BAR_STOCK_SHAPE`
+  (`src/menu/bar-stock.ts`), and both writers use it: the data seed and
+  `menu.save`.** Two copies of four numbers drift, and a drink the Owner
+  adds in the app would then be stocked differently from one seeded beside
+  it. `menu.save` creates the pair in the item's own transaction, and a
+  stock item already holding the name, ignoring case, refuses the whole
+  create with 409 "This stock item already exists."
+- **A new menu item's slug is made from its name by `uniqueSlug`
+  (`src/menu/menu-slug.ts`), under an advisory lock, and is never reused:
+  a second "Zobo Spritz" is `zobo-spritz-2`.** Items are never deleted, so
+  every slug ever issued is still in the table; a link or a saved cart that
+  names a slug must keep meaning the same dish. The lock stops two creates
+  of one name both finding the same slug free.
+- **Inside an interactive transaction, read a row's relations with separate
+  queries awaited in turn, never a nested `select` or `include`**
+  (`readMenuItems` in `src/menu/menu.service.ts` is the pattern). Prisma 7
+  sends a nested select's queries on the transaction's one connection at
+  the same time; `pg` 8 queues them with a deprecation warning, and `pg` 9
+  will refuse them. Outside a transaction the queries go to the pool and a
+  nested select is fine.
+- **A request field written to an `Int` column is capped at `INT4_MAX`
+  (`src/prisma/int4.ts`) in its DTO.** A larger number reaches Postgres as
+  an out-of-range error and answers 500; capped, it is a 400 the caller can
+  act on.
 
 ## Auth *(from C3)*
 
@@ -357,6 +513,330 @@ They are here so the first card that builds it starts from the rule.
 - **The last-Owner rule is the domain's** (plan §11): `403`, "CNC needs at
   least one active Owner." An Owner may step down while another active Owner
   exists. TAY's self-lockout rule is not copied.
+- **Every writer of `Staff.passwordHash` hashes through `hashPassword`
+  (`src/auth/password.ts`), and every reader verifies through
+  `verifyPassword`.** An argon2 digest records its own cost, so a hash made
+  with weaker parameters still verifies and nothing reports it. TAY's
+  first-admin seed carries its own copy of the parameters for exactly that
+  reason to go wrong; here the seed and the auth service share one module.
+  `MIN_PASSWORD_LENGTH` (8, TAY's) lives there too.
+- **Every writer of `Staff.qrToken` mints it with `generateQrToken`
+  (`src/common/qr-token.ts`)**: 32 random bytes, base64url. The token is the
+  part of the QR payload that proves possession; one minting function keeps
+  its entropy and encoding from drifting between the seed, staff creation
+  and the reissue route.
+- **The first Owner is seeded only when no Owner account exists, with
+  `mustChangePassword` true, and the seed never updates or promotes an
+  account.** A re-run that reset the password would revive the one in the
+  operator's shell history; one that ran after the Owner changed their email
+  would mint a second Owner; promoting an existing account by email would
+  turn a typo into an Owner. The seeded password has travelled through a
+  `.env` file and a shell, so it is temporary (A14, the C3 gate's first
+  step). TAY seeds its first admin with the flag off; CNC's plan does not.
+- **Every staff route uses `CncStaffGuard` (`src/auth/guards/`), and a
+  handler reads its actor with `@CurrentStaff()`, never from the token or the
+  body.** The guard reads the row on every request and leaves the live
+  `StaffPrincipal` (id, staff number, name, role) on the request, so a
+  command acts as the role the account holds now and an audit row snapshots
+  the name it has now. A role in a body is the caller's claim; a role in a
+  token is what was true when it was signed.
+- **The access token carries `sub` and `type` and nothing else: no role.**
+  A14 has the guard read the role from the row on every request, so a role
+  claim could only ever be stale, and a claim nobody may trust is one a
+  later handler eventually trusts. TAY's token carries roles "for the UI";
+  CNC's UI reads them from the session response and `GET /staff/me`.
+- **`@Roles(...)` means the demo's `requireRole`: the Owner and Managers
+  always pass, and so does every role listed; `@Roles()` with no roles is
+  managers only, and no `@Roles` at all is every active staff member.** The
+  refusal is 403, "Your current staff role cannot perform this action.",
+  byte for byte. Plan §6.2's table is written that way ("managers always pass
+  unless the row says otherwise"), so the decorator reads like the table.
+  Owner-only rules are not roles: they carry their own "Only the Owner can …"
+  sentences and live with the money controls (C3-4) and the staff rules.
+  `isManager`, `isOwner` and `roleMayRun` (`src/auth/staff-roles.ts`) are the
+  one definition of who a manager is; never restate the list.
+- **A deactivated account is refused on every staff route with "This staff
+  account has been deactivated. Ask the Owner or a manager if you believe
+  this is a mistake." (403), its refresh is the ordinary 401, and its
+  sign-in is the identical "Invalid email or password." (401).** The demo
+  has no sign-in and so no sentence for this; the C3 gate quotes its
+  opening, and the close is in the demo's voice. Sign-in checks the account
+  after the password and answers a deactivated account exactly like a wrong
+  password, so the route never tells a caller which addresses hold
+  accounts; a person already signed in has proved who they are and is told
+  the truth. The staff app signs out on both (plan §14).
+- **An unknown email at sign-in is verified against a decoy hash before the
+  401.** Returning early skips the argon2 work, and the difference in time
+  tells a caller which addresses hold accounts even when the body does not.
+  TAY's sign-in has that gap; CNC closes it for one argon2 verification per
+  miss, on a route limited to ten attempts per address.
+- **`@PasswordChangeExempt()` is on three routes only: change-password,
+  sign-out and `GET /staff/me` (C3-8).** Change-password is how the flag is
+  cleared, and `/staff/me` tells a reloading app who must change it. Sign-out
+  is CNC's addition: it only ends sessions, and a person handed a temporary
+  password at a shared till must be able to leave. A fourth exemption is a
+  question about why the change was forced.
+- **A refresh token is spent by one conditional UPDATE (`revokedAt IS
+  NULL`, unexpired, of the expected realm), and revocation runs on the
+  command's transaction client.** TAY reads the row and then writes it, so
+  two refreshes racing with one cookie (a till with two tabs) could both
+  succeed and fork the session; the single statement lets exactly one win.
+  Revoking inside the transaction makes a new password and the end of the
+  old sessions commit together: a new password with the old sessions alive
+  is the state that must never exist.
+- **Change-password refuses a new password equal to the current one**
+  ("Choose a new password that is different from the current one.", 400).
+  Otherwise a forced change could be cleared by typing the temporary
+  password twice, and the password a manager read out would stay the
+  password.
+- **The admin reset (`POST /staff/people/:id/reset-password`) sets a
+  temporary password from `generateTemporaryPassword`, forces a change at
+  first sign-in, ends every session, and returns the password once in the
+  response.** TAY emails it; CNC has no mail until C6, so the manager hands
+  it over in person, and C6 may move it to email. It is never stored in
+  plain text, logged or written to an audit row. Managers only; a Manager or
+  Owner account only by the Owner ("Only the Owner can create or change
+  Manager and Owner accounts.", the demo's `staff.save` rule); never one's
+  own account ("Use Change Password to change your own password."), because
+  change-password asks for the current password precisely so a stolen token
+  cannot take an account over. The target row is locked while the rules are
+  checked, so a role change landing at the same moment cannot slip past the
+  Owner rule. Staff creation (C3-6) issues its first password the same way.
+- **Throttling is per route: `@UseGuards(ClientAddressThrottlerGuard)` with
+  `@Throttle`, never an APP_GUARD, against a `ThrottlerModule` registered in
+  the module that owns the routes, counting in memory** (plan A18: no Redis
+  at launch; `src/auth/auth-throttle.ts`). Sign-in, change-password and the
+  admin reset allow ten per fifteen minutes per address; refresh thirty,
+  because a refused refresh signs a real person out. A global guard would
+  put every staff read under the sign-in limit as a side effect. The count
+  is per instance, so two instances allow at most twice the number, which
+  is still a number. On a route that also authenticates, the throttler is
+  listed first, so a burst is counted before any token is checked. The 429
+  says "Too many attempts. Wait a few minutes and try again.", not the
+  throttler's default, which names a class. TAY's Redis fallback storage is
+  not copied: with no Redis there is nothing to fall back from.
+- **An e2e test that calls a throttled route sends its own
+  `X-Forwarded-For` address** (`test/staff-auth.e2e-spec.ts` makes a fresh
+  one per call). Every request from the harness otherwise shares one
+  address and one count, so a suite would start answering 429 on its
+  eleventh sign-in, for a reason that has nothing to do with the test.
+- **A test that asserts something is never logged switches the app to
+  `StructuredLogger` first.** The testing module's logger drops everything
+  below error, so "nothing was logged" would pass with no logger at all; the
+  TAY-cookie test also asserts that an expected line did appear, so the
+  capture is known to be live.
+- **`staff.save` changes only the fields it is sent; the status changes
+  only when `isActive` is sent** (plan §17, R2). The demo set an account
+  Active whenever no status came with the save, so a name fix silently
+  re-enabled a deactivated person.
+- **`staff.save` revokes every refresh token the account holds when its
+  role, email or status changes, inside the command's transaction** (A14).
+  The guard refuses a deactivated or re-roled account on its next request
+  anyway; revoking means no refresh can mint a session for the old state
+  either, and a change that rolls back leaves the sessions as they were.
+  A name correction ends nothing.
+- **A new staff account gets a temporary password from
+  `generateTemporaryPassword`, returned once in the create response, and
+  must change it at first sign-in, exactly as the admin reset does.** One
+  way to hand over a password, so the sign-in and forced-change screens
+  serve both; it is never stored in plain text, logged or audited.
+- **The staff QR token is minted only by `generateQrToken`, and reissuing
+  it (`POST /staff/people/:id/qr/regenerate`) changes the token alone: the
+  staff number and attendance are kept** (D44, Q12). A Manager or Owner ID
+  is reissued only by the Owner, as every other change to such an account
+  is. Neither the token nor any part of it is ever returned or audited;
+  the audit row records `qrRegeneratedAt`.
+- **A staff ID card (`GET /staff/me/card`, `GET /staff/people/:id/card`)
+  carries the QR code only as `qrSvg`, rendered on the server by
+  `renderQrSvg` (`src/common/qr-svg.ts`) from `staffQrPayload`
+  (`src/staff/staff-qr.ts`): `CNC-ID:<staff number>:<qrToken>`.** A token
+  in a JSON body ends up in a log, a cache or a screenshot of the network
+  panel; a picture is readable only by a camera pointed at it. The payload
+  is the staff app's own `staffCode` shape (its staff id was the staff
+  number), so printed cards and the scanner stay one format, and the
+  attendance scan (C5-7) parses exactly this through the same module.
+- **The sweep routes (`/internal/sweeps/*`) sit behind `SweepTokenGuard`
+  alone: `x-sweep-token`, compared in constant time with
+  `CncConfigService.sweepToken`, one 401 sentence for absent, wrong and
+  unconfigured, and every call refused when no token is configured.** They
+  are excluded from Swagger and never throttled. Cloud Scheduler is not a
+  staff member, an unset secret must never mean an open route, and a wrong
+  token costs a string comparison before any query runs.
+- **No behaviour may depend on a sweep having run.** Every rule a sweep
+  tidies after is enforced where the row is used (a refresh token is
+  refused once expired, a code after `expiresAt`, an idempotency key only
+  replays its own answer). Cloud Run scales to zero and a Scheduler job can
+  fail; a sweep that became the mechanism would leave the rule broken on
+  exactly those nights.
+- **The tokens sweep deletes by expiry, never by revocation: a revoked
+  refresh token stays until it expires.** It is the record that a session
+  was ended, and the refresh route answers the same 401 for revoked as for
+  unknown, so deleting it early changes nothing a caller sees and loses the
+  record (TAY's rule).
+- **One-time code rows are kept `OTP_RETENTION_HOURS` (24) past their
+  expiry before the tokens sweep deletes them.** The customer sign-in's
+  issuance caps (C6) count those rows; deleting them the moment they
+  expire would let a caller reset their own count by waiting out a code.
+  A cap window longer than a day must raise the constant with it.
+- **The credential limits count the account, not the address; this
+  replaces the per-address counts in the throttling rule above**
+  (`src/auth/auth-throttle.ts`). Sign-in counts the submitted email at the
+  caller's address (10), the email from every address (30) and the address
+  over every email (100); change-password and the admin reset count the
+  signed-in account (10); refresh counts the address only (600). Every till,
+  tablet and phone in the venue reaches Cloud Run from one public address,
+  so per address the eleventh person at a shift change was refused, a guest
+  on the Wi-Fi could lock the whole building out with ten bad sign-ins, and
+  about thirty devices refreshing began signing people out. The windows
+  (15 minutes), the in-memory count (A18) and the 429 sentence are TAY's
+  and unchanged. Each route takes its decorator from `auth-throttle.ts`
+  (`SignInThrottle`, `SignedInCredentialThrottle`, `RefreshThrottle`),
+  which names all three counts the module registers, because a route under
+  the guard runs every registered count it does not skip.
+- **On change-password and the admin reset, `CncStaffGuard` runs before the
+  throttler; this replaces "the throttler is listed first" above.** The count
+  is the account the guard verified (`signedInStaffTracker`, which throws if
+  the guard has not run). Counted before the token was checked, requests
+  with no token used up the venue's attempts and blocked forced first
+  changes; counted on the token's unverified `sub`, a forged token could
+  spend a named person's attempts. A request without a valid token cannot
+  guess a password, so nothing is lost by refusing it uncounted.
+- **A refresh that carries the refresh cookie's name more than once is
+  refused (401), spends neither token, and clears both copies**
+  (`readRefreshCookie`, `clearShadowingRefreshCookies`). Any other
+  `tayxcnc.com` host can set a cookie of the same name at
+  `Domain=.tayxcnc.com`, and the browser sends the one with the longer path
+  first, so reading the first would let that host pick the session: its own
+  token, and the person at the till works as another account. The planted
+  copy is cleared at `Domain=tayxcnc.com` on every prefix of the refresh
+  paths; CNC still never sets a cookie with a `Domain`.
+- **A rotated refresh token presented again more than
+  `REFRESH_REUSE_GRACE_MS` (10 s) after its rotation ends every session of
+  its subject** (`CncTokenService.redeemRefreshToken`; `RefreshToken.rotated`).
+  The browser keeps only the newest token, so an older one comes back only
+  as a copy; without this a thief who refreshed first kept a self-renewing
+  session while the real person saw an ordinary sign-out. The grace window
+  is the two-tab race. A token revoked by a sign-out or an account change
+  (`rotated` false) is stale, not copied, and ends nothing.
+- **Correction to the staff ID card rule above: the SVG keeps the QR token
+  out of a text field, not out of the response.** Any QR library decodes it
+  from the body, so the card is a credential: both card routes answer
+  `Cache-Control: no-store`, and a Manager's or the Owner's card opens only
+  for the Owner and its holder (`MoneyControlService.mayReadCard`, "Only the
+  Owner can open a Manager or Owner Staff ID."). The demo showed every card
+  to every manager; once the attendance scan (C5-7) exists, a decoded card
+  clocks its holder in and out, and Manager and Owner accounts are the
+  Owner's (plan §5.4).
+- **Whether the refresh cookie carries `Secure` is
+  `CncConfigService.secureCookies` (`NODE_ENV=production`), never a check
+  written at a call site.** Staging runs `NODE_ENV=production` with
+  `CNC_ENV=staging`, so a check on `cncEnv` would drop `Secure` on staging
+  while every e2e suite (`NODE_ENV=test`) still passed; the getter's spec
+  fails if it moves.
+
+## Money controls and the audit log *(from C3)*
+
+- **Every Owner-only, limit and own-record rule goes through
+  `MoneyControlService` (`src/money-control/`), and its sentences are the
+  exported constants there, never retyped** (plan §6.2). `ownerOnly` with
+  `OWNER_ONLY_ACTIONS`, `requireOwner` with the price, new-item and
+  settings sentences, `withinLimit` with `LIMITED_DECISIONS`, `notOwn` with
+  `OWN_RECORD_KINDS`, `mayChangeAccount` and `keepsAnActiveOwner` for staff
+  accounts. The screens show these refusals verbatim (A7); one home per
+  sentence is the only way two commands applying the same rule print it the
+  same way.
+- **A figure inside a ported sentence is formatted with `formatKoboShort`**
+  (`src/common/money.ts`): whole naira with no decimals, otherwise two, as
+  the staff app's `money()` prints. "…above the Owner Approval Limit of
+  ₦50,000." is a byte-for-byte sentence, and `formatKobo`'s `₦50,000.00`
+  would change it. Receipts and confirmations keep `formatKobo`.
+- **`withinLimit` runs inside the command's transaction, before the
+  command's own writes, and is the only writer of `ApprovalLedger`.** It
+  takes `pg_advisory_xact_lock` on the manager and the Lagos business date,
+  sums the day as `bigint`, refuses above the limit, and inserts the counted
+  amount, all in that transaction. Read, then insert without the lock, and
+  two approvals racing past the limit both see the old total; the e2e race
+  test fails when the lock is removed. The ledger row commits with the
+  decision it counts, or not at all.
+- **Decisions are recorded in the ledger while the daily limit is off, and
+  the Owner is never recorded** (D36). Switching the limit back on mid-day
+  then counts the day's decisions already made, and the Owner has no daily
+  limit to count against.
+- **`ApprovalLedger` is append-only by trigger, like `AuditLog`, and an
+  amount is always positive.** A deleted or lowered row is a manager's limit
+  quietly raised. A refund counts by its size, so the writer stores the
+  absolute amount.
+- **The last-Owner rule takes one advisory lock before it counts the other
+  active Owners.** Two Owners demoting each other at once would otherwise
+  both see the other still active and leave CNC with none. An advisory lock
+  rather than `SELECT … FOR UPDATE` on the Owner rows, because a command
+  that already holds its target row (`claimVersion`) would deadlock against
+  another holding the other Owner's.
+- **Every command writes its audit row with `AuditService.record(entry,
+  tx)` on its own transaction; the transaction argument is required.** An
+  audit row committed for a change that rolled back is a false record, and
+  a change without its row is invisible (A6, A13). TAY's writer falls back
+  to the base client; CNC's has no fallback to forget.
+- **An audit entry's `action` is the staff app's command name
+  (`order.settle`); the module is derived from it by the writer, and `ref`
+  is the record's human reference** (an order or purchase number, a `KOT-`
+  ref, a staff number, a menu slug). The screens file and filter history by
+  those, and a module passed in by a caller could file a row under the
+  wrong screen. New commands get a label in `audit-sentences.ts`.
+- **`before` and `after` hold plain fields and never a credential;
+  `AuditService` refuses a row that carries one** (`passwordHash`,
+  `qrToken`, `tokenHash`, a password field…), at any depth. The table is
+  append-only, so a secret written there could never be removed. Write a
+  business date as `YYYY-MM-DD`; the sentences show `*Kobo` as naira,
+  `*Bps` as a percentage and an enum value in words.
+- **`GET /staff/audit` returns sentences, never `before` and `after`**
+  (A13, D47): the response is built field by field (`toResponse`), so a raw
+  column cannot ride along. The sentences follow `jsonb`'s key order
+  (shortest key first), not the order the command wrote the fields.
+- **A Manager's audit read hides other Managers' entries by the role on the
+  row (`actorRole`), and keeps rows with no role** (plan §4.8). The role is
+  a snapshot, so an entry made as a Manager stays hidden after a promotion.
+  The filter is written as an `OR` that names `actorRole: null`, because
+  SQL's `NOT` over a null role would hide every customer and system row
+  from every manager.
+- **A non-manager's audit read is one record by `ref`, which a module
+  vouches for through `AuditRefAccess.register`; with no reader it is
+  refused** (plan §4.8, §6.1). Only the record's module knows its row
+  filters (a Bartender's Bar orders, a user's own tasks), so each C4+
+  module registers a reader for its refs in `onModuleInit`. The registry
+  fails closed: a module that forgets to register leaves its history
+  unreadable to staff, never readable by everyone. Reception's one other
+  query is `action=maintenance.save`; anything else is 403 with the role
+  sentence.
+- **An e2e suite that is not about sign-in mints its tokens with
+  `accessTokenFor` and makes its accounts with `createStaffAccount`
+  (`test/staff-fixtures.ts`).** Signing in through the route would put every
+  suite under the sign-in throttle, and one fixture keeps the account's
+  shape in one place.
+- **An Owner-only settings key is refused to a Manager only when its value
+  changes; sent unchanged it passes** (the demo's `settings.save`). The
+  Settings screen sends the whole form, and a Manager saving the printer
+  must not be refused for the VAT field beside it.
+- **The six booking and ordering times and the opening hours are the
+  Owner's, refused with `OWNER_ONLY_TIMES_MESSAGE`, until Q29 is
+  answered** (its default: "the Owner only, like VAT and fees"). The demo
+  had neither, so the sentence is new and follows the settings sentence's
+  form; changing the rule is moving these keys, not rewording a refusal.
+  When a save changes both kinds, the money keys are checked first, as the
+  demo checks them.
+- **A request body is validated before any Owner rule that depends on the
+  stored record, so a non-Owner sending a malformed Owner-only value is told
+  what is malformed (400), and the Owner sentence (403) follows once the
+  value is well formed.** This is a deliberate change of order from the
+  demo, whose `settings.save` and `staff.save` check the Owner first. The
+  ValidationPipe runs before any service, the settings rule depends on the
+  row's current values (an unchanged value passes), and running Owner rules
+  on an unvalidated body in a guard would copy each rule outside the
+  transaction that holds the row. Only a hand-made request sees the
+  difference: the demo's screens do not offer a non-Owner the Owner-only
+  fields. "The money keys are checked first" above holds for well-formed
+  input; `test/staff-demo-ports.e2e-spec.ts` pins the order. Role checks
+  (`@Roles`) are guards and still come first, as `requireRole` does.
 
 ## CORS
 
@@ -470,6 +950,26 @@ They are here so the first card that builds it starts from the rule.
   (A17). A stored signed URL expires and becomes a link that worked once.
   Signing needs `serviceAccountTokenCreator` on the runtime account, granted
   to itself: without it uploads succeed and every download fails.
+- **Every photo goes through `PhotoStore` (`src/images/`), and only
+  `ImagesModule` imports `StorageModule`.** One door into the bucket, and
+  one place for the rules (A17): the file is judged by its bytes, never its
+  name or declared type; it is resized (staff 320 pixels square, menu inside
+  800) with every piece of metadata, GPS position included, removed; it is
+  stored under a fresh random name; and a response signs it through
+  `signedUrlOrNull`, which answers null rather than failing when signing
+  fails.
+- **A photo is uploaded before the command's transaction opens, the old
+  object is removed after the commit, and a command that fails removes the
+  new one.** An upload is a network call no transaction should hold a row
+  lock across; deleting the old object first and then failing would leave
+  a row pointing at nothing, while this order's worst case is an orphaned
+  object nobody references.
+- **The bucket sits behind `MediaStorage` (`src/storage/media-storage.ts`),
+  bound to `GcsMediaStorage` in the service and to `FakeMediaStorage` in
+  every e2e app by `createTestApp`.** No test writes to a real bucket or
+  needs Google credentials, and a suite can read back the exact bytes that
+  were stored. The Google client is made on first use, so booting and the
+  health checks never depend on credentials.
 - **Cloud Scheduler jobs send `Content-Length=0` and are created with
   `--format="value(name)"`** (plan §11), so the job works against Cloud Run
   and the sweep token is never printed.
@@ -605,6 +1105,32 @@ here.
   runs failed on connection timeouts that were not in the code. CI keeps its
   own configuration and is the authority on green. The suite must also pass
   with `--runInBand`.
+- **An e2e suite that saves the one-row tables (`Settings`, `Business`) or
+  the opening hours through their routes holds `lockSharedRows`
+  (`test/shared-rows-lock.ts`) for the whole suite and puts back every
+  value it changed in `afterAll`; the seed suite holds the same lock while
+  it asserts on those rows.** Those writes commit and every suite shares
+  the rows, so without the lock a parallel run shows the seed suite a
+  version it did not move. Such a suite never changes the approval limits,
+  which other suites read live.
+- **An e2e suite never edits a seeded menu item, category or stock item;
+  it makes run-unique ones of its own.** The seed suite holds the seeded
+  menu to its sources field by field, and a fresh CI database may not have
+  been seeded when the suite runs.
+- **A suite that must own the whole database (one Owner only, the first
+  Owner's temporary password, assertions over every audit row) runs on
+  `createIsolatedDatabase` (`test/isolated-database.ts`), seeds it with the
+  real seeds, and drops it in `afterAll`.** The shared test database always
+  holds other suites' Owners and rows, and committing the changes such a
+  test needs there would break the suites running beside it. The helper
+  creates the database on the `CNC_DB_URL` server only when that is a local
+  development database by `databaseTarget`, applies the committed
+  migrations' SQL in order, and removes leftovers older than six hours. On
+  its own database a suite may edit seeded rows; the rule above is about
+  the shared one. The C3 gate walk and the ported staff app specs use it.
+- **Suites that sign staff in through the routes share
+  `test/staff-sessions.ts` (`clientAddress`, the refresh cookie readers).**
+  The cookie name and the address shape are then written once.
 - **`openapi-cnc.json` is written by the app when it boots outside
   production, and by nothing else.** It is gitignored. To refresh it after a
   contract change, start the app once and stop it when the log says the spec

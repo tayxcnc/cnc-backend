@@ -48,6 +48,14 @@ generator client {
 //
 // Nigerian phone validation lives in the DTO layer, not here:
 //   /^(\+234|0)[789][01]\d{8}$/
+// A phone that is stored to be compared (Customer.phone) is written in one
+// form, `0` plus 10 digits (plan §4.2), by canonicalNigerianPhone, and a
+// CHECK in the migration refuses any other spelling.
+//
+// Raw SQL in the migrations adds what Prisma cannot express: CHECK
+// constraints, the case-insensitive StockItem name index, the append-only
+// trigger on AuditLog and the human-number sequences. Each is described on
+// its model below and in the migration that creates it.
 //
 // Deletion policy — every relation states onDelete explicitly; no Prisma
 // default is accepted silently.
@@ -65,3 +73,723 @@ generator client {
 //               path updates, so the action is unreachable. Considered and
 //               left alone — not an oversight.
 // ---------------------------------------------------------------------------
+
+// ============================== ENUMS ======================================
+//
+// Enums travel as UPPER_SNAKE (plan A5); each frontend maps them to its own
+// labels in one adapter.
+
+enum Department {
+  RESTAURANT
+  BAR
+}
+
+enum MenuCategoryKind {
+  FOOD
+  DRINKS
+  SLUSH
+}
+
+enum TableKind {
+  BOOTH
+  DINING
+  WINDOW
+  COUNTER
+  SOFA
+  TWO
+}
+
+/// The receipt printer's paper. The staff app's labels are `80mm`, `58mm`
+/// and `A4`; an enum value cannot start with a digit.
+enum PrinterWidth {
+  MM80
+  MM58
+  A4
+}
+
+/// One role per person, as the staff app has (plan §4.2).
+enum StaffRole {
+  OWNER
+  MANAGER
+  RECEPTION
+  CASHIER
+  WAITER
+  BARTENDER
+  KITCHEN
+  STOREKEEPER
+}
+
+enum AddressZone {
+  JOS
+  PLATEAU
+}
+
+/// How a message reaches a customer: a customer's preferred channel, and the
+/// channel an outbound message is sent on.
+enum ContactChannel {
+  EMAIL
+  SMS
+}
+
+enum OtpPurpose {
+  SIGN_IN
+  CHANGE_EMAIL
+}
+
+/// Which realm a refresh token belongs to (TAY's model).
+enum SubjectType {
+  CUSTOMER
+  STAFF
+}
+
+/// Replaces the staff demo's `bar-` id prefix (D45).
+enum StockKind {
+  KITCHEN
+  BAR
+}
+
+enum AuditActorKind {
+  STAFF
+  CUSTOMER
+  SYSTEM
+}
+
+enum CustomerNotificationKind {
+  ORDER
+  BOOKING
+  ACCOUNT
+}
+
+enum OutboundMessageStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum EnquiryKind {
+  CONTACT
+  GROUP
+}
+
+enum EnquiryStatus {
+  NEW
+  HANDLED
+}
+
+// ============================== REFERENCE DATA (§4.1) ======================
+
+/// The one settings row: VAT, service, fees, approval limits, the printer,
+/// the bell's switches and the ordering times (plan §4.1).
+///
+/// **One row only.** `singleton` is unique and a CHECK in the migration holds
+/// it true, so a second row cannot be inserted by any path. Reads take the
+/// row with `findUniqueOrThrow({ where: { singleton: true } })`.
+///
+/// The defaults are the values in the code today, which Q7 asks the founder
+/// to confirm; the seed (C3-2) writes the row. Which keys only the Owner may
+/// change is a service rule (plan §6.2), not a column property.
+///
+/// Rates are basis points (750 is 7.5%). Times of day are minutes after
+/// midnight, WAT: 1380 is 23:00 and 1410 is 23:30.
+model Settings {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  singleton Boolean @unique @default(true)
+
+  vatBps      Int @default(750)
+  serviceBps  Int @default(0)
+  depositKobo Int @default(0)
+
+  /// The Free Table Reminder, 15 to 1440 (a CHECK holds the range).
+  freeTableReminderMinutes Int @default(180)
+
+  deliveryJosKobo     Int @default(500000)
+  deliveryOutsideKobo Int @default(1000000)
+
+  /// The Owner Approval Limit, per decision.
+  approvalLimitKobo Int     @default(5000000)
+  /// The Daily Approval Limit, per manager per day. Approvals are recorded in
+  /// the ledger even while it is off (D36).
+  dailyLimitOn      Boolean @default(true)
+  dailyLimitKobo    Int     @default(15000000)
+
+  printerWidth PrinterWidth @default(MM80)
+
+  alertLowStock  Boolean @default(true)
+  alertApprovals Boolean @default(true)
+  alertUnsettled Boolean @default(true)
+  alertArrivals  Boolean @default(true)
+
+  lastArrivalMinutes   Int @default(1380)
+  lastOrderSlotMinutes Int @default(1410)
+  slotStepMinutes      Int @default(30)
+  leadPickupMinutes    Int @default(60)
+  leadJosMinutes       Int @default(90)
+  leadOutsideMinutes   Int @default(120)
+
+  version Int @default(0)
+}
+
+/// CNC's business details: one source for the website, receipts and the
+/// entrance (D28). One row, held by `singleton` as on Settings.
+///
+/// `phone` is stored as digits (`08022188797`); the site formats it.
+/// `addressLine` carries no country; the site appends ", Nigeria".
+/// `socialLinks` is an object keyed by network, empty until supplied.
+model Business {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  singleton Boolean @unique @default(true)
+
+  name         String
+  addressLine  String
+  addressLines String[]
+  phone        String
+  email        String
+  registration String
+  /// Coordinates for the map pin, not money: Float is right here.
+  mapLat       Float?
+  mapLng       Float?
+  socialLinks  Json     @default("{}")
+
+  version Int @default(0)
+}
+
+/// The week's opening hours: TAY's model and response shape
+/// (`GET /opening-hours`), keyed by the day, as TAY's is (D26).
+///
+/// The migration that creates the table seeds 08:00 to midnight (480 to 1440)
+/// every day with `ON CONFLICT DO NOTHING`, so applying it again never
+/// overwrites a week the Owner has saved. Two CHECKs, copied from TAY, refuse
+/// an impossible day.
+model OpeningHoursDay {
+  /// 0 = Sunday … 6 = Saturday, JavaScript's `getDay()`.
+  dayOfWeek Int      @id
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  isClosed        Boolean
+  /// Null exactly when `isClosed`.
+  opensAtMinutes  Int?
+  /// Null exactly when `isClosed`. 1440 is midnight at the end of the day.
+  closesAtMinutes Int?
+}
+
+/// A room: Dining and Lounge (D25). Both labels are stored, because the site
+/// says "Dining" where the staff app says "Diner".
+model Venue {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slug          String @unique
+  customerTitle String
+  staffName     String
+  /// The party size from which the website sends a booking to the team as a
+  /// group enquiry: 4 in Dining, 5 in the Lounge.
+  bigParty      Int
+  sort          Int
+
+  tables    DiningTable[]
+  enquiries Enquiry[]
+}
+
+/// A table. Codes repeat across rooms (TS1 to TS3 exist in both), so the code
+/// is unique per venue only (D25). Coordinates, the floor-plan drawing and
+/// descriptive copy stay in the frontends (D61).
+model DiningTable {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  venueId  String
+  code     String
+  name     String
+  kind     TableKind
+  capacity Int
+  active   Boolean   @default(true)
+
+  /// Restrict: a room with tables is not deleted.
+  venue Venue @relation(fields: [venueId], references: [id], onDelete: Restrict)
+
+  @@unique([venueId, code])
+}
+
+/// A customer-facing menu category: the 12 ids the website uses (`breakfast`,
+/// `the-grill`, `slush`…).
+model MenuCategory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slug  String           @unique
+  title String
+  note  String?
+  kind  MenuCategoryKind
+  sort  Int
+
+  staffCategories StaffCategory[]
+  menuItems       MenuItem[]
+}
+
+/// What staff choose when they add a dish ("Pizza", "Tea Corner (Hot)"),
+/// mapped to the customer category it belongs to. Seeded from the 25 entries
+/// in `cnc-frontend/docs/staff-id-map.json`.
+model StaffCategory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name           String     @unique
+  department     Department
+  menuCategoryId String
+
+  /// Restrict: a customer category in use is not deleted.
+  menuCategory MenuCategory @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
+  menuItems    MenuItem[]
+}
+
+/// A dish or a drink (plan §4.1).
+///
+/// `slug` is permanent and never reused, so a link or a cart line that names
+/// it keeps meaning the same dish. `legacyStaffId` (`food-12`, `bar-3`) is the
+/// staff demo's id, kept for the one-time import; items added in the app
+/// have none. A price change applies to new order lines only: each line
+/// snapshots the price it was sold at.
+///
+/// `active` is the staff app's "Available for Sale"; `showOnline` decides
+/// whether the website lists it. `choiceLabel` and `choiceOptions` carry the
+/// 11 dishes that ask the guest to choose (an empty list means no choice).
+/// `photo` is a `gs://` URI, never a URL a browser can load (A17).
+///
+/// A Bar item has exactly one paired Bar StockItem (`stockItem`), created in
+/// the same transaction as the item (plan §5.4, Menu & Prices).
+model MenuItem {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slug            String     @unique
+  legacyStaffId   String?    @unique
+  department      Department
+  staffCategoryId String
+  menuCategoryId  String
+  groupLabel      String?
+  name            String
+  description     String     @default("")
+  /// Never negative (a CHECK in the migration).
+  priceKobo       Int
+  signature       Boolean    @default(false)
+  active          Boolean    @default(true)
+  showOnline      Boolean    @default(true)
+  photo           String?
+  photoAlt        String?
+  choiceLabel     String?
+  choiceOptions   String[]   @default([])
+  sort            Int        @default(0)
+
+  version Int @default(0)
+
+  /// Restrict on both categories: a category with dishes is not deleted.
+  staffCategory StaffCategory @relation(fields: [staffCategoryId], references: [id], onDelete: Restrict)
+  menuCategory  MenuCategory  @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
+  stockItem     StockItem?
+
+  @@index([menuCategoryId, sort])
+  @@index([department])
+}
+
+// ============================== PEOPLE AND SIGN-IN (§4.2) ==================
+
+/// A member of CNC's staff. One role per person, as the staff app has.
+///
+/// `staffNo` (`CNC-S001`) comes from `staff_no_seq`. `email` is unique and
+/// stored lower case (a CHECK refuses anything else), so two spellings of one
+/// address cannot be two accounts. `passwordHash` is argon2id (A14) and
+/// `mustChangePassword` forces a change at first sign-in.
+///
+/// **`qrToken` is a credential, never a field.** 32 random bytes, base64url;
+/// the QR payload is `CNC-ID:<staffNo>:<token>`. No response carries it at
+/// any depth: the person sees it only as a rendered image. With
+/// `passwordHash`, it is on the list of values no response, log or audit row
+/// may contain.
+///
+/// Never deleted: an account is deactivated (`isActive`). Every relation
+/// that records a staff member's act restricts the delete.
+model Staff {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staffNo            String    @unique
+  name               String
+  email              String    @unique
+  role               StaffRole
+  isActive           Boolean   @default(true)
+  passwordHash       String
+  mustChangePassword Boolean   @default(true)
+  /// A `gs://` URI, or null (A17).
+  photo              String?
+  qrToken            String    @unique
+  qrRegeneratedAt    DateTime?
+  joinedOn           DateTime  @db.Date
+  /// The manager overview's layout, saved per person (today in the
+  /// browser's localStorage). Null until first saved.
+  overviewPrefs      Json?
+
+  version Int @default(0)
+
+  passwordResetTokens PasswordResetToken[]
+  auditEntries        AuditLog[]
+  approvals           ApprovalLedger[]
+
+  @@index([role, isActive])
+}
+
+/// A website and app customer (plan §4.2). The models exist from C3 so the
+/// audit log and customer notifications can name a customer; the routes that
+/// create and sign in customers arrive in C6.
+///
+/// `memberNo` (`CNC-000001`) comes from `customer_member_no_seq` and replaces
+/// the number the account screen derives from the id today. `email` and
+/// `phone` are each unique and nullable: a customer may have either. Email is
+/// stored lower case; phone is stored as `0` plus 10 digits (a CHECK refuses
+/// `+234…` and every other spelling), so one number cannot be two customers.
+///
+/// `prefOffers` is stored false and refused as true until the founder
+/// enables offers. Never deleted: Q36's default anonymises instead.
+model Customer {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberNo             String         @unique
+  name                 String
+  email                String?        @unique
+  phone                String?        @unique
+  emailVerifiedAt      DateTime?
+  phoneVerifiedAt      DateTime?
+  addressZone          AddressZone?
+  addressStreet        String?
+  addressArea          String?
+  addressTown          String?
+  addressLandmark      String?
+  prefOrderUpdates     Boolean        @default(true)
+  prefBookingReminders Boolean        @default(true)
+  prefOffers           Boolean        @default(false)
+  prefChannel          ContactChannel @default(EMAIL)
+  /// A `gs://` URI, or null (A17).
+  photo                String?
+  /// Notifications created after this instant are unread.
+  notificationsReadAt  DateTime?
+
+  otpCodes      OtpCode[]
+  notifications CustomerNotification[]
+  auditEntries  AuditLog[]
+}
+
+/// A one-time sign-in or email-change code (A15). The code is 6 digits and
+/// is never stored or returned: `codeHash` is `sha256(code)` as hex, so a
+/// database read never yields a usable code. The attempt limit and the
+/// 10-minute expiry are the defence against guessing, not the hash.
+///
+/// `contact` is the normalised email (or phone) the code was sent to;
+/// `customerId` is set when the contact already belongs to a customer, and
+/// nulls if that customer is ever removed (optional attribution nulls).
+model OtpCode {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purpose     OtpPurpose
+  contact     String
+  customerId  String?
+  codeHash    String
+  attempts    Int        @default(0)
+  expiresAt   DateTime
+  resendAfter DateTime
+  consumedAt  DateTime?
+  ipAddress   String?
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([contact, purpose, createdAt])
+  @@index([ipAddress, createdAt])
+  @@index([expiresAt])
+}
+
+/// Refresh tokens for both realms: TAY's model (plan §4.2).
+///
+/// `subjectId` is deliberately not a foreign key: one table serves customers
+/// and staff, and a column pointing at one of two tables by a discriminator
+/// cannot be expressed cleanly. Revocation is a `subjectId` + `subjectType`
+/// lookup, and verification re-reads the subject, so an orphaned row is
+/// unusable anyway.
+///
+/// `tokenHash` is `sha256(rawToken)` as hex, not argon2: the raw token is 256
+/// random bits with nothing to brute-force, and a deterministic digest is
+/// itself the lookup key. Single-use and rotated on every refresh.
+///
+/// `rotated` is true only on a row spent by a refresh, never on one revoked
+/// by a sign-out, a password change or an account change. A rotated token
+/// presented again is a copy being replayed (reuse detection,
+/// `CncTokenService.redeemRefreshToken`); a signed-out one is just stale.
+model RefreshToken {
+  id          String      @id @default(cuid())
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  tokenHash   String      @unique
+  subjectId   String
+  subjectType SubjectType
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  rotated     Boolean     @default(false)
+
+  @@index([subjectId, subjectType])
+  @@index([expiresAt])
+}
+
+/// A single-use staff password reset (TAY's model, staff only). The raw
+/// token is returned once and never stored; `tokenHash` is its SHA-256.
+/// `consumedAt` rather than `revokedAt`, because a reset is spent.
+///
+/// Cascade: a reset token is meaningless without its staff member, and staff
+/// are never deleted in any case.
+model PasswordResetToken {
+  id         String    @id @default(cuid())
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  tokenHash  String    @unique
+  staffId    String
+  expiresAt  DateTime
+  consumedAt DateTime?
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId])
+  @@index([expiresAt])
+}
+
+// ============================== STOCK (§4.6, the item only) ================
+
+/// A stock item (plan §4.6). Only the item exists from C3, because the seed
+/// pairs every Bar menu item with one and `menu.save` creates one for each
+/// new Bar item; balances and movements arrive with the stock cards in C4.
+///
+/// `name` is unique **case-insensitively**: the staff app refuses "Rice"
+/// beside "rice" ("This stock item already exists."). Prisma cannot express
+/// an index on `lower(name)`, so the migration creates it as
+/// `StockItem_name_key`, which `uniqueViolationTargets` reads as `["name"]`.
+///
+/// `unit` is "Used As", `pack` is "Bought As", `factor` is "How Many in One"
+/// and `minimum` is the reorder level in usage units. A CHECK holds `factor`
+/// above zero and `minimum` at zero or above.
+///
+/// `kind` replaces the demo's `bar-` id prefix (D45). **A Bar item is
+/// exactly the paired stock of one Bar menu item, and a Kitchen item has
+/// none**: a CHECK ties `kind = 'BAR'` to `menuItemId IS NOT NULL`, and
+/// `menuItemId` is unique, so no menu item has two. Restrict: a menu item
+/// with stock is never deleted (it is deactivated).
+model StockItem {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name       String
+  kind       StockKind
+  unit       String
+  pack       String
+  factor     Int
+  minimum    Int
+  menuItemId String?   @unique
+  active     Boolean   @default(true)
+
+  version Int @default(0)
+
+  menuItem MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+
+  @@index([kind])
+}
+
+// ============================== MONEY CONTROLS (§4.3, the ledger only) =====
+
+/// The Daily Approval Limit's ledger (plan §4.3, §6.2): one row per money
+/// decision a manager made that counts toward their day, written by
+/// `MoneyControlService.withinLimit` in the command's own transaction.
+///
+/// **The sum is taken and the row inserted under
+/// `pg_advisory_xact_lock` on the manager and the business date**, so two
+/// approvals racing past the limit cannot both see the old total. Rows are
+/// written while the daily limit is switched off too (D36), so switching it
+/// back on counts the day's decisions already made. The Owner is never
+/// recorded: the Owner has no daily limit.
+///
+/// `amountKobo` is the amount counted (positive: a refund counts by its
+/// size); `action` is the command (`waste.approve`) and `ref` the record's
+/// human reference. **Append-only**, by trigger as `AuditLog` is: a ledger
+/// row deleted is a manager's limit quietly raised. Restrict: a manager with
+/// approvals is never deleted (staff are deactivated).
+model ApprovalLedger {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  businessDate DateTime @db.Date
+  staffId      String
+  amountKobo   Int
+  action       String
+  ref          String?
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([staffId, businessDate])
+}
+
+// ============================== AUDIT, MESSAGES, ENQUIRIES (§4.8) ===========
+
+/// The activity history: one row per command, written by one service
+/// (`AuditService.record(entry, tx)`) inside the command's own transaction
+/// (A6, A13).
+///
+/// **Append-only, enforced by the database.** A trigger raises on every
+/// UPDATE, DELETE and TRUNCATE of this table, so no code path, mistaken
+/// migration script or console session can rewrite history; TAY enforces the
+/// same rule by convention only (D47). There is no `updatedAt`, because a
+/// row never changes. `at` is the row's creation time.
+///
+/// The actor: `actorKind` says which of `staffId` and `customerId` is set (a
+/// CHECK requires the matching id), and `actorName` and `actorRole` are
+/// snapshots, so the entry reads the same after a rename. Both relations
+/// restrict: an entry without its actor is not an entry.
+///
+/// `before` and `after` are kept for the server's plain-sentence port of
+/// `describeChange`; **no API response returns them raw** (A13), and they
+/// never hold a password hash, a QR token or a token of any kind.
+model AuditLog {
+  id String   @id @default(cuid())
+  at DateTime @default(now())
+
+  actorKind  AuditActorKind
+  staffId    String?
+  customerId String?
+  actorName  String
+  actorRole  String?
+  /// The command name, e.g. `order.settle`.
+  action     String
+  module     String
+  ref        String?
+  before     Json?
+  after      Json?
+  reason     String?
+  channel    String?
+  ipAddress  String?
+
+  staff    Staff?    @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([at])
+  @@index([ref])
+  @@index([staffId, at])
+  @@index([module, action, at])
+}
+
+/// A customer's in-app notification list. Written by the same events that
+/// send email; reads are tracked by `Customer.notificationsReadAt`.
+/// `dedupeKey` makes each event write at most one row however often it is
+/// processed. Cascade: a notification is meaningless without its customer.
+model CustomerNotification {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  customerId String
+  kind       CustomerNotificationKind
+  title      String
+  body       String
+  link       String?
+  dedupeKey  String                   @unique
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+}
+
+/// An email or SMS waiting to go, sent after the command commits: a failed
+/// send never rolls a command back (plan §4.8). `dedupeKey` makes each event
+/// enqueue at most one message. The retry sweep (C6-8) re-sends `PENDING`
+/// and `FAILED` rows up to three attempts.
+///
+/// `lastError` is the provider's reason, never the message body or subject.
+model OutboundMessage {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channel   ContactChannel
+  to        String
+  template  String
+  dedupeKey String                @unique
+  status    OutboundMessageStatus @default(PENDING)
+  attempts  Int                   @default(0)
+  sentAt    DateTime?
+  lastError String?
+
+  @@index([status, createdAt])
+}
+
+/// A contact-form message or a large-group booking enquiry (D50). Stored,
+/// then emailed to CNC. `ipHash` is a SHA-256 of the caller's address, for
+/// rate limiting and abuse review without keeping the address itself.
+/// `guests` is the form's text ("4+ guests"), not a number.
+model Enquiry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  kind          EnquiryKind
+  name          String
+  email         String?
+  phone         String?
+  subject       String?
+  message       String
+  venueId       String?
+  requestedDate DateTime?     @db.Date
+  guests        String?
+  status        EnquiryStatus @default(NEW)
+  ipHash        String?
+
+  venue Venue? @relation(fields: [venueId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+}
+
+/// A stored response for an `Idempotency-Key` (A9).
+///
+/// `IdempotencyService` inserts the row **inside the command's own
+/// transaction, before the command runs**, and fills in the response before
+/// it commits. So the key and the command commit together or not at all: a
+/// refused or failed command leaves no row and may be retried with the same
+/// key, and a duplicate arriving while the first is still running waits on
+/// the unique index and then replays its response.
+///
+/// `scope` is `staff:<id>`, `customer:<id>` or `anon:<ip-hash>`, so one
+/// caller's key never replays another caller's response. `requestHash` is the
+/// SHA-256 of the request's route parameters, query and body: the same key
+/// with a different request is a 409, never a replay of the wrong answer.
+/// Rows older than 7 days are deleted by the tokens sweep.
+model IdempotencyKey {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  scope          String
+  key            String
+  route          String
+  requestHash    String
+  responseStatus Int?
+  responseBody   Json?
+
+  @@unique([scope, key])
+  @@index([createdAt])
+}

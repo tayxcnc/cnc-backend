@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, type Type, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { App } from 'supertest/types';
 import { CncAppModule } from '../src/app.module';
@@ -9,6 +9,8 @@ import {
 } from '../src/bootstrap';
 import { requestIdMiddleware } from '../src/common/request-id.middleware';
 import { CncConfigService } from '../src/config/cnc.config';
+import { MediaStorage } from '../src/storage/media-storage';
+import { FakeMediaStorage } from './fake-media-storage';
 
 /**
  * A CNC application wired the way `bootstrap()` wires the real one.
@@ -19,13 +21,27 @@ import { CncConfigService } from '../src/config/cnc.config';
  * so the harness and the service cannot drift apart.
  *
  * Helmet and Swagger are left out: neither changes a status code or a body.
- * Later cards add fakes here for every third party (mail, Paystack, storage),
- * so no suite ever reaches one over the network.
+ * Every third party is replaced by a fake here, so no suite ever reaches
+ * one over the network: today the media bucket (`MediaStorage`, an
+ * in-memory `FakeMediaStorage`; read it back with
+ * `app.get(MediaStorage, { strict: false })`). Mail and Paystack join it
+ * with their cards.
+ *
+ * `controllers` adds test-only routes beside the real ones, for a suite that
+ * proves a piece of shared infrastructure (optimistic versions, idempotency)
+ * through HTTP before any real route uses it. They exist in that suite's app
+ * only and never in the service.
  */
-export async function createTestApp(): Promise<INestApplication<App>> {
+export async function createTestApp(
+  options: { controllers?: Type<unknown>[] } = {},
+): Promise<INestApplication<App>> {
   const moduleFixture = await Test.createTestingModule({
     imports: [CncAppModule],
-  }).compile();
+    controllers: options.controllers ?? [],
+  })
+    .overrideProvider(MediaStorage)
+    .useValue(new FakeMediaStorage())
+    .compile();
 
   // `rawBody` matches bootstrap(): the Paystack webhook (C7) authenticates by
   // an HMAC over the unparsed bytes.

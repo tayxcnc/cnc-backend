@@ -28,11 +28,17 @@ import { defineConfig } from 'prisma/config';
  * schemas needs a guard refusing a `--schema` that names the other one, or a
  * migration lands in the wrong database. This repository holds one schema,
  * so there is no other one for `--schema` to name.
+ *
+ * `migrations.seed` is the reference data and menu seed (`npm run db:seed`),
+ * which writes no credential. The first Owner (`npm run db:seed:owner`) is
+ * deliberately not here: `migrate reset` runs this key, and a reset must
+ * never create a credential.
  */
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   migrations: {
     path: 'prisma/migrations',
+    seed: 'ts-node -r dotenv/config prisma/seed.ts',
   },
   datasource: {
     url: process.env.CNC_DB_URL ?? '',

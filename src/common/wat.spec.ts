@@ -1,5 +1,6 @@
 import {
   watCalendarFields,
+  watDayBounds,
   watInstantAt,
   watSessionEnd,
   watToday,
@@ -60,6 +61,13 @@ describe('WAT', () => {
     expect(watToday(new Date('2026-10-20T23:00:00.000Z')).toISOString()).toBe(
       '2026-10-21T00:00:00.000Z',
     );
+  });
+
+  it('bounds a Nigerian day from 23:00 UTC the day before, end exclusive', () => {
+    const { start, end } = watDayBounds(new Date('2026-10-21T00:00:00.000Z'));
+
+    expect(start.toISOString()).toBe('2026-10-20T23:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-10-21T23:00:00.000Z');
   });
 
   it('carries the local calendar fields on the UTC getters', () => {

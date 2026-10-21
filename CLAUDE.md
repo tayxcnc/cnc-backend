@@ -39,8 +39,14 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `migrate dev` local only; `migrate deploy` by hand before the merge | Data and migrations |
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
+| Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
+| Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
+| Staff accounts: R2, session revocation, first passwords, QR reissue | Auth |
+| Staff ID cards and the QR payload; the sweep routes and the tokens sweep | Auth |
+| Suites that need a database of their own (`createIsolatedDatabase`) | Local environment |
+| Shared-row e2e suites, seeded rows in tests | Local environment |
 | TAY staging resources CNC work never touches | Infrastructure → Never touched from CNC work |
 | Editor tools only, no `sed`/`awk`/`perl` | Making changes to source files |
 | Branches, merges, PRs, commit identity, hooks, attribution | Git and workflow |
@@ -66,6 +72,8 @@ npm run mock             # prism mock against openapi-cnc.json, port 4014
 
 npm run db:generate      # prisma generate, to generated/cnc-client
 npm run db:migrate       # prisma migrate dev, LOCAL ONLY
+npm run db:seed          # reference data, menu, paired Bar stock (also Prisma's seed key)
+npm run db:seed:owner    # the first Owner, by hand only (never the seed key)
 ```
 
 ## Layout
@@ -77,13 +85,35 @@ src/
   app.module.ts      CncAppModule
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
-  common/            money, dates, errors, pagination, request helpers
+  audit/             AuditService (the one writer), GET /staff/audit and its
+                     sentences, AuditRefAccess for non-manager record reads
+  auth/              staff sign-in, refresh, sign-out, change-password, admin reset;
+                     CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
+  money-control/     MoneyControlService: Owner-only rules, approval limits and
+                     the daily ledger, own record, Manager/Owner accounts, last Owner
+  common/            money, dates, errors, pagination, request helpers, QR tokens
+                     and their SVG renderer, the client-address throttler guard
   health/            liveness and readiness
-  prisma/            CncPrismaService, sequences, Prisma error helpers
+  idempotency/       Idempotency-Key: the service, decorator and scopes
+  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens sweep
+  images/            PhotoStore: byte inspection, sharp resizing, the upload route
+                     decorator; the only importer of storage/
+  storage/           MediaStorage and its Cloud Storage binding (gs:// URIs, V4 links)
+  staff/             Staff & Access: staff.save, staff.photo, the ID reissue,
+                     staff ID cards (the QR payload in staff-qr.ts)
+  settings/          settings.save, business details, opening hours
+  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item
+  shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
+  prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
   migrations/
-test/                e2e specs and create-test-app.ts
+  seed.ts, seed-owner.ts   the two seed entry points (data-seed.ts, owner-seed.ts do the work)
+  menu-seed.ts       joins the copied menu sources; refuses a disagreement
+  seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
+test/                e2e specs, create-test-app.ts, staff-fixtures.ts,
+                     staff-sessions.ts, isolated-database.ts,
+                     fake-media-storage.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts
 ```
 

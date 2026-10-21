@@ -151,3 +151,22 @@ export function watToday(now: Date): Date {
     Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()),
   );
 }
+
+/**
+ * The instants a Nigerian calendar day runs between: `start` inclusive,
+ * `end` exclusive (the next day's start). For filtering a timestamp column
+ * by business date, as `GET /staff/audit?from&to` does: `at >= start of
+ * from` and `at < end of to`.
+ *
+ * `calendarDate` is a `@db.Date`-shaped value (UTC midnight), such as
+ * `parseIsoDate` returns. Copied from TAY's `watDayBounds`.
+ */
+export function watDayBounds(calendarDate: Date): { start: Date; end: Date } {
+  const start = watWallClockToUtc(
+    calendarDate.getUTCFullYear(),
+    calendarDate.getUTCMonth(),
+    calendarDate.getUTCDate(),
+  );
+
+  return { start, end: new Date(start.getTime() + 24 * 60 * MINUTE_MS) };
+}

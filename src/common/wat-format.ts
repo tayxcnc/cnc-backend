@@ -33,6 +33,39 @@ export function formatWatLongDate(instant: Date): string {
   return `${local.getUTCDate()} ${MONTHS[local.getUTCMonth()]} ${local.getUTCFullYear()}`;
 }
 
+/**
+ * The month abbreviations the staff app prints. They are what
+ * `toLocaleString('en-GB', { month: 'short' })` gives on Node 22 and current
+ * browsers, `Sept` included.
+ */
+const SHORT_MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sept',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+/**
+ * `05 Oct, 18:30` — the staff app's `timeLabel` (`staff/lib/domain.ts`):
+ * the Nigerian day and wall clock at an instant, day and time zero-padded.
+ * The audit sentences print a changed timestamp this way, as the staff app
+ * did.
+ */
+export function formatWatShortStamp(instant: Date): string {
+  const local = watCalendarFields(instant);
+  const day = String(local.getUTCDate()).padStart(2, '0');
+
+  return `${day} ${SHORT_MONTHS[local.getUTCMonth()]}, ${formatWatClock(instant)}`;
+}
+
 /** `18:30` — the wall clock in Nigeria at an instant, zero-padded 24-hour. */
 export function formatWatClock(instant: Date): string {
   const local = watCalendarFields(instant);

@@ -551,4 +551,18 @@ export class CncConfigService {
   get nodeEnv(): string {
     return process.env.NODE_ENV ?? 'development';
   }
+
+  /**
+   * Whether the refresh cookies carry `Secure` (A16): on every built
+   * container, staging included, and nowhere else.
+   *
+   * Decided by `NODE_ENV`, never by `cncEnv`: staging runs
+   * `NODE_ENV=production` with `CNC_ENV=staging`, so `cncEnv === 'production'`
+   * would quietly issue a staging cookie without `Secure`. Local development
+   * is plain HTTP, where a `Secure` cookie would never be stored. One getter,
+   * with a spec, so the rule has one home and a test that fails when it moves.
+   */
+  get secureCookies(): boolean {
+    return this.nodeEnv === 'production';
+  }
 }
