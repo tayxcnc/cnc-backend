@@ -9,6 +9,7 @@ import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
 import { HealthController } from './health/health.controller';
 import { SERVICE_NAME } from './health/service-name.token';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { SweepsModule } from './internal/sweeps.module';
 import { MenuModule } from './menu/menu.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
@@ -43,6 +44,7 @@ import { StaffModule } from './staff/staff.module';
     SettingsModule,
     MenuModule,
     ShellModule,
+    SweepsModule,
   ],
   controllers: [HealthController],
   providers: [
