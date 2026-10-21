@@ -30,6 +30,11 @@ import { OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE } from '../src/money-control/money-
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp } from './create-test-app';
 import { createStaffAccount } from './staff-fixtures';
+import {
+  clientAddress,
+  staffRefreshCookieLine,
+  staffRefreshCookieOf,
+} from './staff-sessions';
 
 /**
  * Staff sign-in, refresh, sign-out, change-password and the admin reset
@@ -62,11 +67,7 @@ describe('staff auth (e2e)', () => {
 
   const server = () => app.getHttpServer();
 
-  /**
-   * A fresh client address, as Cloud Run's front end would forward it: the
-   * caller, then the front end. `clientAddressOf` takes the caller.
-   */
-  const address = () => `10.${[...randomBytes(3)].join('.')}, 10.255.255.1`;
+  const address = clientAddress;
 
   interface Account {
     id: string;
@@ -94,20 +95,8 @@ describe('staff auth (e2e)', () => {
       .set('X-Forwarded-For', from)
       .send({ email, password });
 
-  /** The value of the staff refresh cookie a response set, if any. */
-  function setCookieLine(response: request.Response): string | undefined {
-    const lines = response.headers['set-cookie'] as unknown as
-      string[] | undefined;
-
-    return lines?.find((line) => line.startsWith('cnc_staff_refresh_token='));
-  }
-
-  function refreshCookieOf(response: request.Response): string {
-    const line = setCookieLine(response);
-    if (line === undefined) throw new Error('No staff refresh cookie was set.');
-
-    return line.split(';')[0].slice('cnc_staff_refresh_token='.length);
-  }
+  const setCookieLine = staffRefreshCookieLine;
+  const refreshCookieOf = staffRefreshCookieOf;
 
   interface Session {
     accessToken: string;
