@@ -11,6 +11,7 @@ import {
   StockLocation,
   StockMovementType,
 } from '../generated/cnc-client';
+import { BUSINESS } from '../prisma/seed-data/reference';
 import { CncTokenService } from '../src/auth/cnc-token.service';
 import { ROLE_REFUSED_MESSAGE } from '../src/auth/staff-roles';
 import { ADMIN_REASON_MESSAGE } from '../src/common/admin-reason';
@@ -79,8 +80,13 @@ describe('Stock core (e2e)', () => {
     prisma = app.get(CncPrismaService);
 
     // The settings row the limits are read from, with the column defaults,
-    // if no seed has run on this database.
+    // and the business row the staff reference read needs, if no seed has
+    // run on this database (a fresh CI database); never changed if present.
     await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await prisma.business.createMany({
+      data: [{ ...BUSINESS, addressLines: [...BUSINESS.addressLines] }],
+      skipDuplicates: true,
+    });
     approvalLimitKobo = (
       await prisma.settings.findUniqueOrThrow({
         where: { singleton: true },
