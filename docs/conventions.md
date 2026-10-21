@@ -974,6 +974,21 @@ They are here so the first card that builds it starts from the rule.
   rule.** A8 does not list it, and a rule is replaced, not edited, so the
   last save wins; the lock stops two saves interleaving their portions. The
   rule never fills in a kitchen entry or moves stock.
+- **A Store count's difference is valued in units: packs × the item's
+  `factor`, then `stockValueKobo`; a Kitchen or Bar count's difference is
+  already in units** (from the C4 review). The Store holds packs and
+  `stockValueKobo` values units, so a Store count of nine batches of a
+  ₦5,000 drink (108 servings) was valued at ₦45,000 and slipped under the
+  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock (C5's
+  waste, purchases) converts the same way.
+- **`stock.count` takes an `Idempotency-Key` after all; this replaces the
+  count half of the rule above that a count needs none** (from the C4
+  review). A count writes `counted − recorded` as read at retry time, so a
+  retry after a lost response undid any sale or issue that landed between
+  the two tries, and counted its value toward the manager's day again. The
+  role rule is checked in the controller before the idempotency service, as
+  Correct Balance's Owner rule is. A new stock item still needs no key: a
+  retry is refused on the name.
 
 ## Orders and dockets *(from C4)*
 
@@ -1131,6 +1146,32 @@ They are here so the first card that builds it starts from the rule.
   and reverse; the correction's reason goes in the row's `reason`.** The
   history then reads "Status changed from Open to Payment." in the staff
   app's words, and no payment detail beyond money reaches the log.
+- **A bill never owes less than the money already taken against it: a line
+  change, a discount and Proceed to Payment each call
+  `OrdersService.assertCoversPaid`, which refuses with 409 "This bill
+  cannot total less than the part payments already taken."** (from the C4
+  review; a new sentence, the demo had none). The demo let a manager reopen
+  a part-paid bill and cut it below its part payments; after that settle
+  needs exact cover of a negative balance, cancel refuses a part-paid bill
+  and reverse needs a settled one, so the bill and its table were stuck for
+  good. Refusing the cut changes no price or payment rule; a bill brought
+  down to exactly what was paid settles with no payment. Giving money back
+  on a reopened bill (a refund or change path) is a money rule for the
+  founder, not taken here.
+- **A Bar settle that is short names the first short drink in bill order,
+  as the demo's line-by-line moves do** (from the C4 review). The moves
+  still go in stock-item id order so two settles cannot deadlock; before
+  them the sale locks the drinks' Bar balances with `lockBalances` (also id
+  order) and walks the lines in bill order to find the shortfall, so the
+  sentence names the drink the screen expects. The ledger's conditional
+  decrement still guards every move.
+- **A settlement test that claims food stock does not move gives the dish a
+  comparison rule and a kitchen entry first, and compares every movement of
+  the portion and of the bill's and docket's refs before and after** (from
+  the C4 review). Filtering by the bill's number alone, on a dish with no
+  rule, passed with settle deducting by the rule or repeating the entry
+  under `KOT-`; the stronger test was seen failing with such a deduction
+  added.
 
 ## Kitchen entries, the kitchen day and the cash count *(from C4)*
 
@@ -1660,6 +1701,13 @@ here.
   the per-table lock (the booking-against-walk-in race, in each of three
   runs). Repeat that check after changing any of those guards, because a
   race test that passes with its guard removed proves nothing.
+- **A suite whose assertions depend on the hour of the day fakes `Date`
+  through `test/fake-date.ts` (`fakeDateOnly`, `nextNoonInJos`), the races
+  and Reception suites included** (from the C4 review). Both booked today
+  at 23:45 or 23:59 on the real clock, which Reception refuses as past in
+  the last minutes of a Lagos day; the Reception suite was seen failing so
+  at 23:59 WAT with every guard working. The helper holds the one list of timers left real, so the gate,
+  the demo ports and the races cannot drift apart.
 
 ## Verification
 
