@@ -646,6 +646,38 @@ They are here so the first card that builds it starts from the rule.
   is reissued only by the Owner, as every other change to such an account
   is. Neither the token nor any part of it is ever returned or audited;
   the audit row records `qrRegeneratedAt`.
+- **A staff ID card (`GET /staff/me/card`, `GET /staff/people/:id/card`)
+  carries the QR code only as `qrSvg`, rendered on the server by
+  `renderQrSvg` (`src/common/qr-svg.ts`) from `staffQrPayload`
+  (`src/staff/staff-qr.ts`): `CNC-ID:<staff number>:<qrToken>`.** A token
+  in a JSON body ends up in a log, a cache or a screenshot of the network
+  panel; a picture is readable only by a camera pointed at it. The payload
+  is the staff app's own `staffCode` shape (its staff id was the staff
+  number), so printed cards and the scanner stay one format, and the
+  attendance scan (C5-7) parses exactly this through the same module.
+- **The sweep routes (`/internal/sweeps/*`) sit behind `SweepTokenGuard`
+  alone: `x-sweep-token`, compared in constant time with
+  `CncConfigService.sweepToken`, one 401 sentence for absent, wrong and
+  unconfigured, and every call refused when no token is configured.** They
+  are excluded from Swagger and never throttled. Cloud Scheduler is not a
+  staff member, an unset secret must never mean an open route, and a wrong
+  token costs a string comparison before any query runs.
+- **No behaviour may depend on a sweep having run.** Every rule a sweep
+  tidies after is enforced where the row is used (a refresh token is
+  refused once expired, a code after `expiresAt`, an idempotency key only
+  replays its own answer). Cloud Run scales to zero and a Scheduler job can
+  fail; a sweep that became the mechanism would leave the rule broken on
+  exactly those nights.
+- **The tokens sweep deletes by expiry, never by revocation: a revoked
+  refresh token stays until it expires.** It is the record that a session
+  was ended, and the refresh route answers the same 401 for revoked as for
+  unknown, so deleting it early changes nothing a caller sees and loses the
+  record (TAY's rule).
+- **One-time code rows are kept `OTP_RETENTION_HOURS` (24) past their
+  expiry before the tokens sweep deletes them.** The customer sign-in's
+  issuance caps (C6) count those rows; deleting them the moment they
+  expire would let a caller reset their own count by waiting out a code.
+  A cap window longer than a day must raise the constant with it.
 
 ## Money controls and the audit log *(from C3)*
 
@@ -1017,6 +1049,20 @@ here.
   it makes run-unique ones of its own.** The seed suite holds the seeded
   menu to its sources field by field, and a fresh CI database may not have
   been seeded when the suite runs.
+- **A suite that must own the whole database (one Owner only, the first
+  Owner's temporary password, assertions over every audit row) runs on
+  `createIsolatedDatabase` (`test/isolated-database.ts`), seeds it with the
+  real seeds, and drops it in `afterAll`.** The shared test database always
+  holds other suites' Owners and rows, and committing the changes such a
+  test needs there would break the suites running beside it. The helper
+  creates the database on the `CNC_DB_URL` server only when that is a local
+  development database by `databaseTarget`, applies the committed
+  migrations' SQL in order, and removes leftovers older than six hours. On
+  its own database a suite may edit seeded rows; the rule above is about
+  the shared one. The C3 gate walk and the ported staff app specs use it.
+- **Suites that sign staff in through the routes share
+  `test/staff-sessions.ts` (`clientAddress`, the refresh cookie readers).**
+  The cookie name and the address shape are then written once.
 - **`openapi-cnc.json` is written by the app when it boots outside
   production, and by nothing else.** It is gitignored. To refresh it after a
   contract change, start the app once and stop it when the log says the spec
