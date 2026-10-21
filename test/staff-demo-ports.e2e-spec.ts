@@ -29,6 +29,7 @@ import {
 } from '../src/settings/settings-rules';
 import {
   OWN_PHOTO_ONLY_MESSAGE,
+  STAFF_EMAIL_INVALID_MESSAGE,
   STAFF_EMAIL_REASON_MESSAGE,
   STAFF_EMAIL_TAKEN_MESSAGE,
   STAFF_NAME_AND_ROLE_MESSAGE,
@@ -684,6 +685,22 @@ describe('staff app specs, ported (e2e)', () => {
         expect(messagesOf(refused)).toContain(sentence);
       }
 
+      // The demo checks the reminder as a non-negative whole number before
+      // its 15–1440 range, so a negative one gets the numbers sentence and
+      // only that.
+      for (const [value, sentence] of [
+        [-5, SETTINGS_NUMBERS_MESSAGE],
+        [5, SETTINGS_RANGES_MESSAGE],
+      ] as const) {
+        const refused = await saveSettings(
+          A.owner,
+          { freeTableReminderMinutes: value },
+          400,
+        );
+
+        expect(messagesOf(refused)).toEqual([sentence]);
+      }
+
       // Money is whole kobo: a price of 1.5 kobo, or of nothing, is refused.
       const [item] = await restaurantMenu(A.owner);
 
@@ -715,6 +732,46 @@ describe('staff app specs, ported (e2e)', () => {
       );
 
       expect(await read()).toEqual(before);
+    });
+  });
+
+  describe('where the server checks in another order (deliberate)', () => {
+    // The demo runs the Owner rule of `settings.save` and `staff.save`
+    // before it checks the values; the server validates the body first
+    // (the ValidationPipe runs before any service), so a non-Owner sending
+    // a malformed Owner-only value is told what is malformed. Recorded in
+    // docs/conventions.md (Money controls). Once the value is well formed,
+    // the Owner sentence follows, byte for byte.
+    it('a manager sending a malformed Owner-only value is answered by validation first, then by the Owner rule', async () => {
+      const malformedVat = await saveSettings(
+        A.manager,
+        { vatBps: 20_000 },
+        400,
+      );
+      expect(messagesOf(malformedVat)).toEqual([SETTINGS_RANGES_MESSAGE]);
+
+      const wellFormedVat = await saveSettings(
+        A.manager,
+        { vatBps: 9_000 },
+        403,
+      );
+      expect(messagesOf(wellFormedVat)).toEqual([OWNER_ONLY_SETTINGS_MESSAGE]);
+
+      const malformedEmail = await createPerson(A.manager, {
+        name: 'Order Probe',
+        role: StaffRole.MANAGER,
+        email: 'not-an-email',
+      }).expect(400);
+      expect(messagesOf(malformedEmail)).toEqual([STAFF_EMAIL_INVALID_MESSAGE]);
+
+      const wellFormedEmail = await createPerson(A.manager, {
+        name: 'Order Probe',
+        role: StaffRole.MANAGER,
+        email: `order.probe.${randomUUID()}@example.com`,
+      }).expect(403);
+      expect(messagesOf(wellFormedEmail)).toEqual([
+        OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE,
+      ]);
     });
   });
 });

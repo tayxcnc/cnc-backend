@@ -6,7 +6,9 @@ import {
   IsInt,
   Max,
   Min,
+  ValidateBy,
   ValidateIf,
+  type ValidationOptions,
 } from 'class-validator';
 import { PrinterWidth } from '../../../generated/cnc-client';
 import { VersionedWriteDto } from '../../common/dto/versioned-write.dto';
@@ -69,6 +71,34 @@ function TimeSetting(description: string, min: number, example: number) {
   );
 }
 
+/**
+ * At least `min`, judged only for a number of 0 or more.
+ *
+ * The demo checks the Free Table Reminder in two steps: first that it is a
+ * whole number of 0 or more ("Settings must be non-negative numbers."),
+ * then that it is 15 to 1440 (the ranges sentence). A plain `@Min(15)`
+ * beside `@Min(0)` fails for -5 as well, and the two share class-validator's
+ * `min` key, so which sentence survived would depend on decorator order. A
+ * negative value is left to `@Min(0)`, so it gets the demo's first sentence
+ * alone.
+ */
+function AtLeastUnlessNegative(
+  min: number,
+  options: ValidationOptions,
+): PropertyDecorator {
+  return ValidateBy(
+    {
+      name: 'atLeastUnlessNegative',
+      constraints: [min],
+      validator: {
+        validate: (value: unknown) =>
+          typeof value !== 'number' || value < 0 || value >= min,
+      },
+    },
+    options,
+  );
+}
+
 /** An optional alert switch on the staff bell. */
 function AlertSetting(description: string) {
   return applyDecorators(
@@ -107,7 +137,8 @@ export class UpdateSettingsRequest extends VersionedWriteDto {
   })
   @ValidateIf(isSent)
   @IsInt({ message: SETTINGS_NUMBERS_MESSAGE })
-  @Min(15, { message: SETTINGS_RANGES_MESSAGE })
+  @Min(0, { message: SETTINGS_NUMBERS_MESSAGE })
+  @AtLeastUnlessNegative(15, { message: SETTINGS_RANGES_MESSAGE })
   @Max(1440, { message: SETTINGS_RANGES_MESSAGE })
   freeTableReminderMinutes?: number;
 
