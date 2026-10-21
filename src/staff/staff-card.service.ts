@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import type { StaffRole } from '../../generated/cnc-client';
 import { STAFF_NOT_FOUND_MESSAGE } from '../auth/staff-auth.service';
 import { formatIsoDate } from '../common/calendar-date';
 import { renderQrSvg } from '../common/qr-svg';
@@ -22,7 +23,15 @@ export class StaffCardService {
     private readonly photos: PhotoStore,
   ) {}
 
-  async card(staffId: string): Promise<StaffCardResponse> {
+  /**
+   * `authorise` is the controller's rule on whose card the caller may read,
+   * given the account's id and role. It runs after the row is found and
+   * before anything is rendered or signed.
+   */
+  async card(
+    staffId: string,
+    authorise?: (account: { id: string; role: StaffRole }) => void,
+  ): Promise<StaffCardResponse> {
     const row = await this.prisma.staff.findUnique({
       where: { id: staffId },
       select: {
@@ -39,6 +48,8 @@ export class StaffCardService {
     });
 
     if (row === null) throw new NotFoundException(STAFF_NOT_FOUND_MESSAGE);
+
+    authorise?.({ id: row.id, role: row.role });
 
     return {
       id: row.id,

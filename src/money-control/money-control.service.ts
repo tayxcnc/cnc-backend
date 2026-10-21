@@ -75,6 +75,17 @@ export const OWNER_ONLY_TIMES_MESSAGE =
 export const OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE =
   'Only the Owner can create or change Manager and Owner accounts.';
 
+/**
+ * `GET /staff/people/:id/card` by a manager for another Manager's or the
+ * Owner's card. New: the demo showed every card to every manager, but the
+ * card's QR code is the person's attendance credential (C5-7), and a
+ * Manager or Owner account is the Owner's to manage (plan §5.4), its ID
+ * reissued only by the Owner. The sentence follows the account sentence's
+ * form.
+ */
+export const OWNER_ONLY_MANAGER_CARD_MESSAGE =
+  'Only the Owner can open a Manager or Owner Staff ID.';
+
 /** `staff.save` demoting or deactivating the last active Owner. */
 export const LAST_ACTIVE_OWNER_MESSAGE = 'CNC needs at least one active Owner.';
 
@@ -219,6 +230,18 @@ export class MoneyControlService {
 
     if (touchesManager) {
       throw new ForbiddenException(OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE);
+    }
+  }
+
+  /**
+   * Whose Staff ID card a manager may open: their own, and any account that
+   * is not a Manager's or the Owner's. The Owner opens every card.
+   */
+  mayReadCard(actor: MoneyActor, card: { id: string; role: StaffRole }): void {
+    if (card.id === actor.id || isOwner(actor.role)) return;
+
+    if (isManager(card.role)) {
+      throw new ForbiddenException(OWNER_ONLY_MANAGER_CARD_MESSAGE);
     }
   }
 

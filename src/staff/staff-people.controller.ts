@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -29,6 +30,7 @@ import { clientAddressOf } from '../common/client-address';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { VersionedWriteDto } from '../common/dto/versioned-write.dto';
 import { PhotoUpload, PhotoUploadRequest } from '../images/photo-upload';
+import { MoneyControlService } from '../money-control/money-control.service';
 import type { UploadedImageFile } from '../images/uploaded-image';
 import { CreateStaffRequest } from './dto/create-staff.request';
 import { StaffCardResponse } from './dto/staff-card.response';
@@ -81,6 +83,7 @@ export class StaffPeopleController {
   constructor(
     private readonly people: StaffPeopleService,
     private readonly cards: StaffCardService,
+    private readonly money: MoneyControlService,
   ) {}
 
   @Get()
@@ -110,25 +113,37 @@ export class StaffPeopleController {
 
   @Get(':id/card')
   @Roles()
+  @Header('Cache-Control', 'no-store')
   @ApiParam(ID_PARAM)
   @ApiOperation({
     operationId: 'staffPeopleCard',
     summary: 'A staff ID card',
     description:
-      'Managers only, for any account, as the Staff & Access card view and ' +
-      'its printed ID. The QR code arrives only as an SVG; its token is ' +
-      'never sent. Everyone reads their own through GET /staff/me/card.',
+      'Managers only, as the Staff & Access card view and its printed ID; ' +
+      'a Manager or Owner card only by the Owner (or its holder). The QR ' +
+      'code is the attendance credential: it arrives only as an SVG, which ' +
+      'any QR reader decodes, so the response is never cached and is ' +
+      'handled like a credential. Everyone reads their own through ' +
+      'GET /staff/me/card.',
   })
   @ApiResponse({ status: 200, type: StaffCardResponse })
   @ApiResponse(UNAUTHORISED)
   @ApiResponse({
     status: 403,
-    description: 'Not a manager, or the caller may not use staff routes.',
+    description:
+      'Not a manager, or the caller may not use staff routes; or a Manager ' +
+      'opening another Manager’s or the Owner’s card ("Only the Owner can ' +
+      'open a Manager or Owner Staff ID.").',
     type: ApiErrorResponse,
   })
   @ApiResponse(NOT_FOUND)
-  card(@Param('id') id: string): Promise<StaffCardResponse> {
-    return this.cards.card(id);
+  card(
+    @CurrentStaff() actor: StaffPrincipal,
+    @Param('id') id: string,
+  ): Promise<StaffCardResponse> {
+    return this.cards.card(id, (account) =>
+      this.money.mayReadCard(actor, account),
+    );
   }
 
   @Post()

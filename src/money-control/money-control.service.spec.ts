@@ -181,6 +181,26 @@ describe('MoneyControlService', () => {
       }
     });
 
+    it('keeps a Manager’s or the Owner’s Staff ID card to the Owner and its holder', async () => {
+      for (const role of [StaffRole.MANAGER, StaffRole.OWNER]) {
+        expect(
+          await refusal(() =>
+            money.mayReadCard(manager, { id: 'someone-else', role }),
+          ),
+        ).toBe('Only the Owner can open a Manager or Owner Staff ID.');
+        expect(() =>
+          money.mayReadCard(owner, { id: 'someone-else', role }),
+        ).not.toThrow();
+      }
+
+      expect(() =>
+        money.mayReadCard(manager, { id: manager.id, role: manager.role }),
+      ).not.toThrow();
+      expect(() =>
+        money.mayReadCard(manager, { id: 'w-1', role: StaffRole.WAITER }),
+      ).not.toThrow();
+    });
+
     it('refuses a manager promoting staff, or changing a Manager or the Owner', async () => {
       const cases = [
         { currentRole: StaffRole.WAITER, newRole: StaffRole.MANAGER },

@@ -6,6 +6,7 @@ import { CncTokenService } from '../src/auth/cnc-token.service';
 import { STAFF_NOT_FOUND_MESSAGE } from '../src/auth/staff-auth.service';
 import { ROLE_REFUSED_MESSAGE } from '../src/auth/staff-roles';
 import { renderQrSvg } from '../src/common/qr-svg';
+import { OWNER_ONLY_MANAGER_CARD_MESSAGE } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { staffQrPayload } from '../src/staff/staff-qr';
 import { createTestApp } from './create-test-app';
@@ -110,7 +111,7 @@ describe('staff ID cards (e2e)', () => {
     );
   });
 
-  it('lets a manager read any card, and the code changes when the ID is reissued', async () => {
+  it('lets a manager read a staff member’s card, and the code changes when the ID is reissued', async () => {
     const cardOf = async (id: string) =>
       (await get(`/staff/people/${id}/card`, manager).expect(200)).body as Card;
 
@@ -154,5 +155,34 @@ describe('staff ID cards (e2e)', () => {
 
     await get('/staff/me/card').expect(401);
     await get(`/staff/people/${waiter.id}/card`).expect(401);
+  });
+
+  it('keeps Manager and Owner cards to the Owner and their holders, and is never cached', async () => {
+    const otherManager = await person(StaffRole.MANAGER);
+    const owner = await person(StaffRole.OWNER);
+
+    // The QR code is an attendance credential (C5-7) any reader decodes
+    // from the SVG; a Manager or Owner account is the Owner's (plan §5.4).
+    for (const target of [otherManager, owner]) {
+      const refused = await get(
+        `/staff/people/${target.id}/card`,
+        manager,
+      ).expect(403);
+      expect((refused.body as { message: unknown }).message).toBe(
+        OWNER_ONLY_MANAGER_CARD_MESSAGE,
+      );
+    }
+
+    // Their holder, and the Owner, still open them.
+    await get(`/staff/people/${manager.id}/card`, manager).expect(200);
+    await get(`/staff/people/${otherManager.id}/card`, owner).expect(200);
+    await get(`/staff/people/${owner.id}/card`, owner).expect(200);
+
+    for (const response of [
+      await get(`/staff/people/${waiter.id}/card`, manager).expect(200),
+      await get('/staff/me/card', waiter).expect(200),
+    ]) {
+      expect(response.headers['cache-control']).toBe('no-store');
+    }
   });
 });

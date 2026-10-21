@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Put, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -64,13 +64,15 @@ export class ShellController {
   }
 
   @Get('me/card')
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({
     operationId: 'staffMeCard',
     summary: 'My Staff ID',
     description:
       'The signed-in person’s ID card: photo, name, role, staff number and ' +
       'the attendance QR code as an SVG. The token in the code is never ' +
-      'sent as text.',
+      'sent as text, but any QR reader decodes the SVG, so the response is ' +
+      'never cached and is handled like a credential.',
   })
   @ApiResponse({ status: 200, type: StaffCardResponse })
   @ApiResponse(UNAUTHORISED)
