@@ -47,6 +47,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Payments, settle and its race, Bar stock on settle and reverse, discounts, cancel, reopen | Payments, settlement and bill corrections |
 | Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
 | Business dates in requests (`calendarDate`) | Errors |
+| Bookings, arrival rules and Q30, the table lock, seatings, the floor, the Free Table Reminder, Q35 | Reception: bookings, table sessions and the floor |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -122,6 +123,10 @@ src/
                      the entries and day reads, the Kitchen Crosscheck report
                      (crosscheck(), the demo's function)
   cash/              cash.count and the Cash Reconciliation report
+  reception/         Reception: bookings (ReservationsService.book, the one
+                     booking command), table sessions, the floor read, the
+                     Free Table Reminder; arrival rules in reservation-rules.ts
+  notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/

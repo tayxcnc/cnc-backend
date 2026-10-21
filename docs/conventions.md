@@ -1207,6 +1207,96 @@ They are here so the first card that builds it starts from the rule.
   correction; and every suite takes cash on the shared database, so no
   expected figure could be pinned.
 
+## Reception: bookings, table sessions and the floor *(from C4)*
+
+- **Every booking, whatever its channel, is made by
+  `ReservationsService.book` (`src/reception/reservations.service.ts`);
+  the booking's `source` decides which arrival rules bind it and in whose
+  words a clash is answered** (plan §7.5: "Website, app and Reception all
+  run one command"). Reception's route calls it now and the website's and
+  the app's (C6-5) will; two booking paths would be two sets of checks that
+  drift, and a race between a web booking and a Reception booking for one
+  table must meet the same lock and the same index.
+- **The arrival rules are `arrivalProblem` (`src/reception/reservation-rules.ts`),
+  pure and in this order: in the future, on an open day, within the day's
+  opening hours, and online only on the arrival grid and no later than the
+  last arrival** (Q30's default: Reception is limited to the opening hours,
+  08:00 to 23:59; the 30-minute grid and the 23:00 last arrival bind the web
+  and the app only). The large-party rule (`bigPartyProblem`, the website's
+  own note) binds the web and the app only too: Reception is the team those
+  guests are sent to. Pure, so the time rules are unit-tested at fixed
+  instants rather than waiting for a clock.
+- **One active booking per table and date is decided by the partial unique
+  index `Reservation_tableId_businessDate_key`, and its clash is answered
+  409 with the domain's sentence, never 500** ("This position is already
+  reserved for that date…" for Reception, the website's "Someone has just
+  taken this place…" online). The service checks first only so the demo's
+  sentences come in the demo's order. The e2e race (five bookings at once,
+  one 201) still passes with the check and the table lock removed, and
+  fails with the clash mapping removed: the database, not the check, is
+  what refuses the second booking.
+- **Every command that books, seats, locks, checks in at, moves a booking
+  to or frees a table takes that table's advisory lock first
+  (`lockTables`, namespace `cnc:table`, in id order), before it claims any
+  row.** Some of the demo's checks span two kinds of row (a booking for
+  today against guests seated now; a walk-in against today's booking), and
+  no index spans a booking and a seating, so without the lock two commands
+  could both pass. Taking it before any row lock, in id order, means a
+  booking moved between two tables cannot deadlock a command on either.
+  The partial unique indexes stay the backstop for each kind on its own.
+- **Every reservation command names the booking's `version` (A8); a
+  release names the seating (`sessionId`) and its `version`.** Seatings
+  are new rows that each start at version 0, so a version alone would let
+  a release pressed on a stale screen free the guests seated after it.
+  `table.allocate` and check-in create seatings and take no key: a retry
+  is refused by "Release this position before allocating it again." or a
+  stale version. `reservation.create` takes an Idempotency-Key (A9).
+- **`table.release` is refused while any bill on the table is Open or
+  awaiting payment, of any date, and completes the table's Checked In
+  bookings, moving their `version`** (plan §7.1 step 6, §7.5). A booking
+  another device holds has changed status under it, so that device's next
+  write must be told to refresh; nothing frees a table by itself (D20).
+- **The floor's status is `floorStatus` (plan §7.5): Locked whenever a
+  Locked seating holds the table, Occupied for guests seated today only,
+  then Reserved for a Confirmed or Checked In booking on the date, else
+  Available.** A seating is now, so it does not make a future evening
+  look taken. The Point of Sale roles read today's floor only, without a
+  guest's phone or email, and a Bartender sees Bar bills only (plan §6.1).
+- **The Free Table Reminder is computed on read from open Occupied
+  seatings at least `Settings.freeTableReminderMinutes` old, worded in
+  minutes under an hour (D37), and served on `GET /staff/notifications`**
+  (`src/notifications/`). The bell is C8-2's card, but the C4 gate's step
+  11 needs the reminder, so the route starts with this one item and C8-2
+  adds the rest of plan §9.1 beside it, each with its own roles; the floor's
+  seating carries `reminderDue` for the same rule.
+- **A guest's phone is kept as `guestPhone` writes it: a Nigerian mobile
+  number in its one form (`0` plus 10 digits) however it was typed, any
+  other number as typed; a guest's email is trimmed and lower-cased.** The
+  demo only required a phone, and a visitor's foreign number must still
+  book; a Nigerian number in one form is what the search and the Q35 link
+  can match.
+- **A Reception booking links to a customer only on an exact match to a
+  verified email, else a verified phone, and never creates one** (Q35's
+  default). A change re-tries the link only when the booking has none and
+  its contact changed; it never unlinks, so a booking already in a
+  customer's app stays there.
+- **A table's audit `ref` is the room's initial and its code (`D-B1`,
+  `L-TS1`, the demo's table ids); a booking's is its `RSV-` number. No
+  `AuditRefAccess` reader is registered for either** (plan §4.8's list of
+  records a non-manager may read does not include them, so the registry's
+  fail-closed answer is the rule). Codes repeat across rooms (TS1 to TS3),
+  so the code alone is not one table.
+- **`reservation.change` (new; plan §16) changes only the fields sent and
+  checks again only what they touch**: the places when the table or party
+  changes, Reception's arrival rules when the date or time does, and the
+  table's holds when the table or date does. A name fixed on a booking
+  whose time has passed is not refused for being in the past.
+- **The reception suite runs on `createIsolatedDatabase`
+  (`test/reception.e2e-spec.ts`).** It changes the opening hours and the
+  reminder time, which every suite shares, and asserts on the whole floor
+  and the whole bell. Bookings already past their time and guests seated
+  hours ago are written directly, since the routes refuse to make them now.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by
