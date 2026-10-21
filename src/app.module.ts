@@ -3,12 +3,14 @@ import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { AuditViewerModule } from './audit/audit-viewer.module';
 import { CncAuthModule } from './auth/cnc-auth.module';
+import { CashModule } from './cash/cash.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { CncConfigModule } from './config/cnc-config.module';
 import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
 import { HealthController } from './health/health.controller';
 import { SERVICE_NAME } from './health/service-name.token';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { KitchenModule } from './kitchen/kitchen.module';
 import { SweepsModule } from './internal/sweeps.module';
 import { MenuModule } from './menu/menu.module';
 import { OrdersModule } from './orders/orders.module';
@@ -47,6 +49,8 @@ import { StockModule } from './stock/stock.module';
     MenuModule,
     StockModule,
     OrdersModule,
+    KitchenModule,
+    CashModule,
     ShellModule,
     SweepsModule,
   ],

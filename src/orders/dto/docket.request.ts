@@ -1,8 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum, ValidateIf } from 'class-validator';
 import { OrderChannel } from '../../../generated/cnc-client';
-import { Checked } from '../../common/checked';
-import { parseIsoDate } from '../../common/calendar-date';
+import { calendarDate, Checked } from '../../common/checked';
 import { PaginationQuery } from '../../common/dto/pagination.query';
 import { isSent } from '../../common/is-sent';
 
@@ -13,11 +12,7 @@ export class DocketListQuery extends PaginationQuery {
     example: '2026-10-21',
   })
   @ValidateIf(isSent)
-  @Checked((value) =>
-    typeof value === 'string' && parseIsoDate(value) !== null
-      ? null
-      : 'date must be a real calendar date (YYYY-MM-DD).',
-  )
+  @Checked(calendarDate('date must be a real calendar date (YYYY-MM-DD).'))
   date?: string;
 
   @ApiPropertyOptional({

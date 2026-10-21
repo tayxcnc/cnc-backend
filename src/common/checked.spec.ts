@@ -1,7 +1,7 @@
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { AdminReason, ADMIN_REASON_MESSAGE } from './admin-reason';
-import { Checked, requiredText, wholeNumber } from './checked';
+import { calendarDate, Checked, requiredText, wholeNumber } from './checked';
 
 class Probe {
   @Checked(wholeNumber(1, 'Enter a whole number above zero.'))
@@ -50,5 +50,24 @@ describe('Checked', () => {
     expect(check('')).toBe('Name it.');
     expect(check(null)).toBe('Name it.');
     expect(check('abcd')).toBe('Too long.');
+  });
+
+  it('calendarDate takes a real YYYY-MM-DD day only', () => {
+    const check = calendarDate('Enter a valid kitchen date.');
+
+    expect(check('2026-10-21')).toBeNull();
+    expect(check('2028-02-29')).toBeNull();
+
+    for (const value of [
+      '2026-02-30',
+      '2026-10-21T00:00:00Z',
+      '21/10/2026',
+      '',
+      20261021,
+      null,
+      undefined,
+    ]) {
+      expect(check(value)).toBe('Enter a valid kitchen date.');
+    }
   });
 });

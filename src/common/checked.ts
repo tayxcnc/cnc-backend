@@ -1,5 +1,6 @@
 import { registerDecorator } from 'class-validator';
 import { INT4_MAX } from '../prisma/int4';
+import { parseIsoDate } from './calendar-date';
 
 /**
  * Validate a field with one function that names its one problem.
@@ -41,6 +42,19 @@ export function requiredText(
 
     return value.length > maxLength ? tooLong : null;
   };
+}
+
+/**
+ * A business date: a `YYYY-MM-DD` string naming a real day
+ * (`parseIsoDate`), never an instant (*Contract conventions*). Shared by
+ * every request and query that names a business date, so each answers its
+ * own one sentence.
+ */
+export function calendarDate(
+  message: string,
+): (value: unknown) => string | null {
+  return (value) =>
+    typeof value === 'string' && parseIsoDate(value) !== null ? null : message;
 }
 
 /**
