@@ -223,6 +223,23 @@ export class OrderConfirmResponse {
   @ApiProperty({ type: OrderResponse }) order!: OrderResponse;
 }
 
+/**
+ * `POST /staff/orders/:id/cancel`: the cancelled bill and, for a Restaurant
+ * bill the kitchen had been sent, the cancellation docket to print (a new
+ * revision with no items).
+ */
+export class OrderCancelResponse {
+  @ApiProperty({
+    type: DocketResponse,
+    nullable: true,
+    description:
+      'The cancellation docket, or null when no docket was ever sent ' +
+      '(a Bar bill, or a Restaurant bill never confirmed).',
+  })
+  docket!: DocketResponse | null;
+  @ApiProperty({ type: OrderResponse }) order!: OrderResponse;
+}
+
 /** One bill in the till's list. */
 export class OrderSummaryResponse {
   @ApiProperty() id!: string;

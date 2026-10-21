@@ -121,7 +121,8 @@ function auditItems(lines: readonly LineRow[]) {
  * Point of Sale's bills and lines (plan §5.4, §7.1, §7.2; cards C4-3 and
  * C4-4): open an order, set a line, change the guest and notes, confirm to
  * the kitchen, and the till's reads. Payments, settlement and the manager
- * corrections are C4-5's and build on `claimOrder` and `readOrder`.
+ * corrections (C4-5) are `OrderPaymentsService`'s and build on
+ * `claimOrder`, `lines` and `readOrder`.
  *
  * Every command is one transaction (A6) that claims the order's `version`
  * first (A8), so its row stays locked while the command runs, and writes

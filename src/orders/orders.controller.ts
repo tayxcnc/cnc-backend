@@ -90,7 +90,8 @@ const POS_ROLES = [
 /**
  * Point of Sale's bills, lines and kitchen confirm (plan §5.4; cards C4-3
  * and C4-4). Cashier, Waiter and Bartender (the Bar only), and managers.
- * Payments, settlement and the manager corrections are C4-5's.
+ * Payments, settlement and the manager corrections (C4-5) are
+ * `OrderPaymentsController`'s.
  */
 @ApiTags('Point of Sale')
 @ApiBearerAuth()

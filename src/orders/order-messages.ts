@@ -5,8 +5,8 @@
  * them as they stand (A7). Copied from the domain, never retyped.
  *
  * The payment, settlement and correction sentences (`order.payment`,
- * `partPay`, `settle`, `discount`, `cancel`, `reopen`, `reverse`) belong to
- * card C4-5 and are added beside these.
+ * `partPay`, `settle`, `discount`, `cancel`, `reopen`, `reverse`, card
+ * C4-5) follow them below.
  */
 
 /** `order()`: the order named does not exist (404). */
@@ -75,6 +75,112 @@ export const BAR_NO_DOCKETS_MESSAGE = 'Bar orders do not use kitchen dockets.';
  */
 export const DOCKET_NOT_FOUND_MESSAGE =
   'Docket not found. Enter the kitchen docket number printed by Restaurant POS.';
+
+// ---------------------------------------------------------------------------
+// Payment, settlement and the corrections (card C4-5): `order.payment`,
+// `order.partPay`, `order.settle`, `order.discount`, `order.cancel`,
+// `order.reopen` and `order.reverse`, byte for byte from the domain.
+// ---------------------------------------------------------------------------
+
+/** `order.payment` on a bill that is not open (409). */
+export const PAYMENT_OPEN_MESSAGE = 'Only open orders can proceed to payment.';
+
+/** `order.payment` on a bill with no lines (409). */
+export const PAYMENT_EMPTY_MESSAGE = 'Add at least one item.';
+
+/**
+ * `order.payment` on a Restaurant bill whose lines differ from its latest
+ * docket (409): the kitchen must have what the guest pays for.
+ */
+export const PAYMENT_CONFIRM_FIRST_MESSAGE =
+  'Confirm the latest food items and print the kitchen docket first.';
+
+/** `order.partPay` on a bill that is not awaiting payment (409). */
+export const PART_PAY_STAGE_MESSAGE =
+  'Proceed to payment before taking a part payment.';
+
+/** `order.partPay` and `order.settle` without a list of payments (400). */
+export const PAYMENT_MISSING_MESSAGE = 'Payment information is missing.';
+
+/** `order.partPay` whose sum is nothing, or the whole balance or more (400). */
+export const PART_PAY_LESS_MESSAGE =
+  'A part payment must be less than the balance. Use settlement for the full balance.';
+
+/** A payment of zero, a negative or a fraction of a kobo (400). */
+export const PAYMENT_POSITIVE_MESSAGE = 'Payment amounts must be positive.';
+
+/** A payment method other than Cash, Card or Transfer at the till (400). */
+export const PAYMENT_METHOD_MESSAGE = 'Invalid payment method.';
+
+/** A transfer without its sender or reference (400). */
+export const TRANSFER_DETAILS_MESSAGE =
+  'Transfer payments require the sender name and reference.';
+
+/**
+ * `order.settle` on a bill that is not awaiting payment (409), including a
+ * second settle of a bill already settled.
+ */
+export const SETTLE_STAGE_MESSAGE =
+  'Proceed to payment before settlement. This order may already be settled.';
+
+/** `order.settle` whose payments do not equal the balance to the kobo (400). */
+export const SETTLE_EXACT_MESSAGE =
+  'Payment amounts must exactly cover the remaining balance.';
+
+/**
+ * `order.settle` with a deposit credit that is not a whole amount, or more
+ * than is left to pay (400).
+ */
+export const DEPOSIT_INVALID_MESSAGE = 'Invalid deposit credit.';
+
+/**
+ * `order.settle` taking deposit credit from a booking that is not checked
+ * in (or completed) at this bill's table (400).
+ */
+export const DEPOSIT_RESERVATION_MESSAGE =
+  'Choose a checked-in reservation for this table.';
+
+/** `order.settle` taking more deposit credit than the booking has left (409). */
+export const DEPOSIT_USED_MESSAGE =
+  'That deposit credit has already been used.';
+
+/** `order.discount` after Proceed to Payment or on a carried bill (409). */
+export const DISCOUNT_STAGE_MESSAGE =
+  'Discounts must be applied before proceeding to payment on the opening date.';
+
+/** `order.discount` that is not a whole amount up to the subtotal (400). */
+export const DISCOUNT_INVALID_MESSAGE = 'Invalid discount.';
+
+/** `order.cancel` on a settled or cancelled bill (409). */
+export const CANCEL_STAGE_MESSAGE = 'Only unpaid bills can be cancelled.';
+
+/** `order.cancel` on a bill that has money against it (409). */
+export const CANCEL_PART_PAID_MESSAGE =
+  'This bill has part payments. Settle the balance instead of cancelling.';
+
+/** `order.reopen` on a bill that is not awaiting payment (409). */
+export const REOPEN_STAGE_MESSAGE =
+  'Only orders awaiting payment can be reopened here.';
+
+/** `order.reopen` on a bill from an earlier business date (409). */
+export const REOPEN_PREVIOUS_DAY_MESSAGE =
+  'Previous-day items remain locked. Create a new order for new items.';
+
+/** `order.reverse` on a bill that is not a settled till bill (409). */
+export const REVERSE_STAGE_MESSAGE = 'Select a settled POS order.';
+
+/**
+ * The most payments one request records. New: the demo had no cap. A split
+ * at the till is two or three rows; the cap keeps one request from drawing
+ * thousands of payment numbers.
+ */
+export const MAX_PAYMENTS_PER_REQUEST = 20;
+
+/** The refusal past {@link MAX_PAYMENTS_PER_REQUEST}. New, in the demo's form. */
+export const TOO_MANY_PAYMENTS_MESSAGE = `Record at most ${MAX_PAYMENTS_PER_REQUEST} payments at once.`;
+
+/** Longest transfer sender name and payment reference accepted. */
+export const PAYMENT_TEXT_MAX_LENGTH = 120;
 
 /** Longest table label, guest name and order note accepted. */
 export const ORDER_LABEL_MAX_LENGTH = 80;
