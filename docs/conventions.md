@@ -111,6 +111,25 @@ They are here so the first card that builds it starts from the rule.
   columns with `uniqueViolationTargets` (see *Data and migrations*, `P2002`).
 - **The exceptions filter never records request headers.** Headers carry the
   `Authorization` token and cookies, including TAY's (see *Auth*).
+- **A request field answers one sentence at most: validate it with
+  `@Checked` (`src/common/checked.ts`) and its `requiredText` and
+  `wholeNumber` checks, or a single class-validator decorator, never a stack
+  of them carrying one domain sentence** (from C4). Every failing decorator
+  adds its own message, so a missing reason under `@IsString`,
+  `@IsNotEmpty` and `@MaxLength` answered the domain sentence twice and a
+  length sentence beside it, and the staff app joins every message of a 400
+  into what the screen shows (`staff/lib/api-client.ts`): the demo's
+  sentence would not reach the screen as it stands (A7). An "M+r" reason is
+  `@AdminReason` (`src/common/admin-reason.ts`), whose one sentence is the
+  demo's "An admin correction requires a reason."
+- **An item list in a request (`[{ stockItemId, qty }]`) is validated with
+  `@ValidLines` (`src/common/command-lines.ts`), never `@ValidateNested`**
+  (from C4). The ValidationPipe prefixes a nested error with its path
+  (`lines.0.…`), which changes the sentence a screen shows; `ValidLines`
+  answers the demo's `positiveLines` sentences in its order (empty,
+  duplicates, quantities), then the command's own sentence for a bad item
+  id. The lines stay plain objects, and a service reads only the keys the
+  rules name.
 
 ## Optimistic concurrency
 
@@ -458,6 +477,16 @@ They are here so the first card that builds it starts from the rule.
   (`src/prisma/int4.ts`) in its DTO.** A larger number reaches Postgres as
   an out-of-range error and answers 500; capped, it is a 400 the caller can
   act on.
+- **A rule that holds for only some rows of a table (one active booking per
+  table and date, one open session per table) is a hand-written partial
+  unique index named as Prisma names a unique index,
+  `<Model>_<field>[_<field>]_key`** (from C4: `Reservation_tableId_businessDate_key`,
+  `TableSession_tableId_key`). The index, not a check in the service,
+  decides a race between two writers, and the name lets
+  `uniqueViolationTargets` read a clash as its fields, so the service
+  answers 409 with the domain's sentence rather than 500. `prisma migrate
+  diff` ignores a partial index, so the schema cannot express it and the
+  diff still prints an empty migration.
 
 ## Auth *(from C3)*
 
@@ -837,6 +866,89 @@ They are here so the first card that builds it starts from the rule.
   fields. "The money keys are checked first" above holds for well-formed
   input; `test/staff-demo-ports.e2e-spec.ts` pins the order. Role checks
   (`@Roles`) are guards and still come first, as `requireRole` does.
+- **A command whose demo checks an Owner rule before its role rule carries
+  no `@Roles`; the service refuses every non-Owner with the Owner
+  sentence** (from C4: `stock.adjust`). The demo's Correct Balance calls
+  `ownerOnly` first, so a Waiter is told "Only the Owner can correct a
+  stock balance.", not the role sentence; a `@Roles()` guard would answer
+  the other sentence first. The rule is checked before the idempotent
+  transaction opens, as `menu.save`'s new-item rule is.
+
+## Stock *(from C4)*
+
+- **`StockLedgerService.move` (`src/stock/stock-ledger.service.ts`) is the
+  one writer of `StockBalance` and `StockMovement`; every command that moves
+  stock calls it inside its own transaction** (plan §4.6). It writes the
+  balance and the movement that explains it together, so the balance is
+  always the running sum of the movements (the e2e suite checks the sum),
+  and a refusal anywhere rolls both back. `grep -rn "stockMovement.create\|stockBalance" src/`
+  should find only the ledger and the reads.
+- **A decrement is one conditional `UPDATE … WHERE qty + delta >= 0`, and
+  its refusal is 409 with the demo's "Insufficient <location> stock for
+  <item>."** No read comes first, so two commands taking the last pack
+  cannot both pass (TAY's `StockService`); the e2e race test fails when the
+  condition is removed. 409, because the input is well formed and the
+  stock's state refuses it (A7).
+- **There is no `qty >= 0` CHECK on `StockBalance`; `allowNegative` is for
+  a paid web order's drinks only** (plan §7.4). The money is already taken
+  when a web order's drinks are deducted, so stock never blocks it; every
+  other movement is refused below zero in the ledger.
+- **`StockMovement` is append-only by trigger, as the audit log and the
+  approvals ledger are; a correction is a new movement.** A movement edited
+  or deleted leaves a balance no history explains. Its foreign keys
+  restrict, never set null, because that would be an UPDATE the trigger
+  refuses.
+- **A missing `StockBalance` row is a zero balance; rows are created on the
+  first movement with an insert that skips duplicates.** The 87 seeded Bar
+  items start with no rows (Q11), and an `ON CONFLICT DO NOTHING` insert
+  lets two first movements of one item meet on the unique index instead of
+  both inserting.
+- **Which locations hold which items is `locationHolds`
+  (`src/stock/stock-locations.ts`): every item at the Store, a Kitchen item
+  in the Kitchen, a Bar item at the Bar** (D45: `kind`, not an id prefix).
+  Commands check it first with their own sentence; the ledger refuses
+  anything else as a programming error, so no movement can put a portion
+  behind the bar.
+- **A command that reads balances and then moves them by the difference (a
+  stock count) locks them with `lockBalances`, in id order, for its whole
+  transaction.** A sale landing between the read and the move would
+  otherwise be counted over; the id order means two counts over the same
+  items cannot deadlock each other.
+- **A stock count follows Q28's default: its differences are valued by
+  `stockValueKobo` (`src/stock/stock-value.ts`) and passed to
+  `MoneyControlService.withinLimit` as `LIMITED_DECISIONS.stockCount`,
+  counted toward the day** (the plan places the limit "if Q28 says so"; Q28
+  is unanswered, and its stated default is "yes to both"). Above the Owner
+  Approval Limit only the Owner may record the count, and the Storekeeper's
+  counts enter the ledger like a manager's decisions. A count with no
+  difference decides nothing and is never limited. The limit takes its
+  advisory lock after the count has locked its balances; a waste approval
+  (C5) takes them the other way round, so the two by one manager on one
+  item at one moment can deadlock, which Postgres breaks by failing one.
+- **`stockValueKobo` is the demo's coded `wasteValue` until Q25 is
+  answered, and waste (C5) uses the same function** (plan §4.6, §7.8): a
+  Bar item at menu price × quantity at any location; a Kitchen item at the
+  latest purchase cost ÷ the pack's units × quantity, zero when no cost is
+  known. Purchases are C5's schema, so until C5 fills in
+  `latestPackCostKobo` every Kitchen item values at zero, exactly as the
+  demo does with no purchases. One function, so a count and a write-off of
+  the same stock can never be valued two ways.
+- **A direct issue and a Correct Balance take an `Idempotency-Key`; a count
+  and a new stock item do not** (the *Idempotency* rule for creates). A
+  retried issue or correction would move stock twice; a retried count finds
+  no difference left to record, and a retried create is refused on the
+  name.
+- **No `AuditRefAccess` reader is registered for stock refs** (a stock
+  item's id, a location, a dish's slug for a comparison rule). Plan §4.8
+  lets a non-manager read the history of an order or docket, a request, a
+  purchase, a waste entry, an online order or a task; stock items are not on
+  the list, so the registry's fail-closed answer is the rule. Movements are
+  read through `GET /staff/stock/movements` (managers and the Storekeeper).
+- **A kitchen comparison rule (`KitchenMapping`) carries no `version`; its
+  save locks the dish's `MenuItem` row (`FOR UPDATE`) and replaces the whole
+  rule.** A8 does not list it, and a rule is replaced, not edited, so the
+  last save wins; the lock stops two saves interleaving their portions. The
+  rule never fills in a kitchen entry or moves stock.
 
 ## CORS
 

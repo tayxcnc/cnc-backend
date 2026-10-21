@@ -40,6 +40,9 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
+| One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
+| Partial unique indexes and their names | Data and migrations |
+| The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -92,7 +95,8 @@ src/
   money-control/     MoneyControlService: Owner-only rules, approval limits and
                      the daily ledger, own record, Manager/Owner accounts, last Owner
   common/            money, dates, errors, pagination, request helpers, QR tokens
-                     and their SVG renderer, the client-address throttler guard
+                     and their SVG renderer, the client-address throttler guard,
+                     one-sentence field checks, the admin reason, item lists
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
   internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens sweep
@@ -103,6 +107,9 @@ src/
                      staff ID cards (the QR payload in staff-qr.ts)
   settings/          settings.save, business details, opening hours
   menu/              Menu & Prices: menu.save, photos, the paired Bar stock item
+  stock/             the stock core: StockLedgerService (the one writer of balances
+                     and movements), balances and movements reads, issue, count,
+                     Correct Balance, stock items, kitchen comparison rules
   shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
