@@ -54,7 +54,8 @@ export const AUDIT_MODULES: readonly string[] = [
  * Display labels for the commands (the demo's `LABELS`), plus the commands
  * the server adds, which the demo did not have: the two password commands
  * (C3-3), the staff ID reissue, the menu photo and the opening hours (C3-6,
- * C3-7).
+ * C3-7). `stock.issue` is the demo's own command, which its labels missed;
+ * "Stock Sent" follows its movement label "Sent to Kitchen" (C4-2).
  */
 const LABELS: Readonly<Record<string, string>> = {
   'order.create': 'Order Opened',
@@ -88,6 +89,7 @@ const LABELS: Readonly<Record<string, string>> = {
   'request.reject': 'Request Declined',
   'stock.adjust': 'Balance Corrected',
   'stock.count': 'Stock Counted',
+  'stock.issue': 'Stock Sent',
   'stockitem.create': 'Stock Item Added',
   'stockitem.save': 'Stock Item Changed',
   'purchase.create': 'Purchase Raised',

@@ -47,7 +47,8 @@ import {
   MenuListQuery,
   MenuPageResponse,
 } from './dto/menu-item.response';
-import { MenuService, rethrowStockNameClash } from './menu.service';
+import { rethrowStockNameClash } from '../stock/stock-item-name';
+import { MenuService } from './menu.service';
 
 const UNAUTHORISED = {
   status: 401,

@@ -8,6 +8,7 @@ import { MENU_ORDER, MenuService, readMenuItems } from '../menu/menu.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { OpeningHoursService } from '../settings/opening-hours.service';
 import { SettingsService } from '../settings/settings.service';
+import { readKitchenMappings } from '../stock/kitchen-mapping.service';
 import type { OverviewPreferencesDto } from './dto/overview-preferences.dto';
 import type { ReferenceResponse } from './dto/reference.response';
 import type { StaffMeResponse } from './dto/staff-me.response';
@@ -137,6 +138,7 @@ export class ShellService {
           version: true,
         },
       }),
+      kitchenMappings: await readKitchenMappings(tx),
       staff: await tx.staff.findMany({
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
         select: {
@@ -149,10 +151,20 @@ export class ShellService {
       }),
     }));
 
-    const { tables, ...rest } = read;
+    const { tables, kitchenMappings, ...rest } = read;
 
     return {
       ...rest,
+      // In menu order, so the rules list as the dishes do.
+      kitchenMappings: read.menu
+        .filter((item) => kitchenMappings.has(item.id))
+        .map((item) => ({
+          menuItemId: item.id,
+          lines: (kitchenMappings.get(item.id) ?? []).map((line) => ({
+            stockItemId: line.stockItemId,
+            qty: line.qty,
+          })),
+        })),
       venues: read.venues.map((venue) => ({
         ...venue,
         tables: tables

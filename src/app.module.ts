@@ -16,6 +16,7 @@ import { CncPrismaService } from './prisma/cnc-prisma.service';
 import { SettingsModule } from './settings/settings.module';
 import { ShellModule } from './shell/shell.module';
 import { StaffModule } from './staff/staff.module';
+import { StockModule } from './stock/stock.module';
 
 /**
  * Root module for the CNC Cloud Run service.
@@ -43,6 +44,7 @@ import { StaffModule } from './staff/staff.module';
     StaffModule,
     SettingsModule,
     MenuModule,
+    StockModule,
     ShellModule,
     SweepsModule,
   ],

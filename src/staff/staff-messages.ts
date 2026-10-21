@@ -32,6 +32,3 @@ export const OWN_PHOTO_ONLY_MESSAGE =
 
 /** Longest name accepted; new, because the demo has none. */
 export const STAFF_NAME_MAX_LENGTH = 120;
-
-/** Longest reason accepted for a correction. */
-export const REASON_MAX_LENGTH = 500;
