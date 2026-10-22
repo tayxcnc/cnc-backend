@@ -956,8 +956,9 @@ They are here so the first card that builds it starts from the rule.
   latest purchase cost ÷ the pack's units × quantity, zero when no cost is
   known. Purchases are C5's schema, so until C5 fills in
   `latestPackCostKobo` every Kitchen item values at zero, exactly as the
-  demo does with no purchases. One function, so a count and a write-off of
-  the same stock can never be valued two ways.
+  demo does with no purchases (C5-1 has filled it in: see the C5 schema
+  section). One function, so a count and a write-off of the same stock can
+  never be valued two ways.
 - **A direct issue and a Correct Balance take an `Idempotency-Key`; a count
   and a new stock item do not** (the *Idempotency* rule for creates). A
   retried issue or correction would move stock twice; a retried count finds
@@ -989,6 +990,105 @@ They are here so the first card that builds it starts from the rule.
   role rule is checked in the controller before the idempotency service, as
   Correct Balance's Owner rule is. A new stock item still needs no key: a
   retry is refused on the name.
+
+## Stock requests, purchasing, waste, tasks, assets and attendance: the schema *(from C5)*
+
+- **The C5 tables are one migration (`c5_core`), and its hand-written part
+  holds each record to the shapes the staff app allows** (plan §4.6,
+  §4.7): a request's status follows its packs (`StockRequest_status_check`),
+  a rejection carries its reason, a purchase line's received packs are none
+  or all of it (D39), a Fixed or Not Fixed repair has its resolved date
+  (R3), a shift ends after it began. The services refuse each case first
+  with the demo's sentence; the CHECK is the backstop for a write that does
+  not come through a route, and `test/c5-schema.e2e-spec.ts` watches each
+  one refuse.
+- **One open shift per person is the partial unique index
+  `AttendanceRecord_staffId_key` (`WHERE "timeOut" IS NULL`)**, named as the
+  partial-index rule above says, so two scans racing for one person cannot
+  both open a shift and the clash reads as `["staffId"]`. The scan's
+  advisory lock (C5-7, TAY's pattern) decides the ordinary case; the index
+  decides the race.
+- **A task links only to the kind of record its type names: a CHECK holds
+  `purchaseId` to Purchase tasks and `maintenanceId` to Maintenance tasks**
+  (`Task_values_check`). `task.save` sets the links from the type, so a
+  task whose link and type disagreed would be one no screen can make; a
+  command that links a task to a repair (C5-6's `maintenance.save` with a
+  task) must refuse, or give the Maintenance type to, any other task.
+- **No C5 table is append-only by trigger.** The plan names three
+  (`AuditLog`, `ApprovalLedger`, `StockMovement`); the history tables
+  (`TaskHistory`, `MaintenanceHistory`, `AttendanceCorrection`) carry no
+  `updatedAt` and are only ever added to by their services, by convention,
+  as TAY keeps its histories. Making one append-only is a plan change.
+- **A purchase line has a `position`, its place in the list the screen
+  sent, and one line per item per purchase (unique on `purchaseId`,
+  `stockItemId`).** A cuid or a timestamp is no order a requisition can be
+  read back in, and the demo's duplicate rule ("Combine duplicate items
+  into one quantity.") already allows one line per item.
+- **`latestPackCostKobo` (`src/stock/stock-value.ts`) is the demo's
+  `wasteValue` cost: the line for the item on the most recently raised
+  purchase that is not Rejected or Cancelled** (C5-1 fills in C4's null).
+  One query whose relation filter and order are joins, so it is safe inside
+  a transaction. Every stock count, and from C5-4 every write-off, is
+  valued through it; Q25 asks whether "latest" should mean the latest
+  received line instead, and until it is answered this is the rule.
+
+## Stock requests *(from C5)*
+
+- **Every request command is in `StockRequestsService`
+  (`src/stock/stock-requests.service.ts`) and claims the request's `version`
+  first; issue and reject then refuse a request that is no longer Pending
+  or Partially Issued with 409 "This request is no longer open."** The
+  claim is the row lock the rest runs under (*Optimistic concurrency*), so
+  two Storekeepers issuing one request end as one issue and one stale 409;
+  the e2e race test fails when the claim is removed.
+- **A request's location is the demo's: the Kitchen for a Kitchen user, the
+  Bar for a Bartender or a Cashier whatever they send, and the Kitchen or
+  the Bar as a manager chooses** (`requestLocationFor`,
+  `src/stock/stock-request-rules.ts`). The screen offers the first three
+  roles no choice, so a sent location is ignored as the demo ignores it; a
+  manager's missing or Store location is "Choose Kitchen or Bar.". The item
+  must be one the location holds (`locationHolds`).
+- **A request asks for whole packs, as the Store counts them; an issue
+  moves −packs at the Store (`ISSUE_TO_KITCHEN`/`ISSUE_TO_BAR`) and +packs ×
+  How Many in One at the request's location (`STOCK_RECEIVED`), both through
+  `StockLedgerService.move` with the request number as the ref** (plan
+  §7.6). The C5 gate's step 4 is two bags of rice: Store −2, Kitchen +100.
+- **An issue's packs are judged in the service, not the DTO
+  (`issueProblem`), because the demo's sentence names the item's pack:
+  "Enter a whole number of bags within the remaining request."** The DTO
+  only admits the field (`@Allow()`); a figure that is not whole, not above
+  zero, above what is left, or whose units would not fit an `Int` column
+  answers that one sentence.
+- **`request.issue` applies `MoneyControlService.notOwn` with
+  `OWN_RECORD_KINDS.stockRequest`, by staff id; the Owner is exempt** (the
+  demo's `notOwn(r.by, 'stock request')`, plan §6.2 "issue: N"). Only a
+  manager can both raise and issue (the Storekeeper cannot raise), so this
+  is the manager who asked for stock sending it to themselves.
+- **`request.create` takes an Idempotency-Key; issue and reject do not**
+  (the *Idempotency* rule for creates). A retried create would ask twice; a
+  retried issue or reject names a version the first attempt moved and is
+  refused as stale.
+- **A rejection keeps its reason in `rejectReason`, apart from the note,
+  and leaves packs already sent where they are.** The demo appended
+  " | reason" to the note, which mixed the requester's words with the
+  Store's; the response carries both fields.
+- **The requests read (`GET /staff/stock/requests`) is the Stock & Requests
+  roles: a Kitchen user the Kitchen's requests and a Bartender the Bar's
+  (`scopedStockLocation`, shared with the balances read), the Storekeeper
+  and managers both or the one asked for; a scoped role asking for the
+  other location is the role refusal** (plan §6.1). The Cashier raises Bar
+  requests from the till but has no Stock & Requests page, so it has no
+  read and no request history. `openCount` is the screen's Open Requests
+  figure over what the reader sees, whatever the status and search filters,
+  as the orders list carries its `counts`.
+- **`StockModule` registers the `AuditRefAccess` reader for `SR-` numbers:
+  the Storekeeper for every request, a Kitchen user and a Bartender for
+  their own location's** (`src/stock/stock-request-audit-reader.ts`, plan
+  §4.8). The request must exist.
+- **A request id that names nothing is 404 "Stock request not found."**
+  (new: the demo answered it with "This request is no longer open."; the
+  version claim needs one not-found sentence, in the form of "Stock item
+  not found.").
 
 ## Orders and dockets *(from C4)*
 

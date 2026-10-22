@@ -1,4 +1,24 @@
-import { StockKind, StockLocation } from '../../generated/cnc-client';
+import {
+  StaffRole,
+  StockKind,
+  StockLocation,
+} from '../../generated/cnc-client';
+
+/**
+ * The one location a role reads on Stock & Requests (plan §5.4, §6.1): a
+ * Bartender the Bar, a Kitchen user the Kitchen. Undefined for the
+ * Storekeeper and managers, who read every location. Shared by the
+ * balances read and the requests read, so the two cannot scope a role
+ * differently.
+ */
+export function scopedStockLocation(
+  role: StaffRole,
+): StockLocation | undefined {
+  if (role === StaffRole.BARTENDER) return StockLocation.BAR;
+  if (role === StaffRole.KITCHEN) return StockLocation.KITCHEN;
+
+  return undefined;
+}
 
 /**
  * Which locations hold which items (plan §4.6, §7.6): every item is bought

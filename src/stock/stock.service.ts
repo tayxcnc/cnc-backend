@@ -47,7 +47,7 @@ import type {
 } from './dto/stock.response';
 import { assertStockNameFree, rethrowStockNameClash } from './stock-item-name';
 import { StockLedgerService } from './stock-ledger.service';
-import { isLow, locationHolds } from './stock-locations';
+import { isLow, locationHolds, scopedStockLocation } from './stock-locations';
 import {
   COUNT_ROLE_MESSAGE,
   ISSUE_ITEM_MESSAGE,
@@ -88,16 +88,6 @@ function auditView(item: StockItemRow) {
   };
 }
 
-/**
- * The locations a role may read balances for when it is not the whole
- * store's (plan §5.4, §6.1): a Bartender the Bar, a Kitchen user the
- * Kitchen. The Storekeeper and managers read any location.
- */
-const SCOPED_LOCATION: Partial<Record<StaffRole, StockLocation>> = {
-  [StaffRole.BARTENDER]: StockLocation.BAR,
-  [StaffRole.KITCHEN]: StockLocation.KITCHEN,
-};
-
 /** The movement type for a direct issue to each destination. */
 const ISSUE_TYPE = {
   [StockLocation.KITCHEN]: StockMovementType.ISSUE_TO_KITCHEN,
@@ -131,7 +121,7 @@ export class StockService {
     actor: StaffPrincipal,
     query: StockBalancesQuery,
   ): Promise<StockBalancePageResponse> {
-    const scoped = SCOPED_LOCATION[actor.role];
+    const scoped = scopedStockLocation(actor.role);
 
     if (scoped !== undefined && scoped !== query.location) {
       throw new ForbiddenException(ROLE_REFUSED_MESSAGE);
