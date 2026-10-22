@@ -144,12 +144,30 @@ export class ReferenceStaffResponse {
   isActive!: boolean;
 }
 
+/** One expected portion in a kitchen comparison rule. */
+export class ReferenceKitchenMappingLineResponse {
+  @ApiProperty({ description: 'StockItem.id of a Kitchen item.' })
+  stockItemId!: string;
+
+  @ApiProperty({ example: 1 })
+  qty!: number;
+}
+
+/** A Restaurant dish's comparison rule (the demo's `mappings[itemId]`). */
+export class ReferenceKitchenMappingResponse {
+  @ApiProperty()
+  menuItemId!: string;
+
+  @ApiProperty({ type: ReferenceKitchenMappingLineResponse, isArray: true })
+  lines!: ReferenceKitchenMappingLineResponse[];
+}
+
 /**
  * `GET /staff/reference`: what every screen looks things up in (plan §5.3),
  * read once when the shell loads.
  *
- * Vendors, assets and the kitchen comparison rules join this response with
- * the cards that build their tables (C4, C5).
+ * Vendors and assets join this response with the cards that build their
+ * tables (C5).
  */
 export class ReferenceResponse {
   @ApiProperty({ type: SettingsResponse })
@@ -179,6 +197,15 @@ export class ReferenceResponse {
 
   @ApiProperty({ type: ReferenceStockItemResponse, isArray: true })
   stockItems!: ReferenceStockItemResponse[];
+
+  @ApiProperty({
+    description:
+      'The kitchen comparison rules (C4), one per dish that has one, in ' +
+      'menu order.',
+    type: ReferenceKitchenMappingResponse,
+    isArray: true,
+  })
+  kitchenMappings!: ReferenceKitchenMappingResponse[];
 
   @ApiProperty({
     description: 'Every staff account, active or not, by name.',

@@ -47,7 +47,15 @@ describe('seeds (e2e)', () => {
     await app.close();
   });
 
-  /** Run `work` in a transaction that is always rolled back. */
+  /**
+   * Run `work` in a transaction that is always rolled back.
+   *
+   * REPEATABLE READ, so the transaction reads one snapshot taken at its
+   * first statement: suites running beside this one create and commit
+   * Owner accounts of their own, and under READ COMMITTED one committed
+   * between `withoutOwners` and the seed's count made the seed answer
+   * "exists" for an Owner this test never saw.
+   */
   async function inRolledBack(
     work: (tx: Prisma.TransactionClient) => Promise<void>,
   ): Promise<void> {
@@ -60,7 +68,10 @@ describe('seeds (e2e)', () => {
           await work(tx);
           throw ROLLBACK;
         },
-        { timeout: 30_000 },
+        {
+          timeout: 30_000,
+          isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+        },
       ),
     ).rejects.toBe(ROLLBACK);
   }

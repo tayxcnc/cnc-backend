@@ -40,12 +40,22 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
+| One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
+| Partial unique indexes and their names | Data and migrations |
+| The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
+| Bills, lines, totals, dockets, reprints, order history readers | Orders and dockets |
+| Payments, settle and its race, Bar stock on settle and reverse, discounts, cancel, reopen | Payments, settlement and bill corrections |
+| Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
+| Business dates in requests (`calendarDate`) | Errors |
+| Bookings, arrival rules and Q30, the table lock, seatings, the floor, the Free Table Reminder, Q35 | Reception: bookings, table sessions and the floor |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
 | Staff accounts: R2, session revocation, first passwords, QR reissue | Auth |
 | Staff ID cards and the QR payload; the sweep routes and the tokens sweep | Auth |
 | Suites that need a database of their own (`createIsolatedDatabase`) | Local environment |
+| The print record (`POST /staff/audit/print`); printing from API data | Money controls and the audit log |
+| A controlled clock in tests (fake `Date` only); the C4 gate walk and race suites | Local environment |
 | Shared-row e2e suites, seeded rows in tests | Local environment |
 | TAY staging resources CNC work never touches | Infrastructure → Never touched from CNC work |
 | Editor tools only, no `sed`/`awk`/`perl` | Making changes to source files |
@@ -86,13 +96,15 @@ src/
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
   audit/             AuditService (the one writer), GET /staff/audit and its
-                     sentences, AuditRefAccess for non-manager record reads
+                     sentences, AuditRefAccess for non-manager record reads,
+                     POST /staff/audit/print (the print record)
   auth/              staff sign-in, refresh, sign-out, change-password, admin reset;
                      CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
   money-control/     MoneyControlService: Owner-only rules, approval limits and
                      the daily ledger, own record, Manager/Owner accounts, last Owner
   common/            money, dates, errors, pagination, request helpers, QR tokens
-                     and their SVG renderer, the client-address throttler guard
+                     and their SVG renderer, the client-address throttler guard,
+                     one-sentence field checks, the admin reason, item lists
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
   internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens sweep
@@ -103,6 +115,21 @@ src/
                      staff ID cards (the QR payload in staff-qr.ts)
   settings/          settings.save, business details, opening hours
   menu/              Menu & Prices: menu.save, photos, the paired Bar stock item
+  stock/             the stock core: StockLedgerService (the one writer of balances
+                     and movements), balances and movements reads, issue, count,
+                     Correct Balance, stock items, kitchen comparison rules
+  orders/            Point of Sale: bills and lines (claimOrder, readOrder,
+                     orderTotals), kitchen dockets (DocketsService, the one
+                     docket writer), the bill and docket history readers;
+                     payments, settle and the corrections (OrderPaymentsService)
+  kitchen/           Kitchen: kitchen.save and kitchen.close (KitchenService),
+                     the entries and day reads, the Kitchen Crosscheck report
+                     (crosscheck(), the demo's function)
+  cash/              cash.count and the Cash Reconciliation report
+  reception/         Reception: bookings (ReservationsService.book, the one
+                     booking command), table sessions, the floor read, the
+                     Free Table Reminder; arrival rules in reservation-rules.ts
+  notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
@@ -111,7 +138,8 @@ prisma/
   seed.ts, seed-owner.ts   the two seed entry points (data-seed.ts, owner-seed.ts do the work)
   menu-seed.ts       joins the copied menu sources; refuses a disagreement
   seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
-test/                e2e specs, create-test-app.ts, staff-fixtures.ts,
+test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
+                     acceptance races), create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts

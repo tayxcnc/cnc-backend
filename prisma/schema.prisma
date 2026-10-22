@@ -176,6 +176,91 @@ enum EnquiryStatus {
   HANDLED
 }
 
+/// Where an order came from: the till, or the website and app (plan §4.3).
+enum OrderChannel {
+  POS
+  WEB
+}
+
+/// The staff app's order states: Open, Payment, Settled, Cancelled.
+enum OrderStatus {
+  OPEN
+  PAYMENT
+  SETTLED
+  CANCELLED
+}
+
+/// Cash, Card and Transfer at the till; Online for a Paystack payment.
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  ONLINE
+}
+
+/// How a web order leaves the kitchen. Carried by a web docket so a
+/// pre-order prints as one (plan §4.3); the checkout uses it from C7.
+enum Fulfilment {
+  DELIVERY
+  PICKUP
+}
+
+/// Where stock is held: the store counts packs, the kitchen and the bar
+/// count units (plan §7.6).
+enum StockLocation {
+  STORE
+  KITCHEN
+  BAR
+}
+
+/// Why a stock balance moved: the 15 types the staff app writes
+/// (`staff/lib/domain.ts`, every `move()` call, with "Issue to Kitchen" and
+/// "Issue to Bar" as two), plus `WEB_SALE` for a paid web order's drinks
+/// (plan §4.6, §7.4). The demo's seeded "Opening balance" is not a type:
+/// opening balances are entered by stock count (Q11, the C4 gate). Its dead
+/// "Unit conversion adjustment" label is dropped (D40).
+enum StockMovementType {
+  ISSUE_TO_KITCHEN
+  ISSUE_TO_BAR
+  STOCK_RECEIVED
+  STOCK_COUNT
+  ADMIN_ADJUSTMENT
+  KITCHEN_ENTRY
+  KITCHEN_CORRECTION
+  BAR_SALE
+  SETTLEMENT_REVERSAL
+  PURCHASE_RECEIPT
+  PURCHASE_CORRECTION
+  WASTE
+  WASTE_CORRECTION_RETURN
+  WASTE_CORRECTION_DEDUCTION
+  WASTE_APPROVAL_CORRECTION
+  WEB_SALE
+}
+
+/// A booking's lifecycle (D22). Availability is derived from it, never
+/// stored: see plan §7.5.
+enum ReservationStatus {
+  CONFIRMED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+/// Who took a booking. All three run the one command (plan §7.5).
+enum ReservationSource {
+  WEB
+  APP
+  RECEPTION
+}
+
+/// A table's allocation: guests seated, or locked with a reason.
+enum TableSessionStatus {
+  OCCUPIED
+  LOCKED
+}
+
 // ============================== REFERENCE DATA (§4.1) ======================
 
 /// The one settings row: VAT, service, fees, approval limits, the printer,
@@ -316,6 +401,10 @@ model DiningTable {
   /// Restrict: a room with tables is not deleted.
   venue Venue @relation(fields: [venueId], references: [id], onDelete: Restrict)
 
+  orders        Order[]
+  reservations  Reservation[]
+  tableSessions TableSession[]
+
   @@unique([venueId, code])
 }
 
@@ -395,9 +484,11 @@ model MenuItem {
   version Int @default(0)
 
   /// Restrict on both categories: a category with dishes is not deleted.
-  staffCategory StaffCategory @relation(fields: [staffCategoryId], references: [id], onDelete: Restrict)
-  menuCategory  MenuCategory  @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
-  stockItem     StockItem?
+  staffCategory   StaffCategory    @relation(fields: [staffCategoryId], references: [id], onDelete: Restrict)
+  menuCategory    MenuCategory     @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
+  stockItem       StockItem?
+  orderLines      OrderLine[]
+  kitchenMappings KitchenMapping[]
 
   @@index([menuCategoryId, sort])
   @@index([department])
@@ -446,6 +537,15 @@ model Staff {
   passwordResetTokens PasswordResetToken[]
   auditEntries        AuditLog[]
   approvals           ApprovalLedger[]
+  ordersOpened        Order[]              @relation("OrderOpenedBy")
+  dockets             Docket[]
+  payments            Payment[]
+  cashCounts          CashCount[]
+  kitchenEntries      KitchenEntry[]
+  kitchenDaysClosed   KitchenDayClosed[]
+  tableSessionsOpened TableSession[]       @relation("TableSessionOpenedBy")
+  tableSessionsClosed TableSession[]       @relation("TableSessionClosedBy")
+  stockMovements      StockMovement[]
 
   @@index([role, isActive])
 }
@@ -490,6 +590,8 @@ model Customer {
   otpCodes      OtpCode[]
   notifications CustomerNotification[]
   auditEntries  AuditLog[]
+  orders        Order[]
+  reservations  Reservation[]
 }
 
 /// A one-time sign-in or email-change code (A15). The code is 6 digits and
@@ -574,11 +676,12 @@ model PasswordResetToken {
   @@index([expiresAt])
 }
 
-// ============================== STOCK (§4.6, the item only) ================
+// ============================== STOCK (§4.6, the core) =====================
 
-/// A stock item (plan §4.6). Only the item exists from C3, because the seed
+/// A stock item (plan §4.6). The item exists from C3, because the seed
 /// pairs every Bar menu item with one and `menu.save` creates one for each
-/// new Bar item; balances and movements arrive with the stock cards in C4.
+/// new Bar item; balances, movements and the kitchen comparison rules
+/// arrive with the stock core in C4.
 ///
 /// `name` is unique **case-insensitively**: the staff app refuses "Rice"
 /// beside "rice" ("This stock item already exists."). Prisma cannot express
@@ -612,7 +715,405 @@ model StockItem {
 
   menuItem MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
 
+  balances        StockBalance[]
+  movements       StockMovement[]
+  kitchenMappings KitchenMapping[]
+
   @@index([kind])
+}
+
+/// One item's quantity at one location (plan §4.6): whole packs at the
+/// Store, whole units in the Kitchen and at the Bar.
+///
+/// **Only `StockLedgerService.move` writes it**, in the same transaction as
+/// the `StockMovement` that explains the change, so the balance is always
+/// the running sum of the movements (checked in the e2e suite). A decrement
+/// is one conditional `UPDATE … WHERE qty + delta >= 0`: no read, so no gap
+/// in which two writers both see enough stock (TAY's `StockService`).
+///
+/// A missing row is a zero balance: rows are created on the first movement
+/// at that location, so the 87 seeded Bar items start with none (Q11).
+///
+/// There is no `qty >= 0` CHECK, deliberately: a paid web order's drinks are
+/// deducted without refusing and may take the Bar below zero (plan §7.4;
+/// the money is already taken). Every other movement refuses to go below
+/// zero in the service. Which locations an item may hold (a Kitchen item
+/// never at the Bar, a Bar item never in the Kitchen) is the service's rule
+/// too. Restrict: a stock item with a balance is never deleted.
+model StockBalance {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stockItemId String
+  location    StockLocation
+  qty         Int           @default(0)
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([stockItemId, location])
+  @@index([location])
+}
+
+/// One change to one balance, and why (plan §4.6). The movements are the
+/// truth; `StockBalance` is their running sum.
+///
+/// **Append-only**, by trigger as `AuditLog` is: a movement edited or
+/// deleted would leave a balance no history explains. A correction is a new
+/// movement. There is no `updatedAt`, because a row never changes.
+///
+/// `qty` is signed and whole, never zero (a CHECK): packs at the Store,
+/// units elsewhere. `ref` is what the screens show beside it, as the staff
+/// app writes it: an order number, a `KOT-` ref, a request or purchase
+/// number, or a direct issue's note. `staffId` is null only for a movement
+/// nobody on the staff made (a paid web order's drinks). Both relations
+/// restrict: a foreign key that set null would be an UPDATE the trigger
+/// refuses.
+model StockMovement {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  stockItemId String
+  location    StockLocation
+  qty         Int
+  type        StockMovementType
+  ref         String
+  staffId     String?
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  staff     Staff?    @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([stockItemId, location, createdAt])
+  @@index([location, createdAt])
+  @@index([ref])
+}
+
+/// A comparison rule for the kitchen crosscheck (plan §4.3, §7.10): the
+/// Kitchen portions one Restaurant menu item is expected to use. Settings →
+/// Kitchen Comparison Rules; `mapping.save` replaces an item's whole set.
+///
+/// The rules never fill in a kitchen entry or move stock. That the menu
+/// item is a Restaurant item and the stock item a Kitchen item is the
+/// service's rule ("Choose a food menu item.", "Choose a kitchen portion.");
+/// a CHECK holds `qty` above zero. Cascade from the menu item, whose rules
+/// these are; restrict the stock item, which a rule names.
+model KitchenMapping {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  menuItemId  String
+  stockItemId String
+  qty         Int
+
+  menuItem  MenuItem  @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([menuItemId, stockItemId])
+  @@index([stockItemId])
+}
+
+// ============================== TILL, KITCHEN AND PAYMENTS (§4.3) ==========
+
+/// A bill (plan §4.3, §7.1–§7.3).
+///
+/// `number` is `CNCR-000001` (Restaurant) or `CNCB-000001` (Bar), drawn from
+/// one sequence per department that every channel shares (D29). A web order
+/// is one `CNCR` order whose lines carry their own department (D30).
+///
+/// `vatBps` and `serviceBps` are snapshotted from Settings when the order
+/// is opened, so a rate change applies to new bills only. `revision` is the
+/// last docket revision written (0: never confirmed); the confirmed lines
+/// are the latest docket's. `depositKobo` is the reservation credit used at
+/// settlement (D38: always 0 until a route sets a deposit).
+///
+/// A CHECK ties `settledAt` to `SETTLED`: a reversal clears both. Never
+/// deleted: a bill is cancelled.
+model Order {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number        String       @unique
+  department    Department
+  channel       OrderChannel @default(POS)
+  tableId       String?
+  label         String
+  guest         String       @default("")
+  businessDate  DateTime     @db.Date
+  status        OrderStatus  @default(OPEN)
+  revision      Int          @default(0)
+  vatBps        Int
+  serviceBps    Int
+  discountKobo  Int          @default(0)
+  depositKobo   Int          @default(0)
+  reservationId String?
+  notes         String       @default("")
+  settledAt     DateTime?
+  /// Null for a web order, which nobody on the staff opened.
+  openedById    String?
+  customerId    String?
+
+  version Int @default(0)
+
+  table       DiningTable? @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  reservation Reservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  openedBy    Staff?       @relation("OrderOpenedBy", fields: [openedById], references: [id], onDelete: SetNull)
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  lines          OrderLine[]
+  dockets        Docket[]
+  payments       Payment[]
+  kitchenEntries KitchenEntry[]
+
+  @@index([businessDate, department])
+  @@index([status, department])
+  @@index([tableId, status])
+  @@index([customerId])
+}
+
+/// One line of a bill (plan §4.3). A line is an item plus its option, so
+/// the same dish with two choices is two lines; `option` is `""` when the
+/// dish has none (an empty string rather than null, so the unique index
+/// treats every option-less line of a dish as the same line).
+///
+/// `unitPriceKobo` and `name` are snapshots: a price change applies to new
+/// lines only. `department` is the item's, so a web order's drinks are told
+/// from its food. A CHECK holds `qty` to 1–999 and the price at zero or
+/// above. An unconfirmed line set to zero is removed; what was sent to the
+/// kitchen lives on in its docket. Cascade from the order; restrict the
+/// menu item, whose sale it records.
+model OrderLine {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderId       String
+  menuItemId    String
+  name          String
+  option        String     @default("")
+  qty           Int
+  unitPriceKobo Int
+  department    Department
+
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, menuItemId, option])
+  @@index([menuItemId])
+}
+
+/// A kitchen docket revision (plan §4.3, §7.1): `KOT-<order number>`, the
+/// full list of the order's confirmed **Restaurant** lines at that revision.
+/// Revisions are immutable; a confirm with no change reprints the latest
+/// one. A cancellation docket has no items.
+///
+/// `items` is a JSON snapshot (`[{menuItemId, name, option, qty,
+/// unitPriceKobo}]`). The web fields (`channel`, `fulfilment`,
+/// `scheduledFor`) let a pre-order print as one. `staffId` is null for a
+/// web docket. Restrict both ways: a docket is history.
+model Docket {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  ref          String
+  orderId      String
+  revision     Int
+  businessDate DateTime     @db.Date
+  items        Json
+  notes        String       @default("")
+  staffId      String?
+  channel      OrderChannel
+  fulfilment   Fulfilment?
+  scheduledFor DateTime?
+
+  order Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, revision])
+  @@index([ref, revision])
+  @@index([businessDate, channel])
+}
+
+/// Money received against a bill, or returned (plan §4.3, §7.3).
+///
+/// `number` is `PAY-000001`, shown in Daily Transfers. `amountKobo` is never
+/// zero and is negative for a refund. Split payments are several rows; a
+/// part payment is flagged `part`. A reversal flags the row (`reversed`,
+/// `reversedAt`, held together by a CHECK) and never deletes it.
+/// `providerRef` is Paystack's reference, unique when set; the card is only
+/// ever its brand and last four digits (never a card number, plan §8.5).
+/// Restrict both ways: a payment is a ledger row.
+model Payment {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number       String        @unique
+  orderId      String
+  method       PaymentMethod
+  amountKobo   Int
+  sender       String        @default("")
+  reference    String        @default("")
+  part         Boolean       @default(false)
+  reversed     Boolean       @default(false)
+  reversedAt   DateTime?
+  staffId      String?
+  providerRef  String?       @unique
+  cardBrand    String?
+  cardLast4    String?
+  businessDate DateTime      @db.Date
+
+  order Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([businessDate, method])
+}
+
+/// A cashier's drawer count for a business date (plan §4.3, §7.3):
+/// `CASH-000001`. `expectedKobo` is the date's non-reversed cash payments;
+/// several counts per date are allowed. A CHECK holds the difference to
+/// counted − expected. Restrict: a count is history.
+model CashCount {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  number         String   @unique
+  businessDate   DateTime @db.Date
+  staffId        String
+  expectedKobo   Int
+  countedKobo    Int
+  differenceKobo Int
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([businessDate])
+}
+
+/// The kitchen's own record of the portions used for a docket (plan §4.3),
+/// entered from the paper docket's number and compared with the comparison
+/// rules in the crosscheck. One entry per docket ref; the date, order and
+/// revision come from the docket. `lines` is `[{stockItemId, qty}]`.
+/// `staffId` is whoever saved it last. Restrict both ways.
+model KitchenEntry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  docketRef    String   @unique
+  orderId      String
+  revision     Int
+  businessDate DateTime @db.Date
+  lines        Json
+  staffId      String
+
+  version Int @default(0)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([businessDate])
+  @@index([orderId])
+}
+
+/// A kitchen day closed (`kitchen.close`): later saves for that date are
+/// manager corrections with a reason. Once per date (unique).
+model KitchenDayClosed {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  businessDate DateTime @unique @db.Date
+  closedById   String
+
+  closedBy Staff @relation(fields: [closedById], references: [id], onDelete: Restrict)
+}
+
+// ============================== TABLES AND RESERVATIONS (§4.5) =============
+
+/// A table booking from the website, the app or Reception: one command for
+/// all three (plan §4.5, §7.5).
+///
+/// **One active booking per table per date, for every channel**: a partial
+/// unique index on (`tableId`, `businessDate`) where the status is
+/// `CONFIRMED` or `CHECKED_IN`, written by hand in the migration as
+/// `Reservation_tableId_businessDate_key`, so two bookings racing for one
+/// table cannot both commit and the clash reads as a P2002 on those fields
+/// (D21). A booking holds its table for the whole date (D20).
+///
+/// `number` is `RSV-000001`. `startMinutes` is the arrival time in minutes
+/// after midnight, WAT. `phone` is stored normalised. `depositKobo` and
+/// `depositUsedKobo` stay 0 until a route sets a deposit (D38). How a
+/// Reception booking links to a customer is Q35. Never deleted: cancelled.
+model Reservation {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number          String            @unique
+  tableId         String
+  customerId      String?
+  name            String
+  phone           String
+  email           String            @default("")
+  businessDate    DateTime          @db.Date
+  startMinutes    Int
+  party           Int
+  status          ReservationStatus @default(CONFIRMED)
+  source          ReservationSource
+  note            String            @default("")
+  depositKobo     Int               @default(0)
+  depositUsedKobo Int               @default(0)
+  cancelledAt     DateTime?
+  reminderSentAt  DateTime?
+
+  version Int @default(0)
+
+  table    DiningTable @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  customer Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  orders        Order[]
+  tableSessions TableSession[]
+
+  @@index([businessDate, status])
+  @@index([tableId, businessDate])
+  @@index([customerId])
+}
+
+/// A table's allocation (plan §4.5): guests seated (`OCCUPIED`) or the
+/// table locked with a reason (`LOCKED`), from `since` until `endedAt`.
+///
+/// **One open allocation per table**: a partial unique index on `tableId`
+/// where `endedAt IS NULL`, written by hand as `TableSession_tableId_key`,
+/// so two allocations racing for one table cannot both commit. A release
+/// ends the session (`endedAt`, `closedById`) and keeps it as history.
+/// `note` is the lock reason. Restrict the table and the staff who opened
+/// it; the closer nulls (optional attribution).
+model TableSession {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tableId       String
+  status        TableSessionStatus
+  guest         String             @default("")
+  party         Int                @default(0)
+  note          String             @default("")
+  since         DateTime           @default(now())
+  endedAt       DateTime?
+  reservationId String?
+  openedById    String
+  closedById    String?
+
+  version Int @default(0)
+
+  table       DiningTable  @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  reservation Reservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  openedBy    Staff        @relation("TableSessionOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)
+  closedBy    Staff?       @relation("TableSessionClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+
+  @@index([tableId, endedAt])
+  @@index([endedAt, status])
 }
 
 // ============================== MONEY CONTROLS (§4.3, the ledger only) =====

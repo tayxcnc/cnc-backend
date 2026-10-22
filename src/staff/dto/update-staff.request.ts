@@ -10,13 +10,13 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { StaffRole } from '../../../generated/cnc-client';
+import { REASON_MAX_LENGTH } from '../../common/admin-reason';
 import { VersionedWriteDto } from '../../common/dto/versioned-write.dto';
 import { EMAIL_PATTERN } from '../../common/email-pattern';
 import { isSent } from '../../common/is-sent';
 import { normaliseEmail } from '../../common/normalise-email';
 import { trimText } from '../../common/trim-text';
 import {
-  REASON_MAX_LENGTH,
   STAFF_EMAIL_INVALID_MESSAGE,
   STAFF_NAME_AND_ROLE_MESSAGE,
   STAFF_NAME_MAX_LENGTH,

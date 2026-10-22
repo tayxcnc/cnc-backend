@@ -75,11 +75,31 @@ export async function createIsolatedDatabase(): Promise<IsolatedDatabase> {
 
   return {
     url,
-    drop: () =>
-      withClient(baseUrl, async (admin) => {
-        await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-      }),
+    drop: () => withClient(baseUrl, (admin) => dropDatabase(admin, name)),
   };
+}
+
+/**
+ * Drop a database, ending this role's own sessions on it first.
+ *
+ * Not `DROP DATABASE … WITH (FORCE)`: on Postgres 16, FORCE refuses the
+ * whole drop with "permission denied to terminate process" when an
+ * autovacuum worker is visiting the database, because the worker carries no
+ * role a non-superuser may signal, and a freshly seeded database invites
+ * one. A plain `DROP DATABASE` stops autovacuum workers itself and waits up
+ * to five seconds for other sessions to leave, so ending our own sessions
+ * first (which any role may do) is all FORCE was doing for us.
+ */
+async function dropDatabase(admin: Client, name: string): Promise<void> {
+  await admin.query(
+    `SELECT pg_terminate_backend(pid)
+       FROM pg_stat_activity
+      WHERE datname = $1
+        AND usename = current_user
+        AND pid <> pg_backend_pid()`,
+    [name],
+  );
+  await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
 }
 
 /** The committed migrations' SQL files, oldest first. */
@@ -127,7 +147,7 @@ async function dropStale(admin: Client): Promise<void> {
       Number.isFinite(createdAt) &&
       Date.now() - createdAt > STALE_AFTER_MS
     ) {
-      await admin.query(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+      await dropDatabase(admin, datname);
     }
   }
 }

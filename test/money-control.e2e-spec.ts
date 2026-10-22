@@ -1,6 +1,6 @@
 import { ForbiddenException, INestApplication } from '@nestjs/common';
 import { App } from 'supertest/types';
-import { type Prisma, StaffRole } from '../generated/cnc-client';
+import { Prisma, StaffRole } from '../generated/cnc-client';
 import {
   LAST_ACTIVE_OWNER_MESSAGE,
   LIMITED_DECISIONS,
@@ -49,15 +49,28 @@ describe('money controls (e2e)', () => {
 
   class Rollback extends Error {}
 
-  /** Run `work` in a transaction and roll it back whatever happens. */
+  /**
+   * Run `work` in a transaction and roll it back whatever happens.
+   *
+   * READ COMMITTED by default, which the ledger tests need: a decision
+   * waiting on the advisory lock must see the ledger row the first one
+   * committed. The last-Owner tests pass REPEATABLE READ instead, so the
+   * Owners they count are the ones their snapshot holds: under READ
+   * COMMITTED an Owner account another suite committed in the meantime
+   * counted as a second active Owner.
+   */
   async function rolledBack(
     work: (tx: Prisma.TransactionClient) => Promise<void>,
+    isolationLevel?: Prisma.TransactionIsolationLevel,
   ): Promise<void> {
     await expect(
-      prisma.$transaction(async (tx) => {
-        await work(tx);
-        throw new Rollback();
-      }),
+      prisma.$transaction(
+        async (tx) => {
+          await work(tx);
+          throw new Rollback();
+        },
+        isolationLevel ? { isolationLevel } : undefined,
+      ),
     ).rejects.toBeInstanceOf(Rollback);
   }
 
@@ -365,7 +378,7 @@ describe('money controls (e2e)', () => {
             ),
           ).toBe(LAST_ACTIVE_OWNER_MESSAGE);
         }
-      });
+      }, Prisma.TransactionIsolationLevel.RepeatableRead);
     });
 
     it('lets an Owner step down while another is active, and counts only active Owners', async () => {
@@ -397,7 +410,7 @@ describe('money controls (e2e)', () => {
             }),
           ),
         ).toBe(LAST_ACTIVE_OWNER_MESSAGE);
-      });
+      }, Prisma.TransactionIsolationLevel.RepeatableRead);
     });
   });
 });

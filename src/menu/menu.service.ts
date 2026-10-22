@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-} from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Department, type Prisma, StockKind } from '../../generated/cnc-client';
 import { AuditService, staffActor } from '../audit/audit.service';
 import type { StaffPrincipal } from '../auth/staff-principal';
@@ -19,7 +15,7 @@ import {
 } from '../money-control/money-control.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
-import { uniqueViolationTargets } from '../prisma/unique-violation';
+import { assertStockNameFree } from '../stock/stock-item-name';
 import { BAR_STOCK_SHAPE } from './bar-stock';
 import type {
   CreateMenuItemRequest,
@@ -33,7 +29,6 @@ import type {
 import {
   MENU_CATEGORY_MESSAGE,
   MENU_ITEM_NOT_FOUND_MESSAGE,
-  STOCK_ITEM_EXISTS_MESSAGE,
 } from './menu-messages';
 import { uniqueSlug } from './menu-slug';
 
@@ -243,7 +238,7 @@ export class MenuService {
     );
 
     if (request.department === Department.BAR) {
-      await this.assertStockNameFree(tx, request.name);
+      await assertStockNameFree(tx, request.name);
     }
 
     const slug = await uniqueSlug(tx, request.name);
@@ -483,22 +478,6 @@ export class MenuService {
     return { menuCategoryId: category.menuCategoryId };
   }
 
-  /**
-   * 409 when a stock item already holds the new Bar item's name, ignoring
-   * case, as the unique index does. Checked by query for the sentence; the
-   * index still decides a race (`rethrowStockNameClash`).
-   */
-  private async assertStockNameFree(tx: Tx, name: string): Promise<void> {
-    const holder = await tx.stockItem.findFirst({
-      where: { name: { equals: name, mode: 'insensitive' } },
-      select: { id: true },
-    });
-
-    if (holder !== null) {
-      throw new ConflictException(STOCK_ITEM_EXISTS_MESSAGE);
-    }
-  }
-
   /** One past the last `sort` in a customer category. */
   private async nextSort(tx: Tx, menuCategoryId: string): Promise<number> {
     const { _max } = await tx.menuItem.aggregate({
@@ -536,15 +515,4 @@ export class MenuService {
       version: row.version,
     };
   }
-}
-
-/** A stock-name clash that raced past the query: the same 409. */
-export function rethrowStockNameClash(error: unknown): never {
-  const targets = uniqueViolationTargets(error);
-
-  if (targets.length === 1 && targets[0] === 'name') {
-    throw new ConflictException(STOCK_ITEM_EXISTS_MESSAGE);
-  }
-
-  throw error;
 }

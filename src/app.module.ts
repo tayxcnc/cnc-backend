@@ -3,19 +3,25 @@ import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { AuditViewerModule } from './audit/audit-viewer.module';
 import { CncAuthModule } from './auth/cnc-auth.module';
+import { CashModule } from './cash/cash.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { CncConfigModule } from './config/cnc-config.module';
 import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
 import { HealthController } from './health/health.controller';
 import { SERVICE_NAME } from './health/service-name.token';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { KitchenModule } from './kitchen/kitchen.module';
 import { SweepsModule } from './internal/sweeps.module';
 import { MenuModule } from './menu/menu.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { OrdersModule } from './orders/orders.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
+import { ReceptionModule } from './reception/reception.module';
 import { SettingsModule } from './settings/settings.module';
 import { ShellModule } from './shell/shell.module';
 import { StaffModule } from './staff/staff.module';
+import { StockModule } from './stock/stock.module';
 
 /**
  * Root module for the CNC Cloud Run service.
@@ -43,6 +49,12 @@ import { StaffModule } from './staff/staff.module';
     StaffModule,
     SettingsModule,
     MenuModule,
+    StockModule,
+    OrdersModule,
+    KitchenModule,
+    CashModule,
+    ReceptionModule,
+    NotificationsModule,
     ShellModule,
     SweepsModule,
   ],

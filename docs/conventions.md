@@ -111,6 +111,31 @@ They are here so the first card that builds it starts from the rule.
   columns with `uniqueViolationTargets` (see *Data and migrations*, `P2002`).
 - **The exceptions filter never records request headers.** Headers carry the
   `Authorization` token and cookies, including TAY's (see *Auth*).
+- **A request field answers one sentence at most: validate it with
+  `@Checked` (`src/common/checked.ts`) and its `requiredText` and
+  `wholeNumber` checks, or a single class-validator decorator, never a stack
+  of them carrying one domain sentence** (from C4). Every failing decorator
+  adds its own message, so a missing reason under `@IsString`,
+  `@IsNotEmpty` and `@MaxLength` answered the domain sentence twice and a
+  length sentence beside it, and the staff app joins every message of a 400
+  into what the screen shows (`staff/lib/api-client.ts`): the demo's
+  sentence would not reach the screen as it stands (A7). An "M+r" reason is
+  `@AdminReason` (`src/common/admin-reason.ts`), whose one sentence is the
+  demo's "An admin correction requires a reason."
+- **An item list in a request (`[{ stockItemId, qty }]`) is validated with
+  `@ValidLines` (`src/common/command-lines.ts`), never `@ValidateNested`**
+  (from C4). The ValidationPipe prefixes a nested error with its path
+  (`lines.0.…`), which changes the sentence a screen shows; `ValidLines`
+  answers the demo's `positiveLines` sentences in its order (empty,
+  duplicates, quantities), then the command's own sentence for a bad item
+  id. The lines stay plain objects, and a service reads only the keys the
+  rules name.
+- **A business date in a request or query is checked with
+  `@Checked(calendarDate(sentence))` (`src/common/checked.ts`)** (from C4).
+  It accepts a real `YYYY-MM-DD` day only (`parseIsoDate`) and answers the
+  field's own sentence once ("Enter a valid kitchen date.", "Enter a valid
+  reconciliation date."); the docket, kitchen and report queries share it,
+  so no two routes disagree on what a date is.
 
 ## Optimistic concurrency
 
@@ -458,6 +483,16 @@ They are here so the first card that builds it starts from the rule.
   (`src/prisma/int4.ts`) in its DTO.** A larger number reaches Postgres as
   an out-of-range error and answers 500; capped, it is a 400 the caller can
   act on.
+- **A rule that holds for only some rows of a table (one active booking per
+  table and date, one open session per table) is a hand-written partial
+  unique index named as Prisma names a unique index,
+  `<Model>_<field>[_<field>]_key`** (from C4: `Reservation_tableId_businessDate_key`,
+  `TableSession_tableId_key`). The index, not a check in the service,
+  decides a race between two writers, and the name lets
+  `uniqueViolationTargets` read a clash as its fields, so the service
+  answers 409 with the domain's sentence rather than 500. `prisma migrate
+  diff` ignores a partial index, so the schema cannot express it and the
+  diff still prints an empty migration.
 
 ## Auth *(from C3)*
 
@@ -837,6 +872,490 @@ They are here so the first card that builds it starts from the rule.
   fields. "The money keys are checked first" above holds for well-formed
   input; `test/staff-demo-ports.e2e-spec.ts` pins the order. Role checks
   (`@Roles`) are guards and still come first, as `requireRole` does.
+- **A command whose demo checks an Owner rule before its role rule carries
+  no `@Roles`; the service refuses every non-Owner with the Owner
+  sentence** (from C4: `stock.adjust`). The demo's Correct Balance calls
+  `ownerOnly` first, so a Waiter is told "Only the Owner can correct a
+  stock balance.", not the role sentence; a `@Roles()` guard would answer
+  the other sentence first. The rule is checked before the idempotent
+  transaction opens, as `menu.save`'s new-item rule is.
+- **Printing happens in the browser from data the API already serves; the
+  server only records it, through `POST /staff/audit/print`** (from C4,
+  `src/audit/print.service.ts`, plan §5.3 and A19). A receipt is the bill
+  read (`GET /staff/orders/:id`: lines, totals, every payment) plus the
+  business lines on `GET /staff/reference`; a docket is
+  `GET /staff/dockets/:ref`. No print-shaped endpoint repeats them, so a
+  printed figure can never disagree with the screen's. The record is the
+  demo's audit-only `print` row: action `print`, the ref the screen sent,
+  after `{document, revision}` and the period for an attendance print. Any
+  staff role may print (the demo's `print` names every non-manager role),
+  so the route has no `@Roles`. It takes no version and no Idempotency-Key
+  because it changes nothing: a retried print is a second print, and the
+  history should say so.
+- **The print record accepts only the documents a screen can print**
+  (`PRINT_DOCUMENTS`: docket, bill, receipt, purchase, staff, attendance,
+  CSV export), with a ref of at most 120 characters. The demo stored any
+  text, and a history row naming a document nobody can print would mislead
+  its reader. Its four refusal sentences are new and marked so in
+  `print-documents.ts`.
+
+## Stock *(from C4)*
+
+- **`StockLedgerService.move` (`src/stock/stock-ledger.service.ts`) is the
+  one writer of `StockBalance` and `StockMovement`; every command that moves
+  stock calls it inside its own transaction** (plan §4.6). It writes the
+  balance and the movement that explains it together, so the balance is
+  always the running sum of the movements (the e2e suite checks the sum),
+  and a refusal anywhere rolls both back. `grep -rn "stockMovement.create\|stockBalance" src/`
+  should find only the ledger and the reads.
+- **A decrement is one conditional `UPDATE … WHERE qty + delta >= 0`, and
+  its refusal is 409 with the demo's "Insufficient <location> stock for
+  <item>."** No read comes first, so two commands taking the last pack
+  cannot both pass (TAY's `StockService`); the e2e race test fails when the
+  condition is removed. 409, because the input is well formed and the
+  stock's state refuses it (A7).
+- **There is no `qty >= 0` CHECK on `StockBalance`; `allowNegative` is for
+  a paid web order's drinks only** (plan §7.4). The money is already taken
+  when a web order's drinks are deducted, so stock never blocks it; every
+  other movement is refused below zero in the ledger.
+- **`StockMovement` is append-only by trigger, as the audit log and the
+  approvals ledger are; a correction is a new movement.** A movement edited
+  or deleted leaves a balance no history explains. Its foreign keys
+  restrict, never set null, because that would be an UPDATE the trigger
+  refuses.
+- **A missing `StockBalance` row is a zero balance; rows are created on the
+  first movement with an insert that skips duplicates.** The 87 seeded Bar
+  items start with no rows (Q11), and an `ON CONFLICT DO NOTHING` insert
+  lets two first movements of one item meet on the unique index instead of
+  both inserting.
+- **Which locations hold which items is `locationHolds`
+  (`src/stock/stock-locations.ts`): every item at the Store, a Kitchen item
+  in the Kitchen, a Bar item at the Bar** (D45: `kind`, not an id prefix).
+  Commands check it first with their own sentence; the ledger refuses
+  anything else as a programming error, so no movement can put a portion
+  behind the bar.
+- **A command that reads balances and then moves them by the difference (a
+  stock count) locks them with `lockBalances`, in id order, for its whole
+  transaction.** A sale landing between the read and the move would
+  otherwise be counted over; the id order means two counts over the same
+  items cannot deadlock each other.
+- **A stock count follows Q28's default: its differences are valued by
+  `stockValueKobo` (`src/stock/stock-value.ts`) and passed to
+  `MoneyControlService.withinLimit` as `LIMITED_DECISIONS.stockCount`,
+  counted toward the day** (the plan places the limit "if Q28 says so"; Q28
+  is unanswered, and its stated default is "yes to both"). Above the Owner
+  Approval Limit only the Owner may record the count, and the Storekeeper's
+  counts enter the ledger like a manager's decisions. A count with no
+  difference decides nothing and is never limited. The limit takes its
+  advisory lock after the count has locked its balances; a waste approval
+  (C5) takes them the other way round, so the two by one manager on one
+  item at one moment can deadlock, which Postgres breaks by failing one.
+- **`stockValueKobo` is the demo's coded `wasteValue` until Q25 is
+  answered, and waste (C5) uses the same function** (plan §4.6, §7.8): a
+  Bar item at menu price × quantity at any location; a Kitchen item at the
+  latest purchase cost ÷ the pack's units × quantity, zero when no cost is
+  known. Purchases are C5's schema, so until C5 fills in
+  `latestPackCostKobo` every Kitchen item values at zero, exactly as the
+  demo does with no purchases. One function, so a count and a write-off of
+  the same stock can never be valued two ways.
+- **A direct issue and a Correct Balance take an `Idempotency-Key`; a count
+  and a new stock item do not** (the *Idempotency* rule for creates). A
+  retried issue or correction would move stock twice; a retried count finds
+  no difference left to record, and a retried create is refused on the
+  name.
+- **No `AuditRefAccess` reader is registered for stock refs** (a stock
+  item's id, a location, a dish's slug for a comparison rule). Plan §4.8
+  lets a non-manager read the history of an order or docket, a request, a
+  purchase, a waste entry, an online order or a task; stock items are not on
+  the list, so the registry's fail-closed answer is the rule. Movements are
+  read through `GET /staff/stock/movements` (managers and the Storekeeper).
+- **A kitchen comparison rule (`KitchenMapping`) carries no `version`; its
+  save locks the dish's `MenuItem` row (`FOR UPDATE`) and replaces the whole
+  rule.** A8 does not list it, and a rule is replaced, not edited, so the
+  last save wins; the lock stops two saves interleaving their portions. The
+  rule never fills in a kitchen entry or moves stock.
+- **A Store count's difference is valued in units: packs × the item's
+  `factor`, then `stockValueKobo`; a Kitchen or Bar count's difference is
+  already in units** (from the C4 review). The Store holds packs and
+  `stockValueKobo` values units, so a Store count of nine batches of a
+  ₦5,000 drink (108 servings) was valued at ₦45,000 and slipped under the
+  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock (C5's
+  waste, purchases) converts the same way.
+- **`stock.count` takes an `Idempotency-Key` after all; this replaces the
+  count half of the rule above that a count needs none** (from the C4
+  review). A count writes `counted − recorded` as read at retry time, so a
+  retry after a lost response undid any sale or issue that landed between
+  the two tries, and counted its value toward the manager's day again. The
+  role rule is checked in the controller before the idempotency service, as
+  Correct Balance's Owner rule is. A new stock item still needs no key: a
+  retry is refused on the name.
+
+## Orders and dockets *(from C4)*
+
+- **Every order command takes its bill through `OrdersService.claimOrder`
+  (`src/orders/orders.service.ts`): the order must exist (404 "Order not
+  found."), a Bartender reaches Bar bills only (403 "Bartenders can operate
+  Bar POS only."), and then the request's `version` is claimed.** That is
+  the demo's `order()` in its own order, and the claim is the row lock the
+  rest of the command runs under (*Optimistic concurrency*). The
+  department is read before the claim because it never changes; a
+  Bartender is told the Bar sentence, not a stale-version one, for a bill
+  that was never theirs. C4-5's payment and correction commands use the
+  same method, so the rule is written once.
+- **Lines, details and confirm name the order's `version`; only
+  `order.create` takes an `Idempotency-Key`** (A9). A retried create would
+  open a second bill; a retried line, detail or confirm names a version the
+  first attempt already moved, so it is refused with the stale sentence
+  instead of being applied twice. A reprint claims the version too and so
+  moves it: one rule for every order command, and the reprint answers the
+  bill with its new version.
+- **A line is a dish plus its option; `option` is `""` for a dish with no
+  choice, a dish with a choice needs one of its options, and each option is
+  its own line** (`lineProblem`, `src/orders/order-rules.ts`). A line may
+  always be set to zero, even for a dish taken off sale, so it can be taken
+  off a bill. A new line snapshots the dish's name and price; an existing
+  line keeps its price when its quantity changes (plan §4.1: a price change
+  applies to new lines only).
+- **Lines and details change only on an open bill of today
+  (`assertEditable`, the demo's `allowOrder`): an earlier day's bill is 409
+  "This order belongs to a previous day…", any other is 409 "This order is
+  locked…".** Food added on a previous day is locked (plan §7.1 step 7);
+  409, because the request is well formed and the bill's state refuses it
+  (A7). Confirm is not held to the date: a carried bill confirms its frozen
+  items after midnight, and its docket keeps the bill's business date.
+- **`order.details` changes only the fields it is sent; `null` is
+  refused.** The demo blanked a field left out of the command. The screen
+  sends both, so nothing it does changes, while a client that sends only
+  the notes no longer wipes the guest's name (the same reasoning as
+  `staff.save`, R2).
+- **Every docket row is written by `DocketsService.write`
+  (`src/orders/dockets.service.ts`), and a revision is never changed after
+  it is written.** The confirmed lines are the latest docket's items (there
+  is no `confirmed` column), so the payment check (C4-5), the cancellation
+  docket (C4-5), the web docket (C7) and the crosscheck (C4-6) all read the
+  one snapshot shape (`docket-items.ts`). A revision changed in place would
+  let the kitchen's paper and the record disagree.
+- **A confirm whose lines equal the latest docket writes no revision and
+  answers that docket with `reprint: true`; otherwise it writes revision
+  n+1 with the full list.** The comparison (`sameDocketItems`) covers every
+  snapshot field (dish, option, quantity, name, price) and ignores the order
+  lines were added in, which in the demo was an accident of its array.
+  Notes alone do not make a new revision, as in the demo.
+- **A bill's figures are `orderTotals` (`src/orders/order-totals.ts`), the
+  demo's `totals()` figure for figure, and nothing else computes them.**
+  The list, the detail, the receipt and settlement's exact cover (C4-5)
+  must agree to the kobo; one pure function is the only way they cannot
+  drift.
+- **The till's Part Paid filter is "a non-reversed payment above zero".**
+  The demo's `paidSoFar > 0` is a sum, which a where clause cannot page
+  over; on a till bill the only payments before settlement are part
+  payments, so the two agree. A refund (negative) is a web order's (C7).
+- **An order command's audit `ref` is the order number, and a docket's is
+  its `KOT-` ref; lines are audited as `{ items: [...] }`.** The demo's
+  `ref` for every `order.*` command is the order, so the bill's history
+  shows its confirms; the kitchen's entries (C4-6) are filed under the
+  docket. Wrapping the lines in an object gives the history the demo's
+  "Order items updated (n lines)." rather than "Changed from 1 entry to 2
+  entries.".
+- **`OrdersModule` registers the `AuditRefAccess` readers for bill numbers
+  (`CNCR-`, `CNCB-`: Cashier, Waiter, and a Bartender for Bar bills) and
+  docket refs (`KOT-`: Kitchen, Cashier, Waiter), and both require the
+  record to exist** (`src/orders/order-audit-readers.ts`). Those are the
+  roles plan §6.1 lets open the till and the kitchen; a ref nobody issued
+  has no history to read, so it gets the registry's refusal.
+- **An optional text field in a request is `OptionalText`
+  (`src/common/optional-text.ts`)**, moved out of the stock requests when
+  the orders needed it: absent, or trimmed text up to a length, one
+  sentence per problem, `null` refused.
+
+## Payments, settlement and bill corrections *(from C4)*
+
+- **Every money and correction command on a bill (`order.payment`,
+  `partPay`, `settle`, `discount`, `cancel`, `reopen`, `reverse`) is in
+  `OrderPaymentsService` (`src/orders/order-payments.service.ts`) and takes
+  its bill through `OrdersService.claimOrder` first.** One claim per
+  command is what makes two settles of one bill end as one settlement and
+  one 409 "This record changed. Refresh and try again." (the A8 acceptance
+  case): the second names a version the first moved. The e2e race test
+  fails when the claim is removed.
+- **Part payment and settle take both an `Idempotency-Key` and the bill's
+  `version`** (A8, A9). The key makes a till's own retry of a lost response
+  replay the first answer instead of taking the money again; the version
+  makes a second till's settle of the same bill a stale 409. Neither covers
+  the other's case.
+- **The routes live in `OrderPaymentsController`, beside
+  `OrdersController`, with a `@Roles` on each route and none on the
+  reversal.** The demo's `order.reverse` calls `ownerOnly` first, so every
+  non-Owner, a Waiter included, is told "Only the Owner can reverse a paid
+  bill."; a class-level `@Roles` would answer the role sentence first (the
+  `stock.adjust` rule in *Money controls*).
+- **A payment list is checked as a list in the request (`payments` must be
+  a list of objects, else "Payment information is missing.") and judged in
+  the service by `judgePayments` (`src/orders/payment-rules.ts`), in the
+  demo's order: the sum first, then each payment.** No nested validator
+  can compare a sum with the bill's balance, and the order is visible: a
+  transfer for the wrong amount is told about the amount, not its missing
+  sender. The till's methods are Cash, Card and Transfer; `ONLINE` is
+  Paystack's alone (C7) and is refused at the till.
+- **A settlement's payments equal the balance to the kobo: the bill's
+  `orderTotals` total less non-reversed payments and any deposit credit.**
+  The receipt, the list and the settle must agree (*Orders and dockets*,
+  `orderTotals`); a settle may carry no payment only when nothing is left
+  to pay, a bill discounted to zero.
+- **Each payment draws its own `PAY-` number from the sequence and is
+  dated today in Lagos, not with the bill's business date.** The cash count
+  (C4-8) compares a day's cash payments with the drawer, so a carried bill
+  settled after midnight belongs to the day the money was taken.
+- **A Bar bill's drinks leave the Bar at `order.settle` and return at
+  `order.reverse`, through `StockLedgerService.move` in the same
+  transaction, one movement per paired stock item in id order** (plan
+  §7.2). The settle's state check and version claim make the deduction
+  happen once per settlement; the reversal's "Select a settled POS order."
+  makes the return happen once. Movements in id order cannot deadlock two
+  settles sharing drinks, and a drink on two lines moves once by their sum,
+  which the ledger allows or refuses exactly as the demo's line-by-line
+  moves would. A drink with no paired stock item refuses the settlement
+  (404 "Stock item not found."). The e2e suite proves both state checks by
+  removal.
+- **A reversal marks every payment reversed (with `reversedAt`) and never
+  deletes one; settling again takes fresh payments.** Money that was taken
+  and given back is history the cash count and the reports must still
+  show.
+- **A discount is checked by `MoneyControlService.withinLimit` as
+  `LIMITED_DECISIONS.discount` on its whole amount, and only its increase
+  over the bill's previous discount counts toward the day** (the demo's
+  `withinLimit(c.amount, 'This discount', true, max(0, amount − old))`).
+  Lowering a discount decides nothing and writes no ledger row; the Owner
+  is never recorded.
+- **Deposit credit at settle is the demo's logic, kept for its tests (D38):
+  the booking must be checked in or completed at the bill's table, and the
+  use is one conditional `UPDATE … WHERE "depositKobo" - "depositUsedKobo"
+  >= $credit`.** Two bills spending the same credit cannot both pass a
+  read-then-write. The update does not move the booking's `version`: the
+  credit is the till's counter, not a field Reception edits, so a settle
+  must not make Reception's next save of the booking stale. A reversal
+  gives the credit back.
+- **A cancelled Restaurant bill the kitchen was sent gets a cancellation
+  docket (revision n+1, no items) through `DocketsService.write`; a Bar
+  bill or a bill never confirmed gets none, and no stock moves.** The
+  kitchen's own entries stay its own to correct (C4-6); the empty revision
+  is what tells the kitchen's paper the bill is gone.
+- **The bill's audit rows carry the demo's `before`/`after`: status for
+  payment, reopen and cancel, `paidKobo`/`balanceKobo` for a part payment,
+  `discountKobo` for a discount, and status, money and deposit for settle
+  and reverse; the correction's reason goes in the row's `reason`.** The
+  history then reads "Status changed from Open to Payment." in the staff
+  app's words, and no payment detail beyond money reaches the log.
+- **A bill never owes less than the money already taken against it: a line
+  change, a discount and Proceed to Payment each call
+  `OrdersService.assertCoversPaid`, which refuses with 409 "This bill
+  cannot total less than the part payments already taken."** (from the C4
+  review; a new sentence, the demo had none). The demo let a manager reopen
+  a part-paid bill and cut it below its part payments; after that settle
+  needs exact cover of a negative balance, cancel refuses a part-paid bill
+  and reverse needs a settled one, so the bill and its table were stuck for
+  good. Refusing the cut changes no price or payment rule; a bill brought
+  down to exactly what was paid settles with no payment. Giving money back
+  on a reopened bill (a refund or change path) is a money rule for the
+  founder, not taken here.
+- **A Bar settle that is short names the first short drink in bill order,
+  as the demo's line-by-line moves do** (from the C4 review). The moves
+  still go in stock-item id order so two settles cannot deadlock; before
+  them the sale locks the drinks' Bar balances with `lockBalances` (also id
+  order) and walks the lines in bill order to find the shortfall, so the
+  sentence names the drink the screen expects. The ledger's conditional
+  decrement still guards every move.
+- **A settlement test that claims food stock does not move gives the dish a
+  comparison rule and a kitchen entry first, and compares every movement of
+  the portion and of the bill's and docket's refs before and after** (from
+  the C4 review). Filtering by the bill's number alone, on a dish with no
+  rule, passed with settle deducting by the rule or repeating the entry
+  under `KOT-`; the stronger test was seen failing with such a deduction
+  added.
+
+## Kitchen entries, the kitchen day and the cash count *(from C4)*
+
+- **A kitchen entry takes its order, revision and date from the latest
+  docket under the ref the kitchen typed (`DocketsService.latestByRef`),
+  never from the screen; a non-manager who sends one that differs is told
+  it is "assigned by the system"** (`src/kitchen/kitchen.service.ts`, the
+  demo's `kitchen.save`). The paper docket's number is the only thing the
+  kitchen knows for certain, and an entry filed under the wrong revision or
+  order would make the crosscheck lie. `revision` and `orderNumber` stay in
+  the request only so that sentence is answered as the demo answers it.
+- **`PUT /staff/kitchen/entries/:docketRef` without a `version` records the
+  docket's first entry; with one, it corrects the existing entry through
+  `claimVersion`** (A8). A second first entry is 409 "This docket already
+  exists. Edit its existing kitchen entry.", whether it is seen by the
+  service's check or, when two arrive together, by the unique `docketRef`
+  index (the first entry is inserted before any stock moves, so the clash
+  comes before a balance is touched). A `version` for a docket with no entry
+  is 404 "Kitchen entry not found." (new; the demo turned an id that matched
+  nothing into a create). No Idempotency-Key: a retried first entry is
+  refused as a duplicate and a retried correction names a version the first
+  attempt moved. The e2e races (two first entries, two corrections) fail
+  when the check and the claim are removed.
+- **A save moves the Kitchen by the old quantity less the new one for each
+  item, through `StockLedgerService.move`, in stock item id order
+  (`kitchenStockChanges`, `src/kitchen/kitchen-rules.ts`)** (plan §4.6): a
+  first entry takes its portions (`KITCHEN_ENTRY`), a correction returns
+  what it removed and takes what it added (`KITCHEN_CORRECTION`), with the
+  docket ref as the movement's ref. An item short of stock refuses the whole
+  save (409 "Insufficient kitchen stock for …"), so the kitchen cannot
+  record portions the Kitchen never received. Id order means two saves
+  sharing portions cannot deadlock. An empty list is allowed only to clear
+  an existing entry (a cancelled docket); a first entry with none is "Add at
+  least one item.".
+- **A save is a manager's correction with a reason when the entry is dated
+  away from its docket or from today, when its day is closed, or when an
+  existing entry is from another day, from a closed day, or is moved to a new
+  date** (`isKitchenCorrection`, the demo's `admin()` condition). The
+  Kitchen is refused with the role sentence (403) and a manager without a
+  reason with "An admin correction requires a reason." (400). The reason is
+  optional in the request (`OptionalText`, not `@AdminReason`), because
+  whether one is needed depends on the stored docket and day.
+- **A kitchen day's close and the saves that check it take one advisory
+  lock per date (`cnc:kitchen-day`): a save holds it shared for each date it
+  touches, a close holds it exclusively.** Without it a close could commit
+  between a save's "is the day closed?" read and its commit, and the
+  Kitchen would have written into a closed day. The close is today in Lagos
+  only, once: "Only the current kitchen day can be closed." (400) and "This
+  kitchen day is already closed." (409, also from the unique date when two
+  closes race; the e2e race fails when the check and the clash mapping are
+  removed). Nothing on the till reads the day, so bills stay payable.
+- **An entry's audit `ref` is its `KOT-` ref, and its `before`/`after` are
+  the order number, revision, kitchen date and each portion by name.** The
+  orders module's docket reader already lets the Kitchen, Cashier and
+  Waiter read that history (plan §4.8), and the sentences read "Business
+  Date changed from … to …." and "Lines updated (n).". A close is audited
+  under the date, with the demo's `after` of "Closed"; it has no reader,
+  because §4.8 does not open a day to non-managers.
+- **The Kitchen Crosscheck is `crosscheck()` (`src/kitchen/kitchen-crosscheck.ts`),
+  the demo's function result for result, computed on read
+  (`GET /staff/reports/kitchen-crosscheck`, managers only; A20).** Seven
+  results in the demo's order (missing, reference, revision, rule,
+  quantity, matched, then unexplained entries), spelt `UPPER_SNAKE` (A5).
+  A dish with no comparison rule is "Mapping required", never passed, and
+  the rules are read as they stand now, as the demo reads them. Rows are
+  the latest revision of every ref dated in the range (every revision of a
+  ref carries its bill's date), in the order those revisions were written.
+  One pure function, so the overview's Needs Attention count (C8) and the
+  report can never disagree.
+- **A cash count's expected figure is the date's non-reversed `CASH`
+  payments, refunds included, summed as `bigint` when the count is
+  recorded, and the count keeps it** (plan §4.3; `src/cash/`). Payments are
+  dated the day the money was taken (*Payments*), so the figure is that
+  day's drawer; a later payment changes the next count's figure, never an
+  earlier count's. The CHECK holds `differenceKobo` to counted − expected.
+- **`POST /staff/cash-counts` takes an Idempotency-Key** (the *Idempotency*
+  rule for creates): several counts per date are allowed, so a retry after
+  a lost response would otherwise record the drawer twice. It is R(Cashier)
+  (plan §6.2): the Cashier and managers; the report
+  (`GET /staff/reports/cash`) is the same roles (plan §5.4, the Cashier's
+  three reports). No `AuditRefAccess` reader is registered for `CASH-`
+  refs, because §4.8's list does not include them; the Cashier reads counts
+  through the report.
+- **The two reports built with these cards sit under `staff/reports` and
+  take `from`/`to` through `resolveDateRange` (today when absent, at most
+  366 days).** C8's other reports join them there with the same range rule,
+  so every report answers a bad range in the same words.
+- **A suite that closes a kitchen day or pins a date's cash figures runs on
+  `createIsolatedDatabase`** (`test/kitchen.e2e-spec.ts`,
+  `test/cash-count.e2e-spec.ts`). A close is one row for the whole database
+  and the shared test database is reused on every run, so a close committed
+  there would make every later kitchen save that day a manager's
+  correction; and every suite takes cash on the shared database, so no
+  expected figure could be pinned.
+
+## Reception: bookings, table sessions and the floor *(from C4)*
+
+- **Every booking, whatever its channel, is made by
+  `ReservationsService.book` (`src/reception/reservations.service.ts`);
+  the booking's `source` decides which arrival rules bind it and in whose
+  words a clash is answered** (plan §7.5: "Website, app and Reception all
+  run one command"). Reception's route calls it now and the website's and
+  the app's (C6-5) will; two booking paths would be two sets of checks that
+  drift, and a race between a web booking and a Reception booking for one
+  table must meet the same lock and the same index.
+- **The arrival rules are `arrivalProblem` (`src/reception/reservation-rules.ts`),
+  pure and in this order: in the future, on an open day, within the day's
+  opening hours, and online only on the arrival grid and no later than the
+  last arrival** (Q30's default: Reception is limited to the opening hours,
+  08:00 to 23:59; the 30-minute grid and the 23:00 last arrival bind the web
+  and the app only). The large-party rule (`bigPartyProblem`, the website's
+  own note) binds the web and the app only too: Reception is the team those
+  guests are sent to. Pure, so the time rules are unit-tested at fixed
+  instants rather than waiting for a clock.
+- **One active booking per table and date is decided by the partial unique
+  index `Reservation_tableId_businessDate_key`, and its clash is answered
+  409 with the domain's sentence, never 500** ("This position is already
+  reserved for that date…" for Reception, the website's "Someone has just
+  taken this place…" online). The service checks first only so the demo's
+  sentences come in the demo's order. The e2e race (five bookings at once,
+  one 201) still passes with the check and the table lock removed, and
+  fails with the clash mapping removed: the database, not the check, is
+  what refuses the second booking.
+- **Every command that books, seats, locks, checks in at, moves a booking
+  to or frees a table takes that table's advisory lock first
+  (`lockTables`, namespace `cnc:table`, in id order), before it claims any
+  row.** Some of the demo's checks span two kinds of row (a booking for
+  today against guests seated now; a walk-in against today's booking), and
+  no index spans a booking and a seating, so without the lock two commands
+  could both pass. Taking it before any row lock, in id order, means a
+  booking moved between two tables cannot deadlock a command on either.
+  The partial unique indexes stay the backstop for each kind on its own.
+- **Every reservation command names the booking's `version` (A8); a
+  release names the seating (`sessionId`) and its `version`.** Seatings
+  are new rows that each start at version 0, so a version alone would let
+  a release pressed on a stale screen free the guests seated after it.
+  `table.allocate` and check-in create seatings and take no key: a retry
+  is refused by "Release this position before allocating it again." or a
+  stale version. `reservation.create` takes an Idempotency-Key (A9).
+- **`table.release` is refused while any bill on the table is Open or
+  awaiting payment, of any date, and completes the table's Checked In
+  bookings, moving their `version`** (plan §7.1 step 6, §7.5). A booking
+  another device holds has changed status under it, so that device's next
+  write must be told to refresh; nothing frees a table by itself (D20).
+- **The floor's status is `floorStatus` (plan §7.5): Locked whenever a
+  Locked seating holds the table, Occupied for guests seated today only,
+  then Reserved for a Confirmed or Checked In booking on the date, else
+  Available.** A seating is now, so it does not make a future evening
+  look taken. The Point of Sale roles read today's floor only, without a
+  guest's phone or email, and a Bartender sees Bar bills only (plan §6.1).
+- **The Free Table Reminder is computed on read from open Occupied
+  seatings at least `Settings.freeTableReminderMinutes` old, worded in
+  minutes under an hour (D37), and served on `GET /staff/notifications`**
+  (`src/notifications/`). The bell is C8-2's card, but the C4 gate's step
+  11 needs the reminder, so the route starts with this one item and C8-2
+  adds the rest of plan §9.1 beside it, each with its own roles; the floor's
+  seating carries `reminderDue` for the same rule.
+- **A guest's phone is kept as `guestPhone` writes it: a Nigerian mobile
+  number in its one form (`0` plus 10 digits) however it was typed, any
+  other number as typed; a guest's email is trimmed and lower-cased.** The
+  demo only required a phone, and a visitor's foreign number must still
+  book; a Nigerian number in one form is what the search and the Q35 link
+  can match.
+- **A Reception booking links to a customer only on an exact match to a
+  verified email, else a verified phone, and never creates one** (Q35's
+  default). A change re-tries the link only when the booking has none and
+  its contact changed; it never unlinks, so a booking already in a
+  customer's app stays there.
+- **A table's audit `ref` is the room's initial and its code (`D-B1`,
+  `L-TS1`, the demo's table ids); a booking's is its `RSV-` number. No
+  `AuditRefAccess` reader is registered for either** (plan §4.8's list of
+  records a non-manager may read does not include them, so the registry's
+  fail-closed answer is the rule). Codes repeat across rooms (TS1 to TS3),
+  so the code alone is not one table.
+- **`reservation.change` (new; plan §16) changes only the fields sent and
+  checks again only what they touch**: the places when the table or party
+  changes, Reception's arrival rules when the date or time does, and the
+  table's holds when the table or date does. A name fixed on a booking
+  whose time has passed is not refused for being in the past.
+- **The reception suite runs on `createIsolatedDatabase`
+  (`test/reception.e2e-spec.ts`).** It changes the opening hours and the
+  reminder time, which every suite shares, and asserts on the whole floor
+  and the whole bell. Bookings already past their time and guests seated
+  hours ago are written directly, since the routes refuse to make them now.
 
 ## CORS
 
@@ -1136,6 +1655,59 @@ here.
   contract change, start the app once and stop it when the log says the spec
   was written. Never edit it by hand: `npm run mock` and the frontends read it
   as what the controllers say.
+- **An isolated test database is dropped by ending this role's own sessions
+  on it and then a plain `DROP DATABASE`, never `WITH (FORCE)`** (from C4,
+  `test/isolated-database.ts`). On Postgres 16, FORCE refuses the whole drop
+  with "permission denied to terminate process" when an autovacuum worker is
+  visiting the database, because the worker carries no role the test user
+  may signal; a freshly seeded database invites one, and the suite then
+  fails after all its tests passed. A plain drop stops autovacuum workers
+  itself.
+- **A test that counts every Owner (or any rows other suites create) inside
+  a rolled-back transaction runs it at REPEATABLE READ** (from C4: the seed
+  suite's first-Owner tests and the money-control last-Owner tests). Suites
+  run in parallel and commit Owner accounts of their own; under READ
+  COMMITTED one committed after the test demoted every Owner was counted,
+  and the test failed intermittently. Tests that must see another
+  transaction's commit after a lock (the approval ledger races) stay READ
+  COMMITTED.
+- **A suite that needs a later time fakes `Date` and nothing else:
+  `jest.useFakeTimers({ now, advanceTimers: true, doNotFake: [...every
+  timer...] })`, then `jest.setSystemTime` only forwards, with fresh access
+  tokens after each jump** (from C4: `test/c4-gate.e2e-spec.ts`,
+  `test/c4-demo-ports.e2e-spec.ts`). The server reads the time through
+  `new Date()` in the same process, so it sees the test's clock with no
+  clock injected into production code. Faking any timer would stall the
+  pool, the HTTP server and Postgres I/O. Moving backwards would let a row
+  stamped by Postgres's own `now()` sort before one written earlier. An
+  access token lives 15 minutes, so one minted before a jump of hours is
+  already expired after it. Such a suite runs on `createIsolatedDatabase`:
+  the bills it dates on another day must not meet another suite's.
+- **The C4 gate walk (`test/c4-gate.e2e-spec.ts`) is one test per gate
+  step, in the plan's order, sharing state; the cross-command races live in
+  `test/c4-races.e2e-spec.ts`** (from C4). Both seed their own database
+  with the real seeds (`seedData`), so the gate uses the venue's own Diner
+  B1, Lounge TS1 and a real dish with a choice, and every balance a race
+  asserts is that suite's alone. One test per step makes a failure name
+  the step the founder will walk. Each command suite keeps its own single
+  race. The races suite repeats the acceptance races over several rows
+  and adds those across commands (a booking against a walk-in, settles
+  against issues on one balance), because a race that passes once can still
+  lose one time in five.
+- **Every C4 race test was seen failing with its guard removed** (from C4):
+  the conditional decrement (the shortfall test), a read-then-write balance
+  update in place of `qty = qty + delta` (all four stock races), the
+  version claim in `claimOrder` (both settle races and gate step 6), and
+  the per-table lock (the booking-against-walk-in race, in each of three
+  runs). Repeat that check after changing any of those guards, because a
+  race test that passes with its guard removed proves nothing.
+- **A suite whose assertions depend on the hour of the day fakes `Date`
+  through `test/fake-date.ts` (`fakeDateOnly`, `nextNoonInJos`), the races
+  and Reception suites included** (from the C4 review). Both booked today
+  at 23:45 or 23:59 on the real clock, which Reception refuses as past in
+  the last minutes of a Lagos day; the Reception suite was seen failing so
+  at 23:59 WAT with every guard working. The helper holds the one list of timers left real, so the gate,
+  the demo ports and the races cannot drift apart.
 
 ## Verification
 

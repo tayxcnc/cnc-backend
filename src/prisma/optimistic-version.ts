@@ -19,7 +19,7 @@ export const STALE_VERSION_MESSAGE =
  * a model gains or loses a `version` field without this list following, so a
  * new versioned model cannot be written without the check being available.
  *
- * Later cards append their models here (orders, reservations, tasks…).
+ * Later cards append their models here (requests, purchases, tasks…).
  */
 export const VERSIONED_TABLES = [
   'Settings',
@@ -27,6 +27,10 @@ export const VERSIONED_TABLES = [
   'MenuItem',
   'Staff',
   'StockItem',
+  'Order',
+  'KitchenEntry',
+  'Reservation',
+  'TableSession',
 ] as const satisfies readonly Prisma.ModelName[];
 
 export type VersionedTable = (typeof VERSIONED_TABLES)[number];

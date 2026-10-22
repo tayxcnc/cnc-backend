@@ -21,9 +21,9 @@ export const MENU_ITEM_NOT_FOUND_MESSAGE = 'Menu item not found.';
 /**
  * A new Bar item whose paired stock item would take a name another stock
  * item already holds, ignoring case (409). The demo's `stockitem.create`
- * sentence: it is the same clash.
+ * sentence: it is the same clash, so it lives with the stock sentences.
  */
-export const STOCK_ITEM_EXISTS_MESSAGE = 'This stock item already exists.';
+export { STOCK_ITEM_EXISTS_MESSAGE } from '../stock/stock-messages';
 
 /** Longest dish name accepted. */
 export const MENU_NAME_MAX_LENGTH = 120;

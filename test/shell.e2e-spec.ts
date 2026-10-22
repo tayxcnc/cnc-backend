@@ -147,6 +147,7 @@ describe('staff shell (e2e)', () => {
 
       expect(Object.keys(body).sort()).toEqual([
         'business',
+        'kitchenMappings',
         'menu',
         'menuCategories',
         'openingHours',

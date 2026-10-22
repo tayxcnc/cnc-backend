@@ -104,6 +104,14 @@ export const LIMITED_DECISIONS = {
   onlineChange: 'This change to a paid online order',
   /** `online.balance`. */
   paymentCorrection: 'This payment correction',
+  /**
+   * `stock.count` (C4-2), by Q28's default: a count whose differences,
+   * valued as waste is valued, exceed the Owner Approval Limit needs the
+   * Owner, and every count with a valued difference counts toward the
+   * Daily Approval Limit. The demo had no limit on a count, so this name is
+   * new and follows the form of the others.
+   */
+  stockCount: 'This stock count',
 } as const;
 
 /** What `notOwn` names, word for word from the demo's call sites. */
