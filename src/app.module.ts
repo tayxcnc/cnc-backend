@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { AssetsModule } from './assets/assets.module';
+import { AttendanceModule } from './attendance/attendance.module';
 import { AuditViewerModule } from './audit/audit-viewer.module';
 import { CncAuthModule } from './auth/cnc-auth.module';
 import { CashModule } from './cash/cash.module';
@@ -56,6 +58,8 @@ import { WasteModule } from './waste/waste.module';
     PurchasingModule,
     WasteModule,
     TasksModule,
+    AssetsModule,
+    AttendanceModule,
     OrdersModule,
     KitchenModule,
     CashModule,

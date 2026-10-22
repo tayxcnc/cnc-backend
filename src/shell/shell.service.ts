@@ -74,7 +74,8 @@ export class ShellService {
    * select (see `readMenuItems`), so the transaction's one connection runs
    * one query at a time.
    */
-  async reference(): Promise<ReferenceResponse> {
+  async reference(actor: StaffPrincipal): Promise<ReferenceResponse> {
+    const readsAssets = pagesFor(actor.role).includes('maintenance');
     const read = await this.prisma.$transaction(async (tx) => ({
       settings: await this.settings.readSettings(tx),
       business: await this.settings.readBusiness(tx),
@@ -155,6 +156,21 @@ export class ShellService {
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
         select: { id: true, name: true, service: true, isActive: true },
       }),
+      // The lite list (C5-6), for the roles that open Assets & Maintenance
+      // (Reception and managers, plan §5.3): what a repair form picks an
+      // asset from and a repair names one by. Everyone else gets none.
+      assets: readsAssets
+        ? await tx.asset.findMany({
+            orderBy: [{ tag: 'asc' }, { id: 'asc' }],
+            select: {
+              id: true,
+              tag: true,
+              name: true,
+              location: true,
+              status: true,
+            },
+          })
+        : [],
     }));
 
     const { tables, kitchenMappings, ...rest } = read;

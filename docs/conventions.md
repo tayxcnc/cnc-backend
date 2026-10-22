@@ -1334,6 +1334,150 @@ They are here so the first card that builds it starts from the rule.
   role that opens Tasks, for the tasks its read shows it** (`seesTask`,
   `src/tasks/task-audit-reader.ts`, plan §4.8).
 
+## Assets and repairs *(from C5)*
+
+- **Repairs are reactive only (Q13's default): a repair is logged when
+  something breaks, and nothing is scheduled.** Q13 keeps assets and
+  repairs with "no preventive schedule"; a schedule is a plan change.
+- **`asset.save` is `PUT /staff/assets/:tag` (managers): with no `version`
+  it adds the asset under the tag, and a tag already held is 409 "This
+  asset tag already exists." (new); with a `version` it replaces the asset
+  the tag names, claimed at that version, and an unknown tag is 404 "Asset
+  not found." (new)** (`AssetsService`, `src/assets/assets.service.ts`).
+  The demo replaced whatever asset held the tag; a create names no version,
+  so it must not overwrite a record nobody read, and a retried create is
+  refused on the tag as a new stock item is on its name (the *Idempotency*
+  rule for creates), so the route takes no key. The tag is the path and
+  never changes.
+- **An asset's status changes on `asset.save` only when one is sent** (R2's
+  rule, as for staff and vendors). The demo set an asset Active whenever
+  the form left the status out, which would quietly undo the Under Repair
+  a repair had just set.
+- **The tag, name and quantity are judged together in the service, with
+  the demo's one sentence "Enter a tag, name and quantity."**
+  (`assetFieldsProblem`, `src/assets/maintenance-rules.ts`); the request
+  admits them with `@Allow()` (*Errors*: one sentence per field).
+- **`maintenance.save` is `POST /staff/maintenance` (with an
+  Idempotency-Key) and `PATCH /staff/maintenance/:id` (versioned), for
+  Reception and managers, in `MaintenanceService`; it checks in the demo's
+  order (asset and vendor, description and cost, status, then the task) and
+  every field is judged in the service** (plan §5.4, §6.2). The demo's
+  sentences each cover two fields. A retried create would log the repair
+  and its follow-up twice; the update names a version.
+- **The asset follows its repair: Under Repair while Pending or In
+  Progress, Active once Fixed, Inactive when Not Fixed
+  (`assetStatusForRepair`), written by one conditional update that moves
+  the asset's `version` only when the status changes.** It is the demo's
+  rule; a manager's open asset form is made stale only by a real change,
+  and the comparison is on the row as it stands, so two repairs on one
+  asset cannot leave it on a status read before the other's save.
+- **The resolved date is set once, to the Lagos date of the first move to
+  Fixed or Not Fixed, and kept after, a reopened repair included; the
+  reported date is the date the repair was logged** (plan §17, R3,
+  `resolvedOnFor`). The demo reset it to today on every save of a closed
+  repair, so recosting a repair a week later moved the day it was fixed.
+  `MaintenanceRecord_values_check` holds every row to it.
+- **A new repair raises "Follow up repair MT-…: <asset>" for a manager
+  (`managerForTask`), unless it is logged for an existing task (`taskId`);
+  Fixed or Not Fixed closes every open task on the repair
+  (`closeOpenTasks`). All of it runs through `src/tasks/automatic-tasks.ts`
+  in the command's transaction** (plan §7.9, "repairs open and close their
+  own follow-up task"). A task raised or closed outside the transaction
+  would outlive a refused save.
+- **A repair logged for a task links it with one conditional update: the
+  task must have no repair yet, becomes a Maintenance task, moves to In
+  Progress and its `version` moves, with an automatic history row; an
+  unknown task is 404 "Task not found.", a task with a repair 409 "This
+  task already has a maintenance record.", and a Purchase task 400 "Choose
+  a maintenance or general task." (new)** (R3 for the 404). The schema's
+  `Task_values_check` lets only a Maintenance task link a repair, and a
+  Purchase task already tracks a requisition, so it cannot be given the
+  type. The condition decides two repairs racing for one task. The task
+  the repair already links, sent again on an update, links nothing and
+  passes, so a screen sending the whole record back is not refused.
+- **A repair id that names nothing is 404 "Maintenance record not
+  found." (new)**, the not-found sentence the version claim needs.
+- **`AssetsModule` registers the `AuditRefAccess` reader for `MT-`
+  numbers: a role that opens Assets & Maintenance (Reception), for any
+  repair that exists** (`src/assets/maintenance-audit-reader.ts`, plan
+  §4.8, §6.1 "repairs, history"). Assets get no reader: §6.1 gives
+  Reception the assets to read, not their history.
+- **`GET /staff/reference` carries `assets: [{ id, tag, name, location,
+  status }]` only for the roles that open Assets & Maintenance (Reception
+  and managers), and an empty list for everyone else** (plan §5.3, "assets
+  (lite, for Reception and managers)"). The key is always there, so one
+  client shape serves every role.
+
+## Attendance *(from C5)*
+
+- **Attendance is timestamps only, and its export is titled "Attendance
+  review"** (Q12's default: "keep them (timestamps only…) and rename the
+  export"). Nothing calculates lateness, absence or pay; the title lives
+  once, in `ATTENDANCE_EXPORT_TITLE`.
+- **`attendance.scan` (`POST /staff/attendance/scan`, Reception and
+  managers) takes the decoded staff ID, `CNC-ID:<staff number>:<token>`,
+  finds the account by its staff number and compares the token in constant
+  time over SHA-256 digests (`tokensMatch`); the token is then dropped and
+  is never in a response, a log, an audit row or a query** (plan §11, the
+  staff card rule in *Auth*). A query by token would put the credential in
+  any database error the service logs, and a plain `===` leaks by timing
+  how much of a guess was right. The response is `no-store`.
+- **A code that is not a staff ID, names nobody, carries the wrong token or
+  belongs to a deactivated account is the demo's one 400, "This staff QR
+  code is invalid or the account is inactive."** One sentence for all four,
+  so a scanner tells a stranger nothing about which part was wrong.
+- **The scan follows the demo: a scan within a minute of the person's last
+  arrival or departure is a repeat and records nothing, audit included;
+  otherwise the open shift closes, however long ago it began (an overnight
+  shift closes on the next scan), and with none open a new one starts,
+  dated by the Lagos day of arrival** (`scanStep`, plan §7.9). TAY's
+  sixteen-hour cap and its "which shift?" question are not copied: CNC's
+  demo and plan close on the next scan. The scan takes no Idempotency-Key:
+  a retry within the minute is the ignored repeat.
+- **Every scan and every correction of a person runs under that person's
+  advisory lock (`pg_advisory_xact_lock` on `cnc:attendance:<staff id>`),
+  taken before any row; the partial unique index
+  `AttendanceRecord_staffId_key` is the backstop** (plan §4.7, TAY's
+  pattern). Without the lock three scans of one card at once each closed
+  the same shift (the race test fails so); one lock order for both
+  commands means a scan and a correction cannot deadlock.
+- **A departure scan moves the shift's `version`**, so a correction opened
+  before it is refused as stale rather than undoing the departure unseen.
+- **`attendance.correct` (`PATCH /staff/attendance/:id`, managers, with
+  `@AdminReason`) takes Lagos wall clocks, `YYYY-MM-DDTHH:mm`, as the form's
+  `datetime-local` fields hold them, and checks in the demo's order:
+  "Enter valid attendance times.", "Attendance cannot be in the future.",
+  "Check-out must follow check-in.", then 409 "This correction overlaps
+  another shift."** A11 has the client send a date and a time and the
+  server build the instant; the demo built `+01:00` instants in the
+  browser. An empty or absent time out leaves the shift open.
+- **A correction keeps the times it replaced as an `AttendanceCorrection`
+  (who, when, why), returned with the shift, and moves the business date
+  with the new arrival** (plan §4.7, §7.9 "corrections keep the previous
+  times"). The History modal reads them from the record, not from audit
+  before and after (A13).
+- **The reads: `GET /staff/attendance/people` (the managers' directory of
+  active staff), `GET /staff/attendance/:staffId` (managers) and
+  `GET /staff/me/attendance` (everyone, their own) answer a month (this
+  Lagos month by default) or a `from`/`to` range of arrival dates, oldest
+  first, with the demo's summary, a page of a hundred by default; a range
+  is at most 366 days ("Choose a period of 366 days or fewer.", new)** (plan
+  §5.3, §5.4). A month is read in one page, as the screen shows it whole;
+  a server read needs a ceiling the browser's did not. The filters are
+  `ALL`, `COMPLETED` and `OPEN` ("Choose All Shifts, Completed or Open
+  Shifts.", new).
+- **The export is its own read, `GET /staff/attendance/:staffId/export
+  ?from&to` (managers): the title, subtitle, file name, the staff app's
+  columns and one row of text per shift in Lagos time (`formatWatShortStamp`,
+  the app's `timeLabel`)** (A20: the staff app builds the CSV and PDF from
+  rows with its own formula guard). The plan's "`?from&to` for export" is
+  met by a sub-route so the export's shape and title are not mixed into
+  the screen's read; one server definition of the rows keeps CSV, PDF and
+  print preview in step.
+- **No `AuditRefAccess` reader is registered for attendance**: plan §4.8
+  gives no non-manager an attendance history, so the registry's fail-closed
+  answer is the rule. A scan's audit ref is the person's staff number.
+
 ## Orders and dockets *(from C4)*
 
 - **Every order command takes its bill through `OrdersService.claimOrder`

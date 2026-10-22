@@ -48,6 +48,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Purchases, approvals and their limits, receiving, R1's automatic tasks, vendors, the lite list, the assigned-task bell item | Purchasing and vendors |
 | Waste: each role's location, stock on approval, Q25's coded value, approvals and corrections, the read and history | Waste |
 | `task.save`: the role gate, who may raise and save what, links, assignees, history, who sees which task | Tasks |
+| `asset.save` by tag, repairs, the asset following its repair, R3's resolved date, the follow-up task, the MT- reader, the assets lite list | Assets and repairs |
+| The QR scan and its token, repeats and overnight shifts, the per-person lock, corrections, the reads, the "Attendance review" export | Attendance |
 | Bills, lines, totals, dockets, reprints, order history readers | Orders and dockets |
 | Payments, settle and its race, Bar stock on settle and reverse, discounts, cancel, reopen | Payments, settlement and bill corrections |
 | Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
@@ -132,6 +134,12 @@ src/
   tasks/             Tasks: TasksService (task.save, the tasks read), the task
                      rules, the T- history reader; the automatic tasks (raise,
                      close, who gets them) and the assigned-task bell item
+  assets/            Assets & Maintenance: AssetsService (asset.save, the assets
+                     read), MaintenanceService (maintenance.save, the repairs
+                     read), the repair rules, the MT- history reader
+  attendance/        Attendance: AttendanceService (the QR scan, the correction,
+                     the directory, a person's month, My Attendance, the
+                     Attendance review export), the attendance rules
   orders/            Point of Sale: bills and lines (claimOrder, readOrder,
                      orderTotals), kitchen dockets (DocketsService, the one
                      docket writer), the bill and docket history readers;
@@ -144,7 +152,8 @@ src/
                      booking command), table sessions, the floor read, the
                      Free Table Reminder; arrival rules in reservation-rules.ts
   notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
-  shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
+  shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
+                     for Reception and managers), the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
@@ -155,7 +164,9 @@ prisma/
 test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      acceptance races; c5-schema: the C5 migration's CHECKs;
                      purchasing: the C5 gate's steps 1 to 3; waste: steps
-                     5 and 6; tasks: task.save and who sees which),
+                     5 and 6; tasks: task.save and who sees which;
+                     assets-maintenance: assets and repairs; attendance:
+                     the scan, corrections, reads and step 7),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

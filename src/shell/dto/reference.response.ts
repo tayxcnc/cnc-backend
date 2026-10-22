@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
+  AssetStatus,
   Department,
   MenuCategoryKind,
   StaffRole,
@@ -181,11 +182,31 @@ export class ReferenceVendorResponse {
 }
 
 /**
+ * An asset as a repair form picks one (C5-6): no category or quantity,
+ * which the assets read (`GET /staff/assets`) carries.
+ */
+export class ReferenceAssetResponse {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty({ example: 'AC1' })
+  tag!: string;
+
+  @ApiProperty({ example: 'Lounge air conditioner' })
+  name!: string;
+
+  @ApiProperty({ example: 'Lounge' })
+  location!: string;
+
+  @ApiProperty({ enum: AssetStatus, enumName: 'AssetStatus' })
+  status!: AssetStatus;
+}
+
+/**
  * `GET /staff/reference`: what every screen looks things up in (plan §5.3),
  * read once when the shell loads.
  *
- * Vendors joined this response with C5-3; assets join it with the card
- * that builds their routes (C5-6).
+ * Vendors joined this response with C5-3, assets with C5-6.
  */
 export class ReferenceResponse {
   @ApiProperty({ type: SettingsResponse })
@@ -240,4 +261,14 @@ export class ReferenceResponse {
     isArray: true,
   })
   vendors!: ReferenceVendorResponse[];
+
+  @ApiProperty({
+    description:
+      'Every asset, by tag: the lite list a repair form picks from. Only ' +
+      'for the roles that open Assets & Maintenance (Reception and ' +
+      'managers, plan §5.3); empty for everyone else.',
+    type: ReferenceAssetResponse,
+    isArray: true,
+  })
+  assets!: ReferenceAssetResponse[];
 }
