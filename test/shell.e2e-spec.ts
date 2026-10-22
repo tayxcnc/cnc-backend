@@ -143,9 +143,11 @@ describe('staff shell (e2e)', () => {
         menu: { photoUrl: string | null }[];
         stockItems: unknown[];
         staff: Record<string, unknown>[];
+        assets: unknown[];
       };
 
       expect(Object.keys(body).sort()).toEqual([
+        'assets',
         'business',
         'kitchenMappings',
         'menu',
@@ -155,10 +157,13 @@ describe('staff shell (e2e)', () => {
         'staff',
         'staffCategories',
         'stockItems',
+        'vendors',
         'venues',
       ]);
       expect(body.settings.vatBps).toEqual(expect.any(Number));
       expect(body.openingHours.days).toHaveLength(7);
+      // Assets are for the roles that open Assets & Maintenance (C5-6).
+      expect(body.assets).toEqual([]);
 
       const me = body.staff.find((row) => row.id === waiter.id);
       expect(me).toEqual({

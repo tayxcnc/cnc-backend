@@ -1,7 +1,26 @@
-import { StockKind, StockLocation } from '../../generated/cnc-client';
-import { isLow, locationHolds, locationsFor } from './stock-locations';
+import {
+  StaffRole,
+  StockKind,
+  StockLocation,
+} from '../../generated/cnc-client';
+import {
+  isLow,
+  locationHolds,
+  locationsFor,
+  scopedStockLocation,
+} from './stock-locations';
 
 describe('stock locations', () => {
+  it.each([
+    [StaffRole.BARTENDER, StockLocation.BAR],
+    [StaffRole.KITCHEN, StockLocation.KITCHEN],
+    [StaffRole.STOREKEEPER, undefined],
+    [StaffRole.MANAGER, undefined],
+    [StaffRole.OWNER, undefined],
+  ])('scopes a %s to %p', (role, location) => {
+    expect(scopedStockLocation(role)).toBe(location);
+  });
+
   it.each([
     [StockKind.KITCHEN, StockLocation.STORE, true],
     [StockKind.KITCHEN, StockLocation.KITCHEN, true],

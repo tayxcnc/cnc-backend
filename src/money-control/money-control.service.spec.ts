@@ -9,6 +9,7 @@ import {
   OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE,
   OWNER_ONLY_PRICE_MESSAGE,
   approvalLimitMessage,
+  approvalRefusal,
   dailyLimitMessage,
   ownRecordMessage,
 } from './money-control.service';
@@ -575,6 +576,153 @@ describe('MoneyControlService', () => {
       await money.withinLimit(tx, manager, writeOff());
 
       expect(calls).toEqual(['settings', 'lock', 'sum', 'insert']);
+    });
+  });
+
+  describe('standing and approvalRefusal (the approvals read, C5-8)', () => {
+    /**
+     * What an approval by `actor` actually answers: null, or its 403. A
+     * refusal rolls its ledger row back, as the command's transaction does.
+     */
+    async function decided(
+      { tx, ledger }: ReturnType<typeof fakeTx>,
+      actor: { id: string; role: StaffRole },
+      amountKobo: number,
+      createdById: string,
+    ): Promise<string | null> {
+      const rows = ledger.length;
+
+      try {
+        await money.withinLimit(tx, actor, {
+          amountKobo,
+          what: LIMITED_DECISIONS.writeOff,
+          count: true,
+          action: 'waste.approve',
+          at: NOW,
+        });
+        money.notOwn(actor, createdById, OWN_RECORD_KINDS.wasteEntry);
+        return null;
+      } catch (error) {
+        ledger.length = rows;
+        expect(error).toBeInstanceOf(ForbiddenException);
+        return (error as ForbiddenException).message;
+      }
+    }
+
+    it('reads the limits and the person’s total for the day, without the lock', async () => {
+      const { tx, calls } = fakeTx();
+
+      await money.withinLimit(tx, manager, {
+        amountKobo: 4_000_000,
+        what: LIMITED_DECISIONS.writeOff,
+        count: true,
+        action: 'waste.approve',
+        at: NOW,
+      });
+      calls.length = 0;
+
+      expect(await money.standing(tx, manager, NOW)).toEqual({
+        approvalLimitKobo: 5_000_000,
+        dailyLimitOn: true,
+        dailyLimitKobo: 15_000_000,
+        approvedTodayKobo: 4_000_000,
+      });
+      expect(await money.standing(tx, manager, NEXT)).toMatchObject({
+        approvedTodayKobo: 0,
+      });
+      expect(calls).not.toContain('lock');
+    });
+
+    it('predicts each refusal in the demo’s order, and the Owner passes', () => {
+      const standing = {
+        approvalLimitKobo: 5_000_000,
+        dailyLimitOn: true,
+        dailyLimitKobo: 15_000_000,
+        approvedTodayKobo: 12_000_000,
+      };
+      const predict = (
+        actor: { id: string; role: StaffRole },
+        amountKobo: number,
+        createdById: string,
+      ) =>
+        approvalRefusal(actor, standing, {
+          amountKobo,
+          what: LIMITED_DECISIONS.writeOff,
+          createdById,
+          ownKind: OWN_RECORD_KINDS.wasteEntry,
+        });
+
+      // Above the per-decision limit comes first, own record or not.
+      expect(predict(manager, 6_000_000, manager.id)).toBe(
+        'This write-off is above the Owner Approval Limit of ₦50,000. The Owner must approve it.',
+      );
+      // Then the day: ₦120,000 so far and ₦40,000 more is ₦160,000.
+      expect(predict(manager, 4_000_000, manager.id)).toBe(
+        'This would take your approvals today to ₦160,000, above the Daily Approval Limit of ₦150,000. The Owner must approve it.',
+      );
+      // Then the own record.
+      expect(predict(manager, 1_000_000, manager.id)).toBe(
+        ownRecordMessage(OWN_RECORD_KINDS.wasteEntry),
+      );
+      expect(predict(manager, 1_000_000, manager2.id)).toBeNull();
+      expect(predict(owner, 60_000_000, owner.id)).toBeNull();
+      // A decision worth nothing never meets the day.
+      expect(predict(manager, 0, manager2.id)).toBeNull();
+      // With the daily limit off, only the per-decision limit and the own
+      // record remain.
+      expect(
+        approvalRefusal(
+          manager,
+          { ...standing, dailyLimitOn: false },
+          {
+            amountKobo: 4_000_000,
+            what: LIMITED_DECISIONS.writeOff,
+            createdById: manager2.id,
+            ownKind: OWN_RECORD_KINDS.wasteEntry,
+          },
+        ),
+      ).toBeNull();
+    });
+
+    it('agrees with the command it predicts, decision after decision', async () => {
+      const fake = fakeTx();
+      const { tx, settings } = fake;
+      const cases: [number, string][] = [
+        [4_000_000, manager2.id],
+        [4_000_000, manager.id],
+        [5_000_001, manager2.id],
+        [4_000_000, manager2.id],
+        [4_000_000, manager2.id],
+        [3_000_000, manager2.id],
+        [1_000_000, manager2.id],
+        [2_000_000, manager2.id],
+        [0, manager.id],
+      ];
+
+      for (const [index, [amountKobo, createdById]] of cases.entries()) {
+        if (index === 7) settings.dailyLimitOn = false;
+
+        const predicted = approvalRefusal(
+          manager,
+          await money.standing(tx, manager, NOW),
+          {
+            amountKobo,
+            what: LIMITED_DECISIONS.writeOff,
+            createdById,
+            ownKind: OWN_RECORD_KINDS.wasteEntry,
+          },
+        );
+
+        expect(await decided(fake, manager, amountKobo, createdById)).toBe(
+          predicted,
+        );
+      }
+
+      // Three ₦40,000 approvals and ₦30,000 reach ₦150,000, the limit
+      // exactly; the own record, the one above ₦50,000 and the ₦10,000 past
+      // the day are refused and roll back; ₦20,000 with the limit off is
+      // still counted (D36).
+      expect(fake.approvedBy(manager.id)).toBe(17_000_000);
     });
   });
 });

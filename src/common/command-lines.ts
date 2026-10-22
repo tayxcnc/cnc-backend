@@ -20,8 +20,15 @@ export const LINES_QTY_MESSAGE = 'Quantities must be whole numbers above zero.';
 export interface LineRules {
   /** The key naming the line's item: `stockItemId`. */
   idKey: string;
-  /** The refusal for a line whose item id is missing or not text. */
-  idMessage: string;
+  /**
+   * The refusal for a line whose item id is missing or not text; or null
+   * when the command checks each line's item itself, in its own order
+   * against its other fields. The demo's `positiveLines` never looks at the
+   * item, so a command whose first per-line sentence is about something
+   * else (`purchase.create` checks the vendor first) must not have a blank
+   * item refused here ahead of it (A7).
+   */
+  idMessage: string | null;
   /** The key holding the line's number: `qty`, or `counted` for a count. */
   qtyKey: string;
   /** The smallest number allowed: 1 for a quantity, 0 for a count. */
@@ -75,6 +82,8 @@ export function lineProblem(value: unknown, rules: LineRules): string | null {
       return rules.qtyMessage;
     }
   }
+
+  if (rules.idMessage === null) return null;
 
   for (const line of lines) {
     const id = isObject(line) ? line[rules.idKey] : undefined;

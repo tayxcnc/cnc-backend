@@ -65,6 +65,17 @@ describe('lineProblem (the demo positiveLines)', () => {
     );
   });
 
+  it('leaves the item id to the command when it has no id sentence', () => {
+    const own = { ...RULES, idMessage: null };
+
+    expect(lineProblem([{ stockItemId: '', qty: 1 }], own)).toBeNull();
+    expect(lineProblem([{ qty: 1 }], own)).toBeNull();
+    // The list's own rules still apply.
+    expect(lineProblem([{ stockItemId: '', qty: 0 }], own)).toBe(
+      LINES_QTY_MESSAGE,
+    );
+  });
+
   it('allows zero when the rules count from zero', () => {
     expect(
       lineProblem([{ stockItemId: 'a', counted: 0 }], {

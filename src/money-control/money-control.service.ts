@@ -188,6 +188,108 @@ const LIMIT_SETTINGS_SELECT = {
   dailyLimitKobo: true,
 } as const;
 
+/** What the limits are read through: the pool, or a command's transaction. */
+type LimitReader = Pick<Tx, 'settings' | '$queryRaw'>;
+
+/**
+ * Where one person stands against the limits today: the limits as set, and
+ * what the ledger holds for them on this business date. A read that shows
+ * whether an approval would pass (the Approvals screen, C5-8) predicts it
+ * from this, through {@link approvalRefusal}.
+ */
+export interface ApprovalStanding {
+  approvalLimitKobo: number;
+  dailyLimitOn: boolean;
+  dailyLimitKobo: number;
+  /** The ledger's total for the person on the business date. */
+  approvedTodayKobo: number;
+}
+
+/** One approval {@link approvalRefusal} predicts. */
+export interface PredictedApproval {
+  /** What the approval would be judged on, in kobo; counted toward the day. */
+  amountKobo: number;
+  /** How a limit refusal names it: one of {@link LIMITED_DECISIONS}. */
+  what: string;
+  /** Who raised the record, for the own-record rule. */
+  createdById: string | null | undefined;
+  /** How the own-record refusal names it: one of {@link OWN_RECORD_KINDS}. */
+  ownKind: string;
+}
+
+/**
+ * The sentence an approval by `actor` would be refused with now, or null
+ * when it would pass: `withinLimit` with the decision counted toward the
+ * day, then `notOwn`, in that order (the demo's order on every approval).
+ * A pure function of the standing, so a read can show it without taking
+ * the ledger's lock; the command still decides under the lock, and a read
+ * that raced another approval may be one decision behind.
+ */
+export function approvalRefusal(
+  actor: MoneyActor,
+  standing: ApprovalStanding,
+  approval: PredictedApproval,
+): string | null {
+  if (isOwner(actor.role)) return null;
+
+  const size = Math.abs(approval.amountKobo);
+
+  if (size > standing.approvalLimitKobo) {
+    return approvalLimitMessage(approval.what, standing.approvalLimitKobo);
+  }
+
+  if (size !== 0 && standing.dailyLimitOn) {
+    const total = standing.approvedTodayKobo + size;
+
+    if (total > standing.dailyLimitKobo) {
+      return dailyLimitMessage(total, standing.dailyLimitKobo);
+    }
+  }
+
+  if (approval.createdById != null && approval.createdById === actor.id) {
+    return ownRecordMessage(approval.ownKind);
+  }
+
+  return null;
+}
+
+/** The settings row, or the seeding error every limit check raises. */
+async function limitSettings(client: Pick<Tx, 'settings'>) {
+  const settings = await client.settings.findUnique({
+    where: { singleton: true },
+    select: LIMIT_SETTINGS_SELECT,
+  });
+
+  if (settings === null) {
+    // A database without its settings row was never seeded; refusing every
+    // decision with a 403 would blame the manager for it.
+    throw new Error(
+      'The settings row is missing. Run `npm run db:seed` on this database.',
+    );
+  }
+
+  return settings;
+}
+
+/**
+ * One person's ledger total for one business date (`YYYY-MM-DD`). A bigint
+ * sum (plan §10): with the limit off a day's total is unbounded, and an
+ * Int `_sum` overflows at about ₦21 million.
+ */
+async function ledgerTotalKobo(
+  client: Pick<Tx, '$queryRaw'>,
+  staffId: string,
+  isoDate: string,
+): Promise<number> {
+  const [row] = await client.$queryRaw<{ total: bigint }[]>`
+    SELECT COALESCE(SUM("amountKobo"), 0)::bigint AS "total"
+      FROM "ApprovalLedger"
+     WHERE "staffId" = ${staffId}
+       AND "businessDate" = ${isoDate}::date`;
+
+  return Number(row.total);
+}
+
 /**
  * The advisory-lock namespaces, hashed into the first key of the two-key
  * form: the 64-bit and the two 32-bit key spaces never overlap, so these
@@ -300,18 +402,7 @@ export class MoneyControlService {
   ): Promise<void> {
     if (isOwner(actor.role)) return;
 
-    const settings = await tx.settings.findUnique({
-      where: { singleton: true },
-      select: LIMIT_SETTINGS_SELECT,
-    });
-
-    if (settings === null) {
-      // A database without its settings row was never seeded; refusing every
-      // decision with a 403 would blame the manager for it.
-      throw new Error(
-        'The settings row is missing. Run `npm run db:seed` on this database.',
-      );
-    }
+    const settings = await limitSettings(tx);
 
     const size = Math.abs(decision.amountKobo);
 
@@ -335,14 +426,7 @@ export class MoneyControlService {
       hashtext(${`${actor.id}:${isoDate}`}))`;
 
     if (settings.dailyLimitOn) {
-      // A bigint sum (plan §10): with the limit off a day's total is
-      // unbounded, and an Int `_sum` overflows at about ₦21 million.
-      const [row] = await tx.$queryRaw<{ total: bigint }[]>`
-        SELECT COALESCE(SUM("amountKobo"), 0)::bigint AS "total"
-          FROM "ApprovalLedger"
-         WHERE "staffId" = ${actor.id}
-           AND "businessDate" = ${isoDate}::date`;
-      const total = Number(row.total) + counted;
+      const total = (await ledgerTotalKobo(tx, actor.id, isoDate)) + counted;
 
       if (total > settings.dailyLimitKobo) {
         throw new ForbiddenException(
@@ -360,6 +444,31 @@ export class MoneyControlService {
         ref: decision.ref ?? null,
       },
     });
+  }
+
+  /**
+   * Where `actor` stands against the limits on the business date of `at`
+   * (now by default): the limits as set and the ledger's total for them,
+   * read without the ledger's lock (a read decides nothing). The Owner is
+   * never recorded, so their total is always zero.
+   */
+  async standing(
+    client: LimitReader,
+    actor: MoneyActor,
+    at: Date = new Date(),
+  ): Promise<ApprovalStanding> {
+    const settings = await limitSettings(client);
+
+    return {
+      approvalLimitKobo: settings.approvalLimitKobo,
+      dailyLimitOn: settings.dailyLimitOn,
+      dailyLimitKobo: settings.dailyLimitKobo,
+      approvedTodayKobo: await ledgerTotalKobo(
+        client,
+        actor.id,
+        formatIsoDate(watToday(at)),
+      ),
+    };
   }
 
   /**

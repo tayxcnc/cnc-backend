@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
+  AssetStatus,
   Department,
   MenuCategoryKind,
   StaffRole,
@@ -163,11 +164,49 @@ export class ReferenceKitchenMappingResponse {
 }
 
 /**
+ * A vendor as every screen may name one (C5-3): no phone, email or address,
+ * which only the Vendors screen's read (`GET /staff/vendors`) carries.
+ */
+export class ReferenceVendorResponse {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty({ example: 'Plateau Fresh Foods' })
+  name!: string;
+
+  @ApiProperty({ example: 'Food supplies' })
+  service!: string;
+
+  @ApiProperty()
+  isActive!: boolean;
+}
+
+/**
+ * An asset as a repair form picks one (C5-6): no category or quantity,
+ * which the assets read (`GET /staff/assets`) carries.
+ */
+export class ReferenceAssetResponse {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty({ example: 'AC1' })
+  tag!: string;
+
+  @ApiProperty({ example: 'Lounge air conditioner' })
+  name!: string;
+
+  @ApiProperty({ example: 'Lounge' })
+  location!: string;
+
+  @ApiProperty({ enum: AssetStatus, enumName: 'AssetStatus' })
+  status!: AssetStatus;
+}
+
+/**
  * `GET /staff/reference`: what every screen looks things up in (plan §5.3),
  * read once when the shell loads.
  *
- * Vendors and assets join this response with the cards that build their
- * tables (C5).
+ * Vendors joined this response with C5-3, assets with C5-6.
  */
 export class ReferenceResponse {
   @ApiProperty({ type: SettingsResponse })
@@ -213,4 +252,23 @@ export class ReferenceResponse {
     isArray: true,
   })
   staff!: ReferenceStaffResponse[];
+
+  @ApiProperty({
+    description:
+      'Every vendor, active or not, by name: the lite list a purchase or ' +
+      'repair form picks from (active ones only) and a record is named by.',
+    type: ReferenceVendorResponse,
+    isArray: true,
+  })
+  vendors!: ReferenceVendorResponse[];
+
+  @ApiProperty({
+    description:
+      'Every asset, by tag: the lite list a repair form picks from. Only ' +
+      'for the roles that open Assets & Maintenance (Reception and ' +
+      'managers, plan §5.3); empty for everyone else.',
+    type: ReferenceAssetResponse,
+    isArray: true,
+  })
+  assets!: ReferenceAssetResponse[];
 }

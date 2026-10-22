@@ -129,7 +129,18 @@ They are here so the first card that builds it starts from the rule.
   answers the demo's `positiveLines` sentences in its order (empty,
   duplicates, quantities), then the command's own sentence for a bad item
   id. The lines stay plain objects, and a service reads only the keys the
-  rules name.
+  rules name. A command that checks each line's item in its own order
+  against another field passes `idMessage: null` and checks the item
+  itself (from C5: purchases, whose create asks for the vendor first);
+  `positiveLines` never looks at the item, so a DTO refusal of it would
+  answer before a sentence the demo gives first.
+- **An id field read in a service is read through `sentId`
+  (`src/common/sent-id.ts`): a non-blank string, or undefined for anything
+  else** (from C5: tasks, repairs and purchase lines). A service that
+  judges a field itself, in the demo's order, needs the plain answer to
+  "was an id sent"; one copy keeps the three commands agreeing on it, and
+  a non-text id becomes the command's sentence instead of a Prisma
+  validation 500.
 - **A business date in a request or query is checked with
   `@Checked(calendarDate(sentence))` (`src/common/checked.ts`)** (from C4).
   It accepts a real `YYYY-MM-DD` day only (`parseIsoDate`) and answers the
@@ -956,8 +967,9 @@ They are here so the first card that builds it starts from the rule.
   latest purchase cost ÷ the pack's units × quantity, zero when no cost is
   known. Purchases are C5's schema, so until C5 fills in
   `latestPackCostKobo` every Kitchen item values at zero, exactly as the
-  demo does with no purchases. One function, so a count and a write-off of
-  the same stock can never be valued two ways.
+  demo does with no purchases (C5-1 has filled it in: see the C5 schema
+  section). One function, so a count and a write-off of the same stock can
+  never be valued two ways.
 - **A direct issue and a Correct Balance take an `Idempotency-Key`; a count
   and a new stock item do not** (the *Idempotency* rule for creates). A
   retried issue or correction would move stock twice; a retried count finds
@@ -979,8 +991,10 @@ They are here so the first card that builds it starts from the rule.
   already in units** (from the C4 review). The Store holds packs and
   `stockValueKobo` values units, so a Store count of nine batches of a
   ₦5,000 drink (108 servings) was valued at ₦45,000 and slipped under the
-  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock (C5's
-  waste, purchases) converts the same way.
+  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock
+  converts the same way, **except a write-off**: Q25 keeps waste on the
+  coded formula, which values a Store entry's packs as units, until the
+  founder answers it (see *Waste*).
 - **`stock.count` takes an `Idempotency-Key` after all; this replaces the
   count half of the rule above that a count needs none** (from the C4
   review). A count writes `counted − recorded` as read at retry time, so a
@@ -989,6 +1003,591 @@ They are here so the first card that builds it starts from the rule.
   role rule is checked in the controller before the idempotency service, as
   Correct Balance's Owner rule is. A new stock item still needs no key: a
   retry is refused on the name.
+
+## Stock requests, purchasing, waste, tasks, assets and attendance: the schema *(from C5)*
+
+- **The C5 tables are one migration (`c5_core`), and its hand-written part
+  holds each record to the shapes the staff app allows** (plan §4.6,
+  §4.7): a request's status follows its packs (`StockRequest_status_check`),
+  a rejection carries its reason, a purchase line's received packs are none
+  or all of it (D39), a Fixed or Not Fixed repair has its resolved date
+  (R3), a shift ends after it began. The services refuse each case first
+  with the demo's sentence; the CHECK is the backstop for a write that does
+  not come through a route, and `test/c5-schema.e2e-spec.ts` watches each
+  one refuse.
+- **One open shift per person is the partial unique index
+  `AttendanceRecord_staffId_key` (`WHERE "timeOut" IS NULL`)**, named as the
+  partial-index rule above says, so two scans racing for one person cannot
+  both open a shift and the clash reads as `["staffId"]`. The scan's
+  advisory lock (C5-7, TAY's pattern) decides the ordinary case; the index
+  decides the race.
+- **A task links only to the kind of record its type names: a CHECK holds
+  `purchaseId` to Purchase tasks and `maintenanceId` to Maintenance tasks**
+  (`Task_values_check`). `task.save` sets the links from the type, so a
+  task whose link and type disagreed would be one no screen can make; a
+  command that links a task to a repair (C5-6's `maintenance.save` with a
+  task) must refuse, or give the Maintenance type to, any other task.
+- **No C5 table is append-only by trigger.** The plan names three
+  (`AuditLog`, `ApprovalLedger`, `StockMovement`); the history tables
+  (`TaskHistory`, `MaintenanceHistory`, `AttendanceCorrection`) carry no
+  `updatedAt` and are only ever added to by their services, by convention,
+  as TAY keeps its histories. Making one append-only is a plan change.
+- **A purchase line has a `position`, its place in the list the screen
+  sent, and one line per item per purchase (unique on `purchaseId`,
+  `stockItemId`).** A cuid or a timestamp is no order a requisition can be
+  read back in, and the demo's duplicate rule ("Combine duplicate items
+  into one quantity.") already allows one line per item.
+- **`latestPackCostKobo` (`src/stock/stock-value.ts`) is the demo's
+  `wasteValue` cost: the line for the item on the most recently raised
+  purchase that is not Rejected or Cancelled** (C5-1 fills in C4's null).
+  One query whose relation filter and order are joins, so it is safe inside
+  a transaction. Every stock count, and from C5-4 every write-off, is
+  valued through it; Q25 asks whether "latest" should mean the latest
+  received line instead, and until it is answered this is the rule.
+
+## Stock requests *(from C5)*
+
+- **Every request command is in `StockRequestsService`
+  (`src/stock/stock-requests.service.ts`) and claims the request's `version`
+  first; issue and reject then refuse a request that is no longer Pending
+  or Partially Issued with 409 "This request is no longer open."** The
+  claim is the row lock the rest runs under (*Optimistic concurrency*), so
+  two Storekeepers issuing one request end as one issue and one stale 409;
+  the e2e race test fails when the claim is removed.
+- **A request's location is the demo's: the Kitchen for a Kitchen user, the
+  Bar for a Bartender or a Cashier whatever they send, and the Kitchen or
+  the Bar as a manager chooses** (`requestLocationFor`,
+  `src/stock/stock-request-rules.ts`). The screen offers the first three
+  roles no choice, so a sent location is ignored as the demo ignores it; a
+  manager's missing or Store location is "Choose Kitchen or Bar.". The item
+  must be one the location holds (`locationHolds`).
+- **A request asks for whole packs, as the Store counts them; an issue
+  moves −packs at the Store (`ISSUE_TO_KITCHEN`/`ISSUE_TO_BAR`) and +packs ×
+  How Many in One at the request's location (`STOCK_RECEIVED`), both through
+  `StockLedgerService.move` with the request number as the ref** (plan
+  §7.6). The C5 gate's step 4 is two bags of rice: Store −2, Kitchen +100.
+  The Store-side type comes from `ISSUE_TYPE` (`src/stock/stock-locations.ts`),
+  the one map the direct issue uses too, so the same transfer is recorded
+  under the same type whichever route made it.
+- **An issue's packs are judged in the service, not the DTO
+  (`issueProblem`), because the demo's sentence names the item's pack:
+  "Enter a whole number of bags within the remaining request."** The DTO
+  only admits the field (`@Allow()`); a figure that is not whole, not above
+  zero, above what is left, or whose units would not fit an `Int` column
+  answers that one sentence.
+- **`request.issue` applies `MoneyControlService.notOwn` with
+  `OWN_RECORD_KINDS.stockRequest`, by staff id; the Owner is exempt** (the
+  demo's `notOwn(r.by, 'stock request')`, plan §6.2 "issue: N"). Only a
+  manager can both raise and issue (the Storekeeper cannot raise), so this
+  is the manager who asked for stock sending it to themselves.
+- **`request.create` takes an Idempotency-Key; issue and reject do not**
+  (the *Idempotency* rule for creates). A retried create would ask twice; a
+  retried issue or reject names a version the first attempt moved and is
+  refused as stale.
+- **A rejection keeps its reason in `rejectReason`, apart from the note,
+  and leaves packs already sent where they are.** The demo appended
+  " | reason" to the note, which mixed the requester's words with the
+  Store's; the response carries both fields.
+- **The requests read (`GET /staff/stock/requests`) is the Stock & Requests
+  roles: a Kitchen user the Kitchen's requests and a Bartender the Bar's
+  (`scopedStockLocation`, shared with the balances read), the Storekeeper
+  and managers both or the one asked for; a scoped role asking for the
+  other location is the role refusal** (plan §6.1). The Cashier raises Bar
+  requests from the till but has no Stock & Requests page, so it has no
+  read and no request history. `openCount` is the screen's Open Requests
+  figure over what the reader sees, whatever the status and search filters,
+  as the orders list carries its `counts`.
+- **`StockModule` registers the `AuditRefAccess` reader for `SR-` numbers:
+  the Storekeeper for every request, a Kitchen user and a Bartender for
+  their own location's** (`src/stock/stock-request-audit-reader.ts`, plan
+  §4.8). The request must exist.
+- **A request id that names nothing is 404 "Stock request not found."**
+  (new: the demo answered it with "This request is no longer open."; the
+  version claim needs one not-found sentence, in the form of "Stock item
+  not found.").
+
+## Purchasing and vendors *(from C5)*
+
+- **Every purchase command is in `PurchasesService`
+  (`src/purchasing/purchases.service.ts`) and, after the create, claims the
+  purchase's `version` first; a purchase id that names nothing is 404
+  "Purchase not found." (new), and a purchase in the wrong state is 409 with
+  the command's own demo sentence** ("Only active pending requisitions can
+  be reviewed.", "Receive only approved requisitions.", "Received or
+  archived purchases cannot return to approval.", "Select an active
+  purchase record.", "Purchase not found or already archived."). The demo
+  answered a missing purchase with each command's state sentence; one
+  not-found sentence is what the version claim needs, as C5-2 decided for
+  requests. Two managers approving at once, or two receipts of one
+  delivery, end as one success and one stale 409; both race tests fail
+  with the claim removed.
+- **An approval (`purchase.approve`, and `purchase.status` to Approved from
+  any other status) runs `MoneyControlService.withinLimit` with
+  `LIMITED_DECISIONS.purchase`, counted toward the day, then `notOwn` with
+  `OWN_RECORD_KINDS.purchase`, in the demo's order; the purchase's total is
+  packs × cost over its lines (`purchaseTotalKobo`)** (plan §6.2 "approve:
+  L, D, N"). The limit sentence before the own-record one is the demo's
+  order, so a manager approving their own ₦140,000 purchase is told about
+  the limit. A rejection spends nothing: a manager may reject their own,
+  and nothing is counted. `purchase.edit` holds both the old and the new
+  total to the Owner Approval Limit without counting either: an edit
+  decides nothing.
+- **The automatic tasks are raised and closed only through
+  `src/tasks/automatic-tasks.ts` (`raiseAutomaticTask`, `closeOpenTasks`,
+  `managerForTask`, `storekeeperForTask`), in the command's transaction**
+  (plan §7.7, §7.9). A task raised in a transaction of its own would
+  survive a refused command, and two copies of "who gets it" would disagree.
+  C5-6's repairs use the same helpers.
+- **A review task goes to the first active Manager (else the first active
+  Owner, else the actor); a receive task to the first active Storekeeper
+  (else whoever gets a review); "first" is the order the accounts were
+  made in** (the demo's `managerName` and `storeName`, which took the first
+  in its staff list). By id (A10), never by name. A suite that asserts who
+  got a task runs on its own database (`test/purchasing.e2e-spec.ts`), since
+  on the shared one the first Manager is another suite's.
+- **A purchase's automatic tasks follow its status (`taskForStatus`): when
+  the status changes, its open automatic tasks close and the new status's
+  task opens; Pending waits on a review, Approved on receiving, every other
+  status on nobody** (plan §17, R1). The demo opened the receive task only
+  from `purchase.approve`, so a manager approving by status correction left
+  the Storekeeper with nothing to do; R1 corrects that, and the same rule
+  gives a purchase returned to Pending its review again and closes the
+  stale receive task. Only `automatic` tasks move with the status: a task a
+  person linked to the purchase stays open until it is received or
+  archived, as in the demo.
+- **Receiving and archiving close every open task on the purchase,
+  automatic or not** (the demo's `purchase.receive`; R1 for the archive).
+  The work a task tracked is over either way.
+- **`closeOpenTasks` moves each closed task's `version` in its one
+  conditional update and writes an automatic `TaskHistory` row by the person
+  whose command closed it.** A person saving the task from a screen read
+  before the close is then refused as stale instead of reopening it unseen.
+- **Receiving is all at once (D39): each line's remaining packs enter the
+  Store as `PURCHASE_RECEIPT`, and a correction of a received purchase moves
+  the Store by each item's new quantity less what was received
+  (`correctionMoves`) as `PURCHASE_CORRECTION`, both through
+  `StockLedgerService.move` under the purchase number.** The new lines of a
+  received purchase count as received in full, so the Store holds exactly
+  the corrected packs; a correction below what the Store still holds is
+  refused by the ledger's "Insufficient store stock for <item>.".
+- **`purchase.create` and `vendor.save` (a new vendor) take an
+  Idempotency-Key; every other purchase and vendor command does not** (the
+  *Idempotency* rule for creates): a retried create would raise a second
+  requisition or add a vendor twice, and every other command names a
+  version the first attempt moved.
+- **A requisition line's vendor is its own `vendorId`, or on a new
+  requisition the request's `vendorId`; the requisition's vendor is its
+  first line's** (the demo's `l.vendorId||c.vendorId`; the schema's
+  header rule). The demo set the header from the request first; the screen
+  sends a vendor on every line, so the two agree on everything a screen
+  sends, and the stored header is always a vendor a line names. An edit
+  names a vendor on every line, as the demo's edit requires.
+- **Line checks follow the demo's order per command: `purchase.create`
+  checks each line's vendor and then its item and cost, `purchase.edit` the
+  item and cost and then the vendor; the list's own sentences (empty,
+  duplicates, quantities) come first, from `@ValidLines`.** The cost is
+  checked in the service (`isLineCost`), beside the item, because the
+  demo's one sentence names both ("Choose a stock item and positive unit
+  cost."). The item id itself is left to the service too (`@ValidLines`
+  with `idMessage: null`; a blank or non-text id reads as no item through
+  `sentId`): the demo's `positiveLines` never checks the item, so the
+  staff app's untouched new line, with neither vendor nor item, answers
+  "Choose an active vendor for every line." on a create, as in the demo
+  (C5 review; it used to answer the item sentence, refused in the DTO).
+- **`vendor.save` replaces the whole profile, and changes `isActive` only
+  when it is sent** (R2's rule for staff accounts, applied to vendors). The
+  demo made a vendor Active again whenever the form left the status out; a
+  phone fix must not quietly put a deactivated supplier back on every
+  purchase form. A vendor's audit ref is its id: a vendor has no human
+  number, and no non-manager reads a vendor's history, so no reader is
+  registered.
+- **Every screen names vendors from the lite list on `GET /staff/reference`
+  (`vendors: [{ id, name, service, isActive }]`); phone, email and address
+  are on `GET /staff/vendors` only (the Storekeeper and managers).** Reception
+  picks a vendor for a repair (C5-6) and the purchase forms pick active
+  ones; neither needs a supplier's contact details, which the Vendors page
+  keeps to the roles plan §6.1 gives it.
+- **`PurchasingModule` registers the `AuditRefAccess` reader for `PR-`
+  numbers: the Storekeeper, for every purchase that exists**
+  (`src/purchasing/purchase-audit-reader.ts`, plan §4.8). The Storekeeper's
+  list shows every requisition, so their history access matches it.
+- **The bell shows the reader's assigned tasks that are not Done ("Assigned
+  Task · Open", the task's title, page `tasks`), after every other item, to
+  a role whose pages include Tasks** (the demo's `staffNotifications`; the C5
+  gate's step 2). The page rule keeps every bell item openable. The demo
+  hides a manager's own review tasks while the approvals alert is on,
+  because the Purchase Approval item stands in for them; that item is C8-2's,
+  so until it exists the review task shows as an assigned task.
+
+## Waste *(from C5)*
+
+- **Every waste command is in `WasteService` (`src/waste/waste.service.ts`)
+  and, after the create, claims the entry's `version` first; an id that
+  names nothing is 404 "Waste record not found." (the demo's `waste.edit`
+  sentence, used by every command), and approving or rejecting an entry
+  that is not Pending is 409 "Only pending waste can be reviewed."** The
+  claim is the row lock the rest runs under, so two managers approving one
+  entry end as one approval and one stale 409, and the stock leaves once.
+- **Each role logs and reads waste at its own location: the Kitchen the
+  Kitchen's, a Bartender or a Cashier (from the till) the Bar's, the
+  Storekeeper the Store's; managers any location** (`wasteLocationFor`,
+  `src/waste/waste-rules.ts`; plan §6.1, the demo's `WasteRecords`). Logging
+  elsewhere is 403 with the role's own demo sentence ("Kitchen staff can log
+  kitchen waste only."), because it is a refusal by role, not bad input; a
+  scoped role reading another location is the role sentence, as on the
+  requests read. The item must be one the location holds (`locationHolds`).
+- **`waste.create` checks in the demo's order (location, the role's own
+  location, quantity and reason, item), so the item, quantity and reason
+  are `@Allow()` in the DTO and judged in the service.** The demo's sentences
+  each cover two fields ("Enter a whole quantity and a waste reason.",
+  "Choose an item for this stock location."); checked in the DTO, a request
+  wrong in both would answer the sentence twice (*Errors*). `waste.edit`
+  does the same with its own words, after its reason (`@AdminReason`).
+- **Stock moves only when an entry is approved, and only through
+  `StockLedgerService.move` under the waste number** (plan §7.8): an
+  approval takes the quantity (`WASTE`), a status change away from Approved
+  returns it (`WASTE_APPROVAL_CORRECTION`), and a correction of an approved
+  entry returns the old quantity at the old location and takes the new one
+  at the new location (`WASTE_CORRECTION_RETURN`,
+  `WASTE_CORRECTION_DEDUCTION`), as the demo moves them. A location that
+  cannot cover the approval refuses it with the ledger's "Insufficient …
+  stock for …." and the approval, its ledger row included, rolls back.
+- **The value is the coded formula until Q25 is answered: `stockValueKobo`
+  on the entry's quantity as it stands, at any location, so a Store entry's
+  packs are valued as units (one bag of rice at ₦70,000 a bag of 50 is
+  ₦1,400)** (plan §4.6, §7.8; card C5-4). This is Q25's own
+  description of the current rule, which the plan ports until the founder
+  answers; it departs from the C4 count rule that converts Store packs
+  first, because that conversion is exactly the change Q25 asks the founder
+  to approve. Answering Q25 changes `WasteService`'s valuation, not the
+  shared function.
+- **The value is stored on the row when the entry is logged and corrected,
+  and valued afresh when it is approved (by `waste.approve` or by
+  `waste.status` to Approved), which stores the new value** (plan §4.6
+  stores it at creation and on edit; the demo values the decision as it is
+  made). A purchase recorded between the logging and the approval would
+  otherwise let a write-off be approved at a stale, smaller value, and the
+  row then holds the value the decision was judged on.
+- **A value `WasteEntry.valueKobo` (an `Int`) cannot hold is refused
+  before it is written (`fitsValueColumn`): on `waste.create` and
+  `waste.edit` with the command's quantity sentence, 400; on an approval
+  with "This write-off is worth more than can be recorded. Correct its
+  quantity first." (new), 409, before the limits** (C5 review). The
+  quantity is capped at `INT4_MAX`, but a capped quantity times a menu
+  price is not (a typed 10000 for 10 of a ₦2,500 drink), and Postgres
+  would answer 500 (*Data and migrations*). The approval's check comes
+  before the limits because the Owner is exempt from them; it is a 409
+  because the request is sound and the entry's state is what blocks it (a
+  price raised after the entry was logged is the only way there).
+- **Two money-control points raised in the C5 review wait on the founder,
+  not on code** (recorded so they are not mistaken for oversights):
+  - *The pack cost comes from any requisition that is not Rejected or
+    Cancelled, Pending included* (`latestPackCostKobo`, the demo's
+    `wasteValue`). Whoever raises a requisition therefore sets the cost
+    that waste, the approvals prediction and the Q28 count limit are judged
+    on, before any manager has reviewed it; with Store waste valued per
+    unit, that is a way under the Owner Approval Limit. Q25's own default
+    ("latest cost would mean the most recently received line", Store waste
+    per pack) closes both, and the plan ports the coded formula until Q25
+    is answered; changing it is a pricing rule, not an implementation
+    choice. Answering Q25 changes `COSTLESS_PURCHASES` to an allow-list
+    (received lines, or Approved and Fulfilled purchases).
+  - *A correction of an approved entry (`waste.edit`, and `purchase.edit`
+    of an Approved requisition) is held to the Owner Approval Limit only*
+    (plan §6.2 "edit: L"; the demo's `withinLimit` without counting), so a
+    manager can raise an approved value past the Daily Approval Limit, or
+    raise their own record after a colleague approved it. Counting the
+    increase toward the day and applying the own-record rule (as
+    `order.discount` counts "the increase only"), or sending a raised
+    approved record back to Pending, is a change to the approved rule
+    table and needs the founder's agreement, as §17's corrections had.
+- **An approval (`waste.approve`, and `waste.status` to Approved from any
+  other status) runs `MoneyControlService.withinLimit` with
+  `LIMITED_DECISIONS.writeOff`, counted toward the day, then `notOwn` with
+  `OWN_RECORD_KINDS.wasteEntry`, in the demo's order; a correction holds the
+  new value to the Owner Approval Limit without counting it** (plan §6.2
+  "approve: L, D, N; edit: L"). The C5 gate's steps 5 and 6 are the
+  own-record refusal and the fourth ₦40,000 approval refused at ₦160,000.
+  A rejection writes nothing off: a manager may reject their own entry, and
+  nothing is counted. The approval takes the limit's advisory lock before
+  the ledger's balance row; a stock count takes them the other way round
+  (see *Stock*).
+- **`waste.create` takes an Idempotency-Key; every other waste command does
+  not** (the *Idempotency* rule for creates): a retried create would log the
+  loss twice, and every other command names a version the first attempt
+  moved.
+- **The read (`GET /staff/waste`) answers `pendingCount`, the entries
+  awaiting review at the locations the reader sees, beside the page**, as
+  the requests read carries `openCount`; the views are the screen's
+  Pending, History and All. Each entry carries `measure`, the item's pack at
+  the Store and its unit elsewhere, so a screen never has to work out what
+  "2" counts.
+- **`WasteModule` registers the `AuditRefAccess` reader for `W-` numbers:
+  each logging role for its own location's entries**
+  (`src/waste/waste-audit-reader.ts`, plan §4.8), matching the read. The
+  Cashier logs Bar waste from the till and sees the Bar's recent entries
+  there, so it reads their history too.
+
+## Approvals *(from C5)*
+
+- **`GET /staff/approvals` is a read only; the decisions stay on the
+  purchase and waste routes** (plan §5.4: "purchase and waste approve or
+  reject (above)"). One command per decision keeps one place where the
+  limits, the own-record rule, the version and the ledger are applied; a
+  second approve route on this screen would be a second copy of them to
+  keep in step.
+- **Managers only (`@Roles()`), every location, and no `AuditRefAccess`
+  reader** (plan §6.1: Approvals is a managers' page). Managers already
+  read every record's history, so a reader would grant nothing.
+- **The list answers are `PurchasesService.approvalsPage` and
+  `WasteService.approvalsPage`, built on each service's own answers and
+  search** (`purchaseSearch`, `wasteSearch`), so a requisition or an entry
+  reads the same on the Approvals screen as on its own screen. Pending is
+  oldest first (a queue, in the order it was raised); History is newest
+  first. Pending requisitions are Pending and not archived
+  (`AWAITING_APPROVAL`, also the Purchasing screen's Awaiting Approval).
+  The page and page size apply to each list on its own, because the screen
+  shows them in two tables.
+- **Each Pending record carries `awaiting`: `awaits` (OWNER above the Owner
+  Approval Limit, otherwise MANAGER), the value it would be judged on, and
+  whether the reader's approval would pass now, with the exact sentence it
+  would be refused with** (the card's "what awaits whom"). The screen can
+  then say why Approve will fail before the manager presses it, in the
+  command's own words (A7).
+- **The prediction is `approvalRefusal` in `MoneyControlService`, a pure
+  function of `standing()` (the limits and the reader's ledger total for
+  the Lagos business date), in `withinLimit`'s then `notOwn`'s order.**
+  It is beside the rules it predicts so the two cannot drift; a unit test
+  runs the prediction and the command side by side, decision after
+  decision. `standing()` takes no lock, because a read decides nothing:
+  the command decides again under the ledger lock, so a prediction can be
+  one decision behind a race, never a permission.
+- **Each pending record is judged on its own against the reader's total so
+  far today**, not cumulatively down the list. Approving one changes what
+  the next is judged on, which the screen sees on its next read; a
+  cumulative forecast would assume an order of approvals the manager has
+  not chosen.
+- **A pending waste entry is valued afresh for `awaiting.valueKobo`
+  (`WasteService.decisionValueKobo`, the function its approval uses), while
+  the entry's `valueKobo` stays the stored one.** The approval revalues the
+  entry (see *Waste*), so the prediction must too, or a purchase recorded
+  since the entry was logged would make the screen predict on a stale value.
+- **New sentence: "Choose Pending or History." for an unknown view (400).**
+  The demo filtered on the client and refused nothing.
+- **The demo's "manager bell contains pending approvals and removes each
+  when it is resolved" is ported onto this read
+  (`test/approvals.e2e-spec.ts`); the bell item itself is C8-2's**
+  (plan §9.1), and the C5 gate does not need it.
+
+## Tasks *(from C5)*
+
+- **`task.save` is two routes, `POST /staff/tasks` and
+  `PATCH /staff/tasks/:id`, in `TasksService` (`src/tasks/tasks.service.ts`);
+  the update claims the task's `version` first, and an id that names
+  nothing is 404 "Task not found." (new)** (plan §5.4). The demo saved an
+  unknown id as a new task; on the server an update names a task, and the
+  version claim needs a not-found sentence.
+- **Only Reception, the Cashier, the Kitchen, the Storekeeper and managers
+  may read or save a task (`@Roles`, D42's role gate); a Waiter or
+  Bartender is refused with the role sentence and is never an assignee**
+  (plan §4.7, §6.2). The demo had no role check on `task.save`, so a Waiter
+  updating a task was refused only because it was not theirs; the role gate
+  is the plan's correction.
+- **Anyone but a manager raises a task to a manager (the Owner included) or
+  to themselves, and on a task that exists may change only its status, and
+  only when it is assigned to them; each refusal is 403 with the demo's
+  sentence** ("Raise a task to a manager, or to yourself.", "Only the
+  assigned staff member or a manager can update this task.", "Only a
+  manager can change task details.", "Only a manager can reassign tasks.",
+  "Only a manager can change task links or type."), checked in the demo's
+  order by `nonManagerSaveProblem` (`src/tasks/task-rules.ts`). The demo
+  checks some of these before the description; here the DTO's one-sentence
+  checks run first (*Money controls and the audit log*: a body is validated
+  before the rules on the stored record).
+- **A task's links follow its type (`linksFor`): a Purchase task links an
+  open requisition (not Fulfilled, Rejected, Cancelled or archived:
+  `isClosedPurchase`), a Maintenance task an open repair (not Fixed or Not
+  Fixed), a General task nothing; a link of the other kind is dropped, as
+  the demo drops it, and the record a task already links passes a manager's
+  save even once closed.** This keeps every saved task inside
+  `Task_values_check`, and a manager fixing the title of a task whose
+  purchase was received is not refused for its history.
+- **An assignee is an active member of staff who is neither a Waiter nor a
+  Bartender, by id (A10); anything else is 400 with the demo's sentence**
+  ("Choose an active staff member. Waiters and bartenders report…").
+- **Every save adds a `TaskHistory` row (the status, who, not automatic),
+  the status unchanged included, and an audit row `task.save` under the
+  task number, in the same transaction**, as the demo appends to its
+  history on every save. The tasks the commands raise and close themselves
+  stay in `src/tasks/automatic-tasks.ts`, whose rows are marked
+  `automatic`.
+- **The tasks read shows managers every task and anyone else the tasks
+  assigned to them and the ones they raised themselves; a task a command
+  raised by itself is not one its actor raised** (`visibleTasks`; plan
+  §6.1). The demo files an automatic task under "<name> (automatic)", so the
+  Storekeeper does not see the review of a purchase they asked for; the
+  server stores who raised it (`raisedById`) and excludes it by `automatic`.
+  The read is ordered Open, In Progress, Done (Postgres orders an enum by
+  its declared order), newest first within each, as the screen orders it,
+  and carries each task's history and the reader's `counts` by status.
+- **`POST /staff/tasks` takes an Idempotency-Key; the update does not** (the
+  *Idempotency* rule for creates).
+- **`TasksModule` registers the `AuditRefAccess` reader for `T-` numbers: a
+  role that opens Tasks, for the tasks its read shows it** (`seesTask`,
+  `src/tasks/task-audit-reader.ts`, plan §4.8).
+
+## Assets and repairs *(from C5)*
+
+- **Repairs are reactive only (Q13's default): a repair is logged when
+  something breaks, and nothing is scheduled.** Q13 keeps assets and
+  repairs with "no preventive schedule"; a schedule is a plan change.
+- **`asset.save` is `PUT /staff/assets/:tag` (managers): with no `version`
+  it adds the asset under the tag, and a tag already held is 409 "This
+  asset tag already exists." (new); with a `version` it replaces the asset
+  the tag names, claimed at that version, and an unknown tag is 404 "Asset
+  not found." (new)** (`AssetsService`, `src/assets/assets.service.ts`).
+  The demo replaced whatever asset held the tag; a create names no version,
+  so it must not overwrite a record nobody read, and a retried create is
+  refused on the tag as a new stock item is on its name (the *Idempotency*
+  rule for creates), so the route takes no key. The tag is the path and
+  never changes.
+- **An asset's status changes on `asset.save` only when one is sent** (R2's
+  rule, as for staff and vendors). The demo set an asset Active whenever
+  the form left the status out, which would quietly undo the Under Repair
+  a repair had just set.
+- **The tag, name and quantity are judged together in the service, with
+  the demo's one sentence "Enter a tag, name and quantity."**
+  (`assetFieldsProblem`, `src/assets/maintenance-rules.ts`); the request
+  admits them with `@Allow()` (*Errors*: one sentence per field).
+- **`maintenance.save` is `POST /staff/maintenance` (with an
+  Idempotency-Key) and `PATCH /staff/maintenance/:id` (versioned), for
+  Reception and managers, in `MaintenanceService`; it checks in the demo's
+  order (asset and vendor, description and cost, status, then the task) and
+  every field is judged in the service** (plan §5.4, §6.2). The demo's
+  sentences each cover two fields. A retried create would log the repair
+  and its follow-up twice; the update names a version.
+- **The asset follows its repair: Under Repair while Pending or In
+  Progress, Active once Fixed, Inactive when Not Fixed
+  (`assetStatusForRepair`), written by one conditional update that moves
+  the asset's `version` only when the status changes.** It is the demo's
+  rule; a manager's open asset form is made stale only by a real change,
+  and the comparison is on the row as it stands, so two repairs on one
+  asset cannot leave it on a status read before the other's save.
+- **A repair moved to another asset releases the one it left: if that
+  asset stands Under Repair, it follows its remaining repairs (Under
+  Repair while one is open, else as its newest left it, else Active;
+  `assetStatusAfterRepairs`), in the same transaction** (C5 review). The
+  demo set only the named asset, so a repair logged on the wrong asset and
+  corrected left that asset Under Repair with no open repair until a
+  manager noticed. Active or Inactive are left alone: either may be a
+  manager's own choice on `asset.save`, while Under Repair with nothing
+  open is only ever a moved repair's leftover.
+- **The resolved date is set once, to the Lagos date of the first move to
+  Fixed or Not Fixed, and kept after, a reopened repair included; the
+  reported date is the date the repair was logged** (plan §17, R3,
+  `resolvedOnFor`). The demo reset it to today on every save of a closed
+  repair, so recosting a repair a week later moved the day it was fixed.
+  `MaintenanceRecord_values_check` holds every row to it.
+- **A new repair raises "Follow up repair MT-…: <asset>" for a manager
+  (`managerForTask`), unless it is logged for an existing task (`taskId`);
+  Fixed or Not Fixed closes every open task on the repair
+  (`closeOpenTasks`). All of it runs through `src/tasks/automatic-tasks.ts`
+  in the command's transaction** (plan §7.9, "repairs open and close their
+  own follow-up task"). A task raised or closed outside the transaction
+  would outlive a refused save.
+- **A repair logged for a task links it with one conditional update: the
+  task must have no repair yet, becomes a Maintenance task, moves to In
+  Progress and its `version` moves, with an automatic history row; an
+  unknown task is 404 "Task not found.", a task with a repair 409 "This
+  task already has a maintenance record.", and a Purchase task 400 "Choose
+  a maintenance or general task." (new)** (R3 for the 404). The schema's
+  `Task_values_check` lets only a Maintenance task link a repair, and a
+  Purchase task already tracks a requisition, so it cannot be given the
+  type. The condition decides two repairs racing for one task. The task
+  the repair already links, sent again on an update, links nothing and
+  passes, so a screen sending the whole record back is not refused.
+- **A repair id that names nothing is 404 "Maintenance record not
+  found." (new)**, the not-found sentence the version claim needs.
+- **`AssetsModule` registers the `AuditRefAccess` reader for `MT-`
+  numbers: a role that opens Assets & Maintenance (Reception), for any
+  repair that exists** (`src/assets/maintenance-audit-reader.ts`, plan
+  §4.8, §6.1 "repairs, history"). Assets get no reader: §6.1 gives
+  Reception the assets to read, not their history.
+- **`GET /staff/reference` carries `assets: [{ id, tag, name, location,
+  status }]` only for the roles that open Assets & Maintenance (Reception
+  and managers), and an empty list for everyone else** (plan §5.3, "assets
+  (lite, for Reception and managers)"). The key is always there, so one
+  client shape serves every role.
+
+## Attendance *(from C5)*
+
+- **Attendance is timestamps only, and its export is titled "Attendance
+  review"** (Q12's default: "keep them (timestamps only…) and rename the
+  export"). Nothing calculates lateness, absence or pay; the title lives
+  once, in `ATTENDANCE_EXPORT_TITLE`.
+- **`attendance.scan` (`POST /staff/attendance/scan`, Reception and
+  managers) takes the decoded staff ID, `CNC-ID:<staff number>:<token>`,
+  finds the account by its staff number and compares the token in constant
+  time over SHA-256 digests (`tokensMatch`); the token is then dropped and
+  is never in a response, a log, an audit row or a query** (plan §11, the
+  staff card rule in *Auth*). A query by token would put the credential in
+  any database error the service logs, and a plain `===` leaks by timing
+  how much of a guess was right. The response is `no-store`.
+- **A code that is not a staff ID, names nobody, carries the wrong token or
+  belongs to a deactivated account is the demo's one 400, "This staff QR
+  code is invalid or the account is inactive."** One sentence for all four,
+  so a scanner tells a stranger nothing about which part was wrong.
+- **The scan follows the demo: a scan within a minute of the person's last
+  arrival or departure is a repeat and records nothing, audit included;
+  otherwise the open shift closes, however long ago it began (an overnight
+  shift closes on the next scan), and with none open a new one starts,
+  dated by the Lagos day of arrival** (`scanStep`, plan §7.9). TAY's
+  sixteen-hour cap and its "which shift?" question are not copied: CNC's
+  demo and plan close on the next scan. The scan takes no Idempotency-Key:
+  a retry within the minute is the ignored repeat.
+- **Every scan and every correction of a person runs under that person's
+  advisory lock (`pg_advisory_xact_lock` on `cnc:attendance:<staff id>`),
+  taken before any row; the partial unique index
+  `AttendanceRecord_staffId_key` is the backstop** (plan §4.7, TAY's
+  pattern). Without the lock three scans of one card at once each closed
+  the same shift (the race test fails so); one lock order for both
+  commands means a scan and a correction cannot deadlock.
+- **A departure scan moves the shift's `version`**, so a correction opened
+  before it is refused as stale rather than undoing the departure unseen.
+- **`attendance.correct` (`PATCH /staff/attendance/:id`, managers, with
+  `@AdminReason`) takes Lagos wall clocks, `YYYY-MM-DDTHH:mm`, as the form's
+  `datetime-local` fields hold them, and checks in the demo's order:
+  "Enter valid attendance times.", "Attendance cannot be in the future.",
+  "Check-out must follow check-in.", then 409 "This correction overlaps
+  another shift."** A11 has the client send a date and a time and the
+  server build the instant; the demo built `+01:00` instants in the
+  browser. An empty or absent time out leaves the shift open.
+- **A correction keeps the times it replaced as an `AttendanceCorrection`
+  (who, when, why), returned with the shift, and moves the business date
+  with the new arrival** (plan §4.7, §7.9 "corrections keep the previous
+  times"). The History modal reads them from the record, not from audit
+  before and after (A13).
+- **The reads: `GET /staff/attendance/people` (the managers' directory of
+  active staff), `GET /staff/attendance/:staffId` (managers) and
+  `GET /staff/me/attendance` (everyone, their own) answer a month (this
+  Lagos month by default) or a `from`/`to` range of arrival dates, oldest
+  first, with the demo's summary, a page of a hundred by default; a range
+  is at most 366 days ("Choose a period of 366 days or fewer.", new)** (plan
+  §5.3, §5.4). A month is read in one page, as the screen shows it whole;
+  a server read needs a ceiling the browser's did not. The filters are
+  `ALL`, `COMPLETED` and `OPEN` ("Choose All Shifts, Completed or Open
+  Shifts.", new).
+- **The export is its own read, `GET /staff/attendance/:staffId/export
+  ?from&to` (managers): the title, subtitle, file name, the staff app's
+  columns and one row of text per shift in Lagos time (`formatWatShortStamp`,
+  the app's `timeLabel`)** (A20: the staff app builds the CSV and PDF from
+  rows with its own formula guard). The plan's "`?from&to` for export" is
+  met by a sub-route so the export's shape and title are not mixed into
+  the screen's read; one server definition of the rows keeps CSV, PDF and
+  print preview in step.
+- **No `AuditRefAccess` reader is registered for attendance**: plan §4.8
+  gives no non-manager an attendance history, so the registry's fail-closed
+  answer is the rule. A scan's audit ref is the person's staff number.
 
 ## Orders and dockets *(from C4)*
 
@@ -1694,6 +2293,17 @@ here.
   and adds those across commands (a booking against a walk-in, settles
   against issues on one balance), because a race that passes once can still
   lose one time in five.
+- **The C5 gate walk (`test/c5-gate.e2e-spec.ts`) follows the C4 walk's
+  form: one test per step, in order, on its own database with the real
+  seeds and a clock faked from the next noon in Jos** (from C5). It buys
+  its stock through a requisition and moves it through the Store, because
+  Q11 seeds no Kitchen stock and the gate is the founder's walk of the
+  real path; the noon start keeps every approval on one business date, so
+  the daily limit in step 6 cannot reset mid-walk. The C5 approval races
+  are in `test/approvals.e2e-spec.ts`: two Managers approving the same
+  requisition or entry, and an approval racing a rejection, each over
+  several rounds, asserting that the day's ledger counts only a winning
+  approval.
 - **Every C4 race test was seen failing with its guard removed** (from C4):
   the conditional decrement (the shortfall test), a read-then-write balance
   update in place of `qty = qty + delta` (all four stock races), the

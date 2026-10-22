@@ -87,13 +87,14 @@ export class ShellController {
     summary: 'Reference data for every screen',
     description:
       'Settings, business details, opening hours, rooms and tables, menu ' +
-      'categories, the menu, stock items and colleagues, read together.',
+      'categories, the menu, stock items, colleagues, vendors and (for ' +
+      'Reception and managers) assets, read together.',
   })
   @ApiResponse({ status: 200, type: ReferenceResponse })
   @ApiResponse(UNAUTHORISED)
   @ApiResponse(REFUSED)
-  reference(): Promise<ReferenceResponse> {
-    return this.shell.reference();
+  reference(@CurrentStaff() actor: StaffPrincipal): Promise<ReferenceResponse> {
+    return this.shell.reference(actor);
   }
 
   @Get('me/preferences/overview')

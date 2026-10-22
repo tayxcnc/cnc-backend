@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ApprovalsModule } from './approvals/approvals.module';
+import { AssetsModule } from './assets/assets.module';
+import { AttendanceModule } from './attendance/attendance.module';
 import { AuditViewerModule } from './audit/audit-viewer.module';
 import { CncAuthModule } from './auth/cnc-auth.module';
 import { CashModule } from './cash/cash.module';
@@ -16,12 +19,15 @@ import { MenuModule } from './menu/menu.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrdersModule } from './orders/orders.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
+import { PurchasingModule } from './purchasing/purchasing.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
 import { ReceptionModule } from './reception/reception.module';
 import { SettingsModule } from './settings/settings.module';
 import { ShellModule } from './shell/shell.module';
 import { StaffModule } from './staff/staff.module';
 import { StockModule } from './stock/stock.module';
+import { TasksModule } from './tasks/tasks.module';
+import { WasteModule } from './waste/waste.module';
 
 /**
  * Root module for the CNC Cloud Run service.
@@ -50,6 +56,12 @@ import { StockModule } from './stock/stock.module';
     SettingsModule,
     MenuModule,
     StockModule,
+    PurchasingModule,
+    WasteModule,
+    ApprovalsModule,
+    TasksModule,
+    AssetsModule,
+    AttendanceModule,
     OrdersModule,
     KitchenModule,
     CashModule,

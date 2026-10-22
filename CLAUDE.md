@@ -43,6 +43,14 @@ Every entry below is a pointer, not a rule. Read the named section of
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
+| The C5 tables' CHECKs, one open shift per person, task links, pack cost | Stock requests, purchasing, waste, tasks, assets and attendance: the schema |
+| Stock requests: location, packs, issue, own record, reads, history | Stock requests |
+| Purchases, approvals and their limits, receiving, R1's automatic tasks, vendors, the lite list, the assigned-task bell item | Purchasing and vendors |
+| Waste: each role's location, stock on approval, Q25's coded value, approvals and corrections, the read and history | Waste |
+| `GET /staff/approvals`: a read only, what awaits whom, `approvalRefusal` and `standing()`, fresh waste values | Approvals |
+| `task.save`: the role gate, who may raise and save what, links, assignees, history, who sees which task | Tasks |
+| `asset.save` by tag, repairs, the asset following its repair, R3's resolved date, the follow-up task, the MT- reader, the assets lite list | Assets and repairs |
+| The QR scan and its token, repeats and overnight shifts, the per-person lock, corrections, the reads, the "Attendance review" export | Attendance |
 | Bills, lines, totals, dockets, reprints, order history readers | Orders and dockets |
 | Payments, settle and its race, Bar stock on settle and reverse, discounts, cancel, reopen | Payments, settlement and bill corrections |
 | Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
@@ -101,7 +109,8 @@ src/
   auth/              staff sign-in, refresh, sign-out, change-password, admin reset;
                      CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
   money-control/     MoneyControlService: Owner-only rules, approval limits and
-                     the daily ledger, own record, Manager/Owner accounts, last Owner
+                     the daily ledger, own record, Manager/Owner accounts, last Owner;
+                     standing() and approvalRefusal() for the approvals read
   common/            money, dates, errors, pagination, request helpers, QR tokens
                      and their SVG renderer, the client-address throttler guard,
                      one-sentence field checks, the admin reason, item lists
@@ -117,7 +126,25 @@ src/
   menu/              Menu & Prices: menu.save, photos, the paired Bar stock item
   stock/             the stock core: StockLedgerService (the one writer of balances
                      and movements), balances and movements reads, issue, count,
-                     Correct Balance, stock items, kitchen comparison rules
+                     Correct Balance, stock items, kitchen comparison rules;
+                     stock requests (StockRequestsService, the SR- history reader)
+  purchasing/        Purchasing and Vendors: PurchasesService (create, edit,
+                     approve, reject, status, archive, receive), purchase rules,
+                     the PR- history reader; VendorsService (vendor.save)
+  waste/             Waste: WasteService (create, approve, reject, edit, status),
+                     the waste rules, the W- history reader
+  approvals/         Approvals: GET /staff/approvals (ApprovalsService), what
+                     each pending requisition or waste entry awaits
+                     (approval-rules.ts)
+  tasks/             Tasks: TasksService (task.save, the tasks read), the task
+                     rules, the T- history reader; the automatic tasks (raise,
+                     close, who gets them) and the assigned-task bell item
+  assets/            Assets & Maintenance: AssetsService (asset.save, the assets
+                     read), MaintenanceService (maintenance.save, the repairs
+                     read), the repair rules, the MT- history reader
+  attendance/        Attendance: AttendanceService (the QR scan, the correction,
+                     the directory, a person's month, My Attendance, the
+                     Attendance review export), the attendance rules
   orders/            Point of Sale: bills and lines (claimOrder, readOrder,
                      orderTotals), kitchen dockets (DocketsService, the one
                      docket writer), the bill and docket history readers;
@@ -130,7 +157,8 @@ src/
                      booking command), table sessions, the floor read, the
                      Free Table Reminder; arrival rules in reservation-rules.ts
   notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
-  shell/             GET /staff/me, /staff/me/card, /staff/reference, the overview layout
+  shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
+                     for Reception and managers), the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
@@ -139,7 +167,14 @@ prisma/
   menu-seed.ts       joins the copied menu sources; refuses a disagreement
   seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
 test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
-                     acceptance races), create-test-app.ts, staff-fixtures.ts,
+                     acceptance races; c5-schema: the C5 migration's CHECKs;
+                     purchasing: the C5 gate's steps 1 to 3; waste: steps
+                     5 and 6; tasks: task.save and who sees which;
+                     assets-maintenance: assets and repairs; attendance:
+                     the scan, corrections, reads and step 7;
+                     approvals: the approvals read and the C5 races;
+                     c5-gate: the C5 gate walk, steps 1 to 7),
+                     create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts
