@@ -649,6 +649,13 @@ model Staff {
 ///
 /// `prefOffers` is stored false and refused as true until the founder
 /// enables offers. Never deleted: Q36's default anonymises instead.
+///
+/// From C6: `deletedAt` is set when the customer deletes their account
+/// (`DELETE /me`). The row stays, because bookings, bills and the audit log
+/// point at it, but everything that identifies the person is cleared in the
+/// same write, and a CHECK refuses a deleted row that still holds an email,
+/// a phone, a photo or an address. The guard refuses a deleted customer
+/// like a missing one.
 model Customer {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -673,6 +680,8 @@ model Customer {
   photo                String?
   /// Notifications created after this instant are unread.
   notificationsReadAt  DateTime?
+  /// When the customer deleted their account (Q36), or null.
+  deletedAt            DateTime?
 
   otpCodes      OtpCode[]
   notifications CustomerNotification[]

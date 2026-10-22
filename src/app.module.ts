@@ -18,6 +18,7 @@ import { KitchenModule } from './kitchen/kitchen.module';
 import { SweepsModule } from './internal/sweeps.module';
 import { MenuModule } from './menu/menu.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { OrderingModule } from './ordering/ordering.module';
 import { OrdersModule } from './orders/orders.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
@@ -68,6 +69,7 @@ import { WasteModule } from './waste/waste.module';
     KitchenModule,
     CashModule,
     ReceptionModule,
+    OrderingModule,
     NotificationsModule,
     ShellModule,
     SweepsModule,

@@ -64,12 +64,21 @@ export class PhotoStore {
    * A signing failure degrades to null rather than failing the request: a
    * screen should not be unavailable because a photograph could not be
    * signed.
+   *
+   * `ttlMs` is the link's life, the storage's ten minutes unless a read
+   * that is cached longer asks for more (the public menu).
    */
-  async signedUrlOrNull(gsUri: string | null): Promise<string | null> {
+  async signedUrlOrNull(
+    gsUri: string | null,
+    ttlMs?: number,
+  ): Promise<string | null> {
     if (gsUri === null) return null;
 
     try {
-      const { url } = await this.storage.signedUrl(gsUri);
+      const { url } =
+        ttlMs === undefined
+          ? await this.storage.signedUrl(gsUri)
+          : await this.storage.signedUrl(gsUri, ttlMs);
 
       return url;
     } catch (error: unknown) {

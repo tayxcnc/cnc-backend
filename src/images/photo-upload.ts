@@ -73,9 +73,17 @@ Type(() => Number)(PhotoUploadRequest.prototype, 'version');
 
 /**
  * A photo upload route: the interceptor, and the multipart body documented
- * once for both the staff and the menu photo.
+ * once for every photo. The staff and menu photos are versioned writes
+ * (A8) and carry `version` beside the file; a customer's own photo
+ * (`versioned: false`) does not, because `Customer` has no `version`
+ * (A8 does not list it: a customer's profile is edited by that customer
+ * alone).
  */
-export function PhotoUpload(): MethodDecorator {
+export function PhotoUpload(
+  options: { versioned?: boolean } = {},
+): MethodDecorator {
+  const versioned = options.versioned ?? true;
+
   return applyDecorators(
     UseInterceptors(PhotoUploadInterceptor),
     ApiConsumes('multipart/form-data'),
@@ -90,16 +98,20 @@ export function PhotoUpload(): MethodDecorator {
               'JPEG, PNG or WebP, 5MB or smaller, judged by its bytes and ' +
               'never by its name.',
           },
-          version: {
-            type: 'integer',
-            minimum: 0,
-            description:
-              'The `version` of the record as the client last read it; an ' +
-              'older one is refused with 409 "This record changed. Refresh ' +
-              'and try again."',
-          },
+          ...(versioned
+            ? {
+                version: {
+                  type: 'integer',
+                  minimum: 0,
+                  description:
+                    'The `version` of the record as the client last read ' +
+                    'it; an older one is refused with 409 "This record ' +
+                    'changed. Refresh and try again."',
+                },
+              }
+            : {}),
         },
-        required: [PHOTO_FIELD, 'version'],
+        required: versioned ? [PHOTO_FIELD, 'version'] : [PHOTO_FIELD],
       },
     }),
   );

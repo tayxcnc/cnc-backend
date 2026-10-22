@@ -160,6 +160,19 @@ export const CHANGE_CONFIRMED_MESSAGE =
  */
 export const VENUE_MESSAGE = 'Choose a venue.';
 
+/**
+ * `GET /venues/:venue/availability` naming a room that does not exist
+ * (404). New, in the form of "Table not found.": a path names one thing.
+ */
+export const VENUE_NOT_FOUND_MESSAGE = 'Venue not found.';
+
+/**
+ * Availability asked for a date before today in Jos (400). New: the
+ * website's date picker starts at today, so only a hand-made request or a
+ * page left open overnight meets it.
+ */
+export const PAST_DATE_MESSAGE = 'Choose today or a later date.';
+
 /** The longest guest name, phone and email a booking keeps. */
 export const GUEST_NAME_MAX_LENGTH = 120;
 export const GUEST_PHONE_MAX_LENGTH = 40;

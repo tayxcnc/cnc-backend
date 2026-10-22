@@ -1,5 +1,6 @@
 import {
   ReservationSource,
+  ReservationStatus,
   TableSessionStatus,
 } from '../../generated/cnc-client';
 import {
@@ -21,6 +22,17 @@ import {
  * spellings Reception's records use. Pure, so the e2e suite need not wait
  * for a clock to pass a booking time.
  */
+
+/**
+ * The statuses that hold a table for the booking's date (plan §4.5), the
+ * statuses of the partial unique index `Reservation_tableId_businessDate_key`.
+ * One list for the booking command, the floor, the public availability and
+ * account deletion, so none of them can disagree on what "booked" means.
+ */
+export const HOLDING_STATUSES: ReservationStatus[] = [
+  ReservationStatus.CONFIRMED,
+  ReservationStatus.CHECKED_IN,
+];
 
 /** `HH:mm`, zero-padded, 24-hour: the form every arrival time travels in. */
 export const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -125,6 +137,68 @@ export function arrivalProblem(input: {
   }
 
   return null;
+}
+
+/**
+ * The arrival times a website or app guest is offered on `businessDate`,
+ * as `HH:mm`, earliest first (`GET /venues/:venue/availability`): every
+ * minute from the day's opening to its closing that `arrivalProblem`
+ * accepts for an online booking, on the grid. Built from that one rule, so
+ * a time offered is a time the booking command takes. Today's passed
+ * times are dropped, as the website's `arrivalSlots` drops them.
+ */
+export function arrivalTimes(input: {
+  businessDate: Date;
+  now: Date;
+  hours: DayHours;
+  settings: ArrivalSettings;
+}): string[] {
+  const { hours } = input;
+
+  if (
+    hours.isClosed ||
+    hours.opensAtMinutes === null ||
+    hours.closesAtMinutes === null
+  ) {
+    return [];
+  }
+
+  const times: string[] = [];
+
+  for (
+    let minutes = hours.opensAtMinutes;
+    minutes < hours.closesAtMinutes;
+    minutes += input.settings.slotStepMinutes
+  ) {
+    const problem = arrivalProblem({
+      ...input,
+      source: ReservationSource.WEB,
+      startMinutes: minutes,
+    });
+
+    if (problem === null) times.push(clockText(minutes));
+  }
+
+  return times;
+}
+
+/** What the website shows a table as (plan §5.1, §7.5). */
+export const PUBLIC_TABLE_STATUSES = [
+  'AVAILABLE',
+  'RESERVED',
+  'OCCUPIED',
+  'BLOCKED',
+] as const;
+
+export type PublicTableStatus = (typeof PUBLIC_TABLE_STATUSES)[number];
+
+/**
+ * A floor status as the website names it: a Locked table is "blocked"
+ * (plan §7.5; the website shows it as Unavailable), and nothing of why it
+ * is locked leaves the staff app.
+ */
+export function publicTableStatus(status: FloorStatus): PublicTableStatus {
+  return status === 'LOCKED' ? 'BLOCKED' : status;
 }
 
 /**

@@ -40,7 +40,9 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
 | Customer email codes: caps, tries, sentences, `OtpService`, `CncCustomerGuard`, creating customers | Auth |
-| Email: the outbound queue, sealed payloads, expiry, the transports, the mail frame, `sentMail` in tests | Mail and the outbound queue |
+| Email: the outbound queue, sealed payloads, expiry, the transports, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
+| `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
+| Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
@@ -121,8 +123,12 @@ src/
   internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens and
                      messages sweeps
   customers/         the customer email-code sign-in (/auth/code, verify, refresh,
-                     sign-out), GET/PATCH /me; CustomerService (the one creator
-                     of customers), OtpService (codes and their caps)
+                     sign-out), the account (/me: profile, email change, photo,
+                     DELETE); CustomerService (the one creator of customers),
+                     OtpService (codes and their caps), CustomerEmailService,
+                     CustomerDeletionService, profile-rules.ts
+  ordering/          the public ordering reads (GET /ordering/config, /slots) and
+                     the ordering times (ordering-times.ts); C7 adds checkout
   mail/              the outbound queue (OutboundMessagesService), templates, the
                      CNC mail frame, MessageSeal, the Resend and recording transports
   images/            PhotoStore: byte inspection, sharp resizing, the upload route
@@ -130,8 +136,10 @@ src/
   storage/           MediaStorage and its Cloud Storage binding (gs:// URIs, V4 links)
   staff/             Staff & Access: staff.save, staff.photo, the ID reissue,
                      staff ID cards (the QR payload in staff-qr.ts)
-  settings/          settings.save, business details, opening hours
-  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item
+  settings/          settings.save, business details, opening hours; the public
+                     GET /business and GET /opening-hours
+  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item;
+                     the public GET /menu
   stock/             the stock core: StockLedgerService (the one writer of balances
                      and movements), balances and movements reads, issue, count,
                      Correct Balance, stock items, kitchen comparison rules;
@@ -163,7 +171,8 @@ src/
   cash/              cash.count and the Cash Reconciliation report
   reception/         Reception: bookings (ReservationsService.book, the one
                      booking command), table sessions, the floor read, the
-                     Free Table Reminder; arrival rules in reservation-rules.ts
+                     Free Table Reminder; arrival rules in reservation-rules.ts;
+                     the public GET /venues and availability
   notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
@@ -183,7 +192,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      approvals: the approvals read and the C5 races;
                      c5-gate: the C5 gate walk, steps 1 to 7;
                      customer-auth: the email-code sign-in, its caps,
-                     the realms, the outbound queue and TAY's cookies),
+                     the realms, the outbound queue and TAY's cookies;
+                     customer-account: /me, the email change, the photo,
+                     deletion; public-reads: the C6-4 public reads),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

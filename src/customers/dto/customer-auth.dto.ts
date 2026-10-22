@@ -22,12 +22,27 @@ export const ENTER_CODE_MESSAGE = 'Enter the 6 digit code.';
 /** Longest email the sign-in accepts: RFC 5321's limit on a path. */
 const EMAIL_MAX_LENGTH = 254;
 
-function emailProblem(value: unknown): string | null {
-  return typeof value === 'string' &&
+/**
+ * An email check answering `message`: the one rule for what a customer's
+ * email is, worded by each screen that asks for one (sign-in, the email
+ * change).
+ */
+export function emailCheck(message: string): (value: unknown) => string | null {
+  return (value) =>
+    typeof value === 'string' &&
     value.length <= EMAIL_MAX_LENGTH &&
     EMAIL_PATTERN.test(value)
+      ? null
+      : message;
+}
+
+const emailProblem = emailCheck(ENTER_EMAIL_MESSAGE);
+
+/** The six-digit code check, shared by sign-in and the email change. */
+export function codeProblem(value: unknown): string | null {
+  return typeof value === 'string' && OTP_PATTERN.test(value)
     ? null
-    : ENTER_EMAIL_MESSAGE;
+    : ENTER_CODE_MESSAGE;
 }
 
 /** Body of `POST /api/v1/auth/code`. */
@@ -75,11 +90,7 @@ export class VerifyCodeRequest {
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
-  @Checked((value) =>
-    typeof value === 'string' && OTP_PATTERN.test(value)
-      ? null
-      : ENTER_CODE_MESSAGE,
-  )
+  @Checked(codeProblem)
   code!: string;
 }
 

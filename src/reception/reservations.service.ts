@@ -63,6 +63,7 @@ import {
   reservationResponse,
 } from './reception-records';
 import {
+  HOLDING_STATUSES,
   arrivalProblem,
   bigPartyProblem,
   bookingStart,
@@ -73,12 +74,6 @@ import {
 } from './reservation-rules';
 
 type Tx = Prisma.TransactionClient;
-
-/** The statuses that hold a table for the booking's date (plan §4.5). */
-const HOLDING: ReservationStatus[] = [
-  ReservationStatus.CONFIRMED,
-  ReservationStatus.CHECKED_IN,
-];
 
 /**
  * One booking as `book` takes it, whatever the channel: Reception now, the
@@ -730,7 +725,7 @@ export class ReservationsService {
       where: {
         tableId,
         businessDate,
-        status: { in: HOLDING },
+        status: { in: HOLDING_STATUSES },
         ...(except === null ? {} : { id: { not: except } }),
       },
       select: { id: true },

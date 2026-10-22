@@ -158,15 +158,31 @@ export class OtpService {
    * Check `code` against the newest code of `purpose` sent to `contact`,
    * then run `then` in one transaction with the code spent. A wrong code
    * spends a try and throws the account app's sentence.
+   *
+   * `customerId`, when given, narrows the codes to those issued for that
+   * customer: an email change's code proves the new address to the account
+   * that asked for it, and to no other signed-in account, even one whose
+   * holder can read that inbox.
    */
   async verify<T>(
-    input: { purpose: OtpPurpose; contact: string; code: string },
+    input: {
+      purpose: OtpPurpose;
+      contact: string;
+      code: string;
+      customerId?: string;
+    },
     then: (tx: Tx, matched: MatchedCode) => Promise<T>,
   ): Promise<T> {
     const now = new Date();
 
     const newest = await this.prisma.otpCode.findFirst({
-      where: { purpose: input.purpose, contact: input.contact },
+      where: {
+        purpose: input.purpose,
+        contact: input.contact,
+        ...(input.customerId === undefined
+          ? {}
+          : { customerId: input.customerId }),
+      },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,

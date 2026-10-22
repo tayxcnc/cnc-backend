@@ -25,6 +25,13 @@ export interface RenderedMail {
 export interface MailTemplateParams {
   /** A customer's sign-in code (A15). */
   'customer.sign-in-code': { code: string; minutes: number };
+  /** The code that proves a customer holds the new email (C6-3). */
+  'customer.email-change-code': { code: string; minutes: number };
+  /**
+   * The notice to the old address once the email has changed (C6-3), with
+   * the new address masked as the sign-in screen masks it.
+   */
+  'customer.email-changed': { newEmailMasked: string };
 }
 
 export type MailTemplateName = keyof MailTemplateParams;
@@ -46,15 +53,74 @@ function codeBlock(code: string): string {
   );
 }
 
+/** A code template's parameters: six digits and a whole number of minutes. */
+function isCodeParams(
+  value: unknown,
+): value is { code: string; minutes: number } {
+  return (
+    isRecord(value) &&
+    typeof value.code === 'string' &&
+    /^\d{6}$/.test(value.code) &&
+    typeof value.minutes === 'number' &&
+    Number.isInteger(value.minutes) &&
+    value.minutes > 0
+  );
+}
+
 const TEMPLATES: { [Name in MailTemplateName]: MailTemplate<Name> } = {
-  'customer.sign-in-code': {
-    isParams: (value): value is MailTemplateParams['customer.sign-in-code'] =>
+  'customer.email-change-code': {
+    isParams: isCodeParams,
+    render: ({ code, minutes }) => ({
+      subject: `${code} is your code to change your CNC email`,
+      html: [
+        '<p>Hello,</p>',
+        '<p>Type this code in your CNC account to make this your sign-in ' +
+          'email:</p>',
+        codeBlock(code),
+        `<p>It stops working in ${minutes} minutes.</p>`,
+        '<p>If you did not ask to change the email on a CNC account, you ' +
+          'can ignore this email. Nothing changes without the code.</p>',
+      ].join(''),
+      text: [
+        'Hello,',
+        '',
+        'Type this code in your CNC account to make this your sign-in email:',
+        '',
+        `    ${code}`,
+        '',
+        `It stops working in ${minutes} minutes.`,
+        '',
+        'If you did not ask to change the email on a CNC account, you can ' +
+          'ignore this email. Nothing changes without the code.',
+      ].join('\n'),
+    }),
+  },
+  'customer.email-changed': {
+    isParams: (value): value is MailTemplateParams['customer.email-changed'] =>
       isRecord(value) &&
-      typeof value.code === 'string' &&
-      /^\d{6}$/.test(value.code) &&
-      typeof value.minutes === 'number' &&
-      Number.isInteger(value.minutes) &&
-      value.minutes > 0,
+      typeof value.newEmailMasked === 'string' &&
+      value.newEmailMasked.length > 0,
+    render: ({ newEmailMasked }) => ({
+      subject: 'Your CNC sign-in email has changed',
+      html: [
+        '<p>Hello,</p>',
+        '<p>The sign-in email on your CNC account is now ' +
+          `<strong>${escapeHtml(newEmailMasked)}</strong>. This address ` +
+          'will no longer sign you in.</p>',
+        '<p>If you did not make this change, contact CNC straight away.</p>',
+      ].join(''),
+      text: [
+        'Hello,',
+        '',
+        `The sign-in email on your CNC account is now ${newEmailMasked}. ` +
+          'This address will no longer sign you in.',
+        '',
+        'If you did not make this change, contact CNC straight away.',
+      ].join('\n'),
+    }),
+  },
+  'customer.sign-in-code': {
+    isParams: isCodeParams,
     render: ({ code, minutes }) => ({
       subject: `${code} is your CNC sign-in code`,
       html: [

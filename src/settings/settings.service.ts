@@ -12,6 +12,7 @@ import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import type {
   BusinessResponse,
+  PublicBusinessResponse,
   SettingsResponse,
 } from './dto/settings.response';
 import type { UpdateBusinessRequest } from './dto/update-business.request';
@@ -134,6 +135,27 @@ export class SettingsService {
     if (row === null) throw missingRow('business');
 
     return toBusinessResponse(row);
+  }
+
+  /**
+   * The business details as the public reads them (`GET /business`): the
+   * staff read without the row's `updatedAt` and `version`, which say
+   * nothing to a visitor.
+   */
+  async readPublicBusiness(): Promise<PublicBusinessResponse> {
+    const business = await this.readBusiness();
+
+    return {
+      name: business.name,
+      addressLine: business.addressLine,
+      addressLines: business.addressLines,
+      phone: business.phone,
+      email: business.email,
+      registration: business.registration,
+      mapLat: business.mapLat,
+      mapLng: business.mapLng,
+      socialLinks: business.socialLinks,
+    };
   }
 
   /**

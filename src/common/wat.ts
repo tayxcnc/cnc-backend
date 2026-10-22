@@ -153,6 +153,17 @@ export function watToday(now: Date): Date {
 }
 
 /**
+ * The minute of the day it is in Nigeria at `now`, 0 to 1439 (seconds
+ * dropped): what every "minutes after midnight, Lagos time" rule compares
+ * against (the ordering times, plan §8.3).
+ */
+export function watMinutesOfDay(now: Date): number {
+  const local = watCalendarFields(now);
+
+  return local.getUTCHours() * 60 + local.getUTCMinutes();
+}
+
+/**
  * The instants a Nigerian calendar day runs between: `start` inclusive,
  * `end` exclusive (the next day's start). For filtering a timestamp column
  * by business date, as `GET /staff/audit?from&to` does: `at >= start of

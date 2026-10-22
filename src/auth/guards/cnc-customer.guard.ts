@@ -29,10 +29,10 @@ export const STAFF_TOKEN_ON_CUSTOMER_ROUTE_MESSAGE =
  * on a staff route is, never 401, which would send a valid client into a
  * re-login loop. A TAY token fails the signature: 401.
  *
- * The row is read on every request, so a customer removed or anonymised
- * (Q36, later) is refused on their next request rather than when the
- * fifteen-minute token expires: 401, because there is nobody left to
- * refuse.
+ * The row is read on every request, so a customer whose account is
+ * deleted (Q36: `deletedAt` set and the row anonymised) is refused on
+ * their next request rather than when the fifteen-minute token expires:
+ * 401, because there is nobody left to refuse.
  */
 @Injectable()
 export class CncCustomerGuard extends AuthGuard(CNC_JWT_STRATEGY) {
@@ -52,8 +52,8 @@ export class CncCustomerGuard extends AuthGuard(CNC_JWT_STRATEGY) {
       throw new ForbiddenException(STAFF_TOKEN_ON_CUSTOMER_ROUTE_MESSAGE);
     }
 
-    const customer = await this.prisma.customer.findUnique({
-      where: { id: request.user.sub },
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: request.user.sub, deletedAt: null },
       select: { id: true, memberNo: true },
     });
 

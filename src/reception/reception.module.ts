@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { CncAuthModule } from '../auth/cnc-auth.module';
+import { PublicVenuesController } from './public-venues.controller';
+import { PublicVenuesService } from './public-venues.service';
 import { ReservationsController } from './reservations.controller';
 import { ReservationsService } from './reservations.service';
 import { TableSessionsService } from './table-sessions.service';
@@ -8,7 +10,8 @@ import { FloorController, TablesController } from './tables.controller';
 
 /**
  * Reception (card C4-7): reservations, table sessions, the floor read and
- * the Free Table Reminder.
+ * the Free Table Reminder; and the booking page's public reads,
+ * `GET /venues` and `GET /venues/:venue/availability` (C6-4).
  *
  * `ReservationsService.book` is exported for the website's and the app's
  * bookings (C6-5), which run the same command. `TableSessionsService` is
@@ -22,8 +25,13 @@ import { FloorController, TablesController } from './tables.controller';
  */
 @Module({
   imports: [CncAuthModule, AuditModule],
-  controllers: [ReservationsController, TablesController, FloorController],
-  providers: [ReservationsService, TableSessionsService],
+  controllers: [
+    ReservationsController,
+    TablesController,
+    FloorController,
+    PublicVenuesController,
+  ],
+  providers: [ReservationsService, TableSessionsService, PublicVenuesService],
   exports: [ReservationsService, TableSessionsService],
 })
 export class ReceptionModule {}

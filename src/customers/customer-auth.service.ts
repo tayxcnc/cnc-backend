@@ -84,7 +84,9 @@ export class CustomerAuthService {
 
   /**
    * Spend a customer refresh token and issue the next session. A customer
-   * whose row is gone is refused with the same 401 as a spent token.
+   * whose row is gone, or whose account is deleted, is refused with the
+   * same 401 as a spent token (deleting an account revokes its tokens too;
+   * this is the second line).
    */
   async refresh(
     rawToken: string,
@@ -94,8 +96,8 @@ export class CustomerAuthService {
       SubjectType.CUSTOMER,
     );
 
-    const exists = await this.prisma.customer.findUnique({
-      where: { id: customerId },
+    const exists = await this.prisma.customer.findFirst({
+      where: { id: customerId, deletedAt: null },
       select: { id: true },
     });
 

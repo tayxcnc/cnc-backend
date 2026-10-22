@@ -900,6 +900,128 @@ They are here so the first card that builds it starts from the rule.
   CULINARY" and the site's icon from `buildWebUrl('/icons/icon-192.png')`**
   (plan §9.2). With no web URL it shows the wordmark alone.
 
+- **Every email carries Reply-To `CNC_CONTACT_EMAIL`** (from C6-3,
+  `OutboundMessagesService`). The sender `cnc@tayxcnc.com` only sends
+  (Q19), so a customer's reply would otherwise reach no inbox; the
+  founder's 2026-10-22 note asked for it.
+
+## The customer's account *(from C6)*
+
+- **`PATCH /me` takes the name, the phone, the whole address and the
+  preferences, each only when sent; never the email or the photo**
+  (plan §5.2), which have their own routes because one needs a code and
+  the other is a file. It runs in one transaction on the customer's row
+  locked `FOR UPDATE` (`CustomerService.lockLive`), so a rule spanning two
+  fields (keep a phone or an email) holds when two of the customer's
+  devices save at once.
+- **The sentences are the account app's where it has one**
+  (`lib/account/api.ts`, `components/account/panels.tsx`), byte for byte:
+  "Enter a Nigerian phone number, for example 0803 123 4567.", "Keep at
+  least a phone number or an email.", "Add the street, area and town.",
+  "Add an email address in Your Details to receive updates by email.".
+  Each new one is marked new in `profile-rules.ts` with its reason.
+- **A phone is stored as `0` plus 10 digits however it was typed**
+  (`customerPhone`, the app's `normalisePhone`); null or blank removes it.
+  `Customer.phone` is unique, so the second account to save a number gets
+  409 "This phone number is already on another CNC account." rather than a
+  500.
+- **A delivery address is one shape for the profile and checkout:
+  `src/common/delivery-address.ts`** (zone `JOS`/`PLATEAU`, street, area,
+  town, landmark; the landmark required by D53, each line at most 120
+  characters). C7's checkout uses the same module, so a saved address is
+  always one checkout accepts. The address is sent whole, or null to
+  remove it; it is checked with one sentence per screen (`@Checked`),
+  never nested validation, whose messages carry a field path.
+- **Offers stay off and SMS stays unavailable until the founder turns them
+  on** (plan §4.2; Q5 and Q19's defaults): `offers: true` and `channel:
+  SMS` are refused with their own sentences rather than stored as promises
+  nobody keeps. A switch is judged only when sent, so a screen that sends
+  every switch with offers off is never refused for it.
+- **The email changes in two steps: `POST /me/email/code` mails a code to
+  the new address, `POST /me/email/verify` checks it and moves the
+  account.** The account keeps its email until then, so a typo locks
+  nobody out. The code is `OtpService`'s with purpose `CHANGE_EMAIL` and
+  the sign-in's caps, tries and sentences; it is issued for the asking
+  customer and only that customer can verify it (`customerId` on
+  `OtpService.verify`; seen failing without it). Whether another account
+  holds the address is said only at verify, after the code proves the
+  inbox (409), so the route cannot be used to learn which emails have
+  accounts. The verify takes the email's advisory lock, as a first
+  sign-in does. The old address is told, with the new one masked;
+  sessions are kept.
+- **The customer's photo is a 256-pixel square** (A17, `PHOTO_SHAPES`),
+  through `PhotoStore` in the staff photo's order: stored before the
+  transaction, the old object removed after the commit, the new one
+  removed if the write fails. `POST /me/photo` carries no `version`:
+  `Customer` has none (A8 does not list it; only its holder edits it).
+- **Every `/me` answer is `Cache-Control: no-store`**: personal data must
+  not outlive a sign-out in a shared cache or the back button.
+- **Deleting an account (`DELETE /me`, Q36) anonymises, never erases.**
+  The row stays with `deletedAt` set, because bookings, bills and the
+  audit log point at it and money records are never deleted. In one
+  transaction: the name, email, phone, address, photo and preferences are
+  cleared; the account's bookings become "Deleted customer" with no
+  phone, email or note, and its bills' guest name likewise (their
+  `version` moves, so an open screen is told to refresh); its
+  notifications, codes and stored idempotent answers are deleted; every
+  waiting email to it is given up; every session is revoked and the
+  cookie cleared. A CHECK (`Customer_deleted_check`) refuses a deleted
+  row that keeps or regains a contact or an address. The guard, the
+  refresh and every `CustomerService` read treat a deleted account as
+  gone (401). The same email then signs in to a new, empty account. **It
+  is refused (409) while a booking holds a table on a date from today on,
+  or a linked bill is open**: an anonymised upcoming booking would leave
+  Reception a table held for nobody. The audit log keeps what it recorded
+  (A13).
+- **"Holding" and "unsettled" are one list each:
+  `HOLDING_STATUSES` (`reservation-rules.ts`) and
+  `UNSETTLED_ORDER_STATUSES` (`order-rules.ts`)**, read by the booking
+  command, the floor, the public availability, the table release and
+  account deletion, so no two of them disagree about what holds a table
+  or keeps a bill open.
+
+## The public reads *(from C6)*
+
+- **`GET /menu`, `/business`, `/opening-hours`, `/venues`,
+  `/venues/:venue/availability`, `/ordering/config` and `/ordering/slots`
+  need no sign-in and expose nothing internal**: no row ids, versions,
+  staff names or labels, stock, costs, approval limits, guests, lock
+  reasons or bills. Each answers its own public DTO, never the staff
+  response with fields removed, so a field added to a staff read cannot
+  leak. The e2e suite asserts each body's exact keys.
+- **Caching: `PublicCache()` (`public, max-age=60`) for what changes only
+  when staff change it** (the menu, business, hours, rooms, ordering
+  config); **`no-store` for what depends on the minute** (availability,
+  slots), because a cached "available" is a table someone has just booked
+  and the gate asks for the website to follow Reception within one
+  refresh. A minute keeps an Owner's price change on the site within a
+  minute of the page's own revalidation (gate step 8). The public menu
+  signs photo links for an hour (`PUBLIC_PHOTO_LINK_TTL_MS`), because a
+  cached page outlives the storage's ten-minute default.
+- **The menu shows only items that are Available for Sale and Show
+  Online** (Q37's default: an unavailable dish is hidden, no "Sold out"
+  state), in the customer categories' order; a category with nothing to
+  show is left out.
+- **A table's public state is Reception's floor rule (`floorStatus`) on
+  the same rows**, with Locked named `BLOCKED` (plan §7.5; the site shows
+  it as Unavailable). The arrival times offered are built by running
+  `arrivalProblem` (the booking command's own check) over the grid
+  (`arrivalTimes`), so every time offered is one the booking accepts.
+  Inactive tables are not listed. Availability defaults to today in Jos
+  and refuses an earlier date.
+- **The ordering times are `src/ordering/ordering-times.ts`, pure, read
+  from the settings and the opening hours** (plan §8.3, the website's
+  `leadFor`, `asapOpen` and `laterSlots`): lead by pickup or zone; ASAP
+  only while open now and now plus the lead is at most the last order
+  slot; scheduled times on the grid from the day's opening, at least the
+  lead after `max(now, opening)` today, every slot tomorrow, nothing past
+  closing or the last slot. C7's checkout must judge a chosen time with
+  these functions, so what is offered is what is accepted.
+- **The public reads are not throttled.** They are cheap reads, the
+  cacheable ones are served from caches, and the venue's Wi-Fi puts many
+  guests behind one address, which an in-memory per-address limit (A18)
+  would lock out together.
+
 ## Money controls and the audit log *(from C3)*
 
 - **Every Owner-only, limit and own-record rule goes through

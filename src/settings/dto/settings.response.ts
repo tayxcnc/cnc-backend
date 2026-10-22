@@ -76,9 +76,10 @@ export class SettingsResponse {
 
 /**
  * CNC's business details (plan §4.1, D28): one source for the website,
- * receipts and the entrance.
+ * receipts and the entrance. This is the public read (`GET /business`,
+ * C6-4); the staff read adds the row's `updatedAt` and `version`.
  */
-export class BusinessResponse {
+export class PublicBusinessResponse {
   @ApiProperty({ example: 'Chef Noro Culinary' })
   name!: string;
 
@@ -124,7 +125,14 @@ export class BusinessResponse {
     example: { instagram: 'https://www.instagram.com/example' },
   })
   socialLinks!: Record<string, string>;
+}
 
+/**
+ * The business details as the staff app reads and saves them: the public
+ * details with the row's `updatedAt` and the `version` the next
+ * `PATCH /staff/business` names.
+ */
+export class BusinessResponse extends PublicBusinessResponse {
   @ApiProperty({ type: String, format: 'date-time' })
   updatedAt!: Date;
 

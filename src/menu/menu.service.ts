@@ -6,6 +6,7 @@ import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
+import { PUBLIC_PHOTO_LINK_TTL_MS } from '../common/public-cache';
 import { PhotoStore } from '../images/photo-store.service';
 import type { UploadedImageFile } from '../images/uploaded-image';
 import {
@@ -26,6 +27,10 @@ import type {
   MenuListQuery,
   MenuPageResponse,
 } from './dto/menu-item.response';
+import type {
+  PublicMenuItemResponse,
+  PublicMenuResponse,
+} from './dto/public-menu.response';
 import {
   MENU_CATEGORY_MESSAGE,
   MENU_ITEM_NOT_FOUND_MESSAGE,
@@ -486,6 +491,75 @@ export class MenuService {
     });
 
     return (_max.sort ?? 0) + 1;
+  }
+
+  /**
+   * `GET /menu` (plan §5.1, C6-4): what the website and the order page
+   * list. Only items that are Available for Sale and Show Online (Q37's
+   * default: an unavailable dish is hidden, with no "Sold out" state), in
+   * the customer categories' order, the category's dishes by `sort`; a
+   * category left with none is not listed. Photos are signed for an hour,
+   * because the answer is cached (`PUBLIC_PHOTO_LINK_TTL_MS`).
+   */
+  async publicMenu(): Promise<PublicMenuResponse> {
+    const categories = await this.prisma.menuCategory.findMany({
+      orderBy: [{ sort: 'asc' }, { slug: 'asc' }],
+      select: { id: true, slug: true, title: true, note: true, kind: true },
+    });
+    const items = await this.prisma.menuItem.findMany({
+      where: { active: true, showOnline: true },
+      orderBy: [{ sort: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+      select: {
+        menuCategoryId: true,
+        slug: true,
+        name: true,
+        description: true,
+        priceKobo: true,
+        signature: true,
+        groupLabel: true,
+        choiceLabel: true,
+        choiceOptions: true,
+        photo: true,
+        photoAlt: true,
+      },
+    });
+
+    const answered = await Promise.all(
+      items.map(async (item) => ({
+        menuCategoryId: item.menuCategoryId,
+        response: {
+          slug: item.slug,
+          name: item.name,
+          description: item.description,
+          priceKobo: item.priceKobo,
+          signature: item.signature,
+          group: item.groupLabel,
+          choice:
+            item.choiceLabel !== null && item.choiceOptions.length > 0
+              ? { label: item.choiceLabel, options: item.choiceOptions }
+              : null,
+          photoUrl: await this.photos.signedUrlOrNull(
+            item.photo,
+            PUBLIC_PHOTO_LINK_TTL_MS,
+          ),
+          photoAlt: item.photoAlt,
+        } satisfies PublicMenuItemResponse,
+      })),
+    );
+
+    return {
+      categories: categories
+        .map((category) => ({
+          slug: category.slug,
+          title: category.title,
+          note: category.note,
+          kind: category.kind,
+          items: answered
+            .filter((item) => item.menuCategoryId === category.id)
+            .map((item) => item.response),
+        }))
+        .filter((category) => category.items.length > 0),
+    };
   }
 
   /** The row as the API answers it, field by field, with a signed photo. */

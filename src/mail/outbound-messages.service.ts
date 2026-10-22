@@ -140,6 +140,35 @@ export class OutboundMessagesService {
   }
 
   /**
+   * Give up, in the caller's transaction, every message still waiting for
+   * `to`: its payload is cleared and the sweep never sends it. For an
+   * address that must receive nothing more (a deleted account, Q36).
+   * Returns how many were given up.
+   */
+  async abandonTo(
+    tx: MessageWriter,
+    to: string,
+    reason: string,
+  ): Promise<number> {
+    const { count } = await tx.outboundMessage.updateMany({
+      where: {
+        to,
+        status: {
+          in: [OutboundMessageStatus.PENDING, OutboundMessageStatus.FAILED],
+        },
+        payload: { not: null },
+      },
+      data: {
+        status: OutboundMessageStatus.FAILED,
+        payload: null,
+        lastError: reason,
+      },
+    });
+
+    return count;
+  }
+
+  /**
    * Send one queued message now. Never throws: whatever happens is recorded
    * on the row, and the sweep takes it from there.
    */
@@ -288,7 +317,13 @@ export class OutboundMessagesService {
     }
 
     try {
-      await this.transport.send({ to: row.to, ...mail });
+      // Replies reach CNC's inbox (`CNC_CONTACT_EMAIL`): the sender
+      // address only sends (the founder's Q19 note, 2026-10-22).
+      await this.transport.send({
+        to: row.to,
+        ...mail,
+        replyTo: this.config.contactEmail,
+      });
     } catch (error) {
       const attempts = row.attempts + 1;
       const reason =
