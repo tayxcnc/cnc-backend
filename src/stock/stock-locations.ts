@@ -2,7 +2,19 @@ import {
   StaffRole,
   StockKind,
   StockLocation,
+  StockMovementType,
 } from '../../generated/cnc-client';
+
+/**
+ * The Store-side movement type for an issue to each location (the demo's
+ * "Issue to Kitchen", "Issue to Bar"). One map for the direct issue
+ * (`stock.issue`) and a request's issue (`request.issue`), so the same
+ * transfer is recorded under the same type whichever route made it.
+ */
+export const ISSUE_TYPE = {
+  [StockLocation.KITCHEN]: StockMovementType.ISSUE_TO_KITCHEN,
+  [StockLocation.BAR]: StockMovementType.ISSUE_TO_BAR,
+} as const;
 
 /**
  * The one location a role reads on Stock & Requests (plan §5.4, §6.1): a

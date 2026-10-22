@@ -14,6 +14,7 @@ import {
   STORE_WASTE_ONLY_MESSAGE,
 } from './waste-messages';
 import {
+  fitsValueColumn,
   isWasteReason,
   ownLocationProblem,
   qtyReasonProblem,
@@ -22,6 +23,15 @@ import {
 } from './waste-rules';
 
 describe('waste rules', () => {
+  describe('fitsValueColumn', () => {
+    it('admits a value an Int holds and refuses one it does not', () => {
+      expect(fitsValueColumn(0)).toBe(true);
+      expect(fitsValueColumn(INT4_MAX)).toBe(true);
+      expect(fitsValueColumn(INT4_MAX + 1)).toBe(false);
+      expect(fitsValueColumn(10000 * 250000)).toBe(false);
+    });
+  });
+
   describe('wasteLocationFor (the screens’ scope)', () => {
     it('gives each logging role its own location', () => {
       expect(wasteLocationFor(StaffRole.KITCHEN)).toBe(StockLocation.KITCHEN);

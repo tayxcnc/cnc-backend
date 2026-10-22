@@ -36,7 +36,11 @@ import type {
   StockRequestResponse,
 } from './dto/stock-requests.response';
 import { StockLedgerService } from './stock-ledger.service';
-import { locationHolds, scopedStockLocation } from './stock-locations';
+import {
+  ISSUE_TYPE,
+  locationHolds,
+  scopedStockLocation,
+} from './stock-locations';
 import {
   ISSUE_ITEM_MESSAGE,
   ISSUE_LOCATION_MESSAGE,
@@ -82,12 +86,6 @@ const ITEM_COLUMNS = {
 } satisfies Prisma.StockItemSelect;
 
 type ItemRow = Prisma.StockItemGetPayload<{ select: typeof ITEM_COLUMNS }>;
-
-/** The movement type for an issue to each location (the demo's "Issue to …"). */
-const ISSUE_TYPE = {
-  [StockLocation.KITCHEN]: StockMovementType.ISSUE_TO_KITCHEN,
-  [StockLocation.BAR]: StockMovementType.ISSUE_TO_BAR,
-} as const;
 
 /** One request as the routes answer it. */
 function toResponse(

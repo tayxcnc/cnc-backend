@@ -46,8 +46,10 @@ import {
   EDIT_QTY_REASON_MESSAGE,
   REVIEW_PENDING_WASTE_MESSAGE,
   WASTE_NOT_FOUND_MESSAGE,
+  WASTE_VALUE_TOO_LARGE_MESSAGE,
 } from './waste-messages';
 import {
+  fitsValueColumn,
   ownLocationProblem,
   qtyReasonProblem,
   statusMove,
@@ -259,6 +261,12 @@ export class WasteService {
     // `qtyReasonProblem` has proved a whole quantity and a waste reason.
     const qty = request.qty as number;
     const reason = request.reason as WasteReason;
+    const valueKobo = await stockValueKobo(tx, item, qty);
+
+    if (!fitsValueColumn(valueKobo)) {
+      throw new BadRequestException(CREATE_QTY_REASON_MESSAGE);
+    }
+
     const row = await tx.wasteEntry.create({
       data: {
         number: await drawNumber(tx, 'waste'),
@@ -267,7 +275,7 @@ export class WasteService {
         qty,
         reason,
         note: request.note ?? '',
-        valueKobo: await stockValueKobo(tx, item, qty),
+        valueKobo,
         createdById: actor.id,
       },
       select: WASTE_COLUMNS,
@@ -324,6 +332,10 @@ export class WasteService {
       const qty = request.qty as number;
       const reason = request.wasteReason as WasteReason;
       const valueKobo = await stockValueKobo(tx, item, qty);
+
+      if (!fitsValueColumn(valueKobo)) {
+        throw new BadRequestException(EDIT_QTY_REASON_MESSAGE);
+      }
 
       await this.money.withinLimit(tx, actor, {
         amountKobo: valueKobo,
@@ -539,6 +551,12 @@ export class WasteService {
     action: string,
   ): Promise<number> {
     const valueKobo = await this.decisionValueKobo(tx, entry);
+
+    // Before the limits, so every role gets the same answer: the Owner is
+    // exempt from them and would otherwise reach the column as a 500.
+    if (!fitsValueColumn(valueKobo)) {
+      throw new ConflictException(WASTE_VALUE_TOO_LARGE_MESSAGE);
+    }
 
     await this.money.withinLimit(tx, actor, {
       amountKobo: valueKobo,

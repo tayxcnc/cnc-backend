@@ -12,6 +12,7 @@ import {
 } from './asset-messages';
 import {
   assetFieldsProblem,
+  assetStatusAfterRepairs,
   assetStatusForRepair,
   followUpTitle,
   isRepairStatus,
@@ -96,6 +97,30 @@ describe('repair statuses', () => {
       AssetStatus.ACTIVE,
     );
     expect(assetStatusForRepair(MaintenanceStatus.NOT_FIXED)).toBe(
+      AssetStatus.INACTIVE,
+    );
+  });
+});
+
+describe('assetStatusAfterRepairs', () => {
+  const { PENDING, IN_PROGRESS, FIXED, NOT_FIXED } = MaintenanceStatus;
+
+  it('is Active for an asset with no repairs', () => {
+    expect(assetStatusAfterRepairs([])).toBe(AssetStatus.ACTIVE);
+  });
+
+  it('stays Under Repair while any repair is open, newest or not', () => {
+    expect(assetStatusAfterRepairs([FIXED, IN_PROGRESS])).toBe(
+      AssetStatus.UNDER_REPAIR,
+    );
+    expect(assetStatusAfterRepairs([PENDING])).toBe(AssetStatus.UNDER_REPAIR);
+  });
+
+  it('follows the newest repair once all are closed', () => {
+    expect(assetStatusAfterRepairs([FIXED, NOT_FIXED])).toBe(
+      AssetStatus.ACTIVE,
+    );
+    expect(assetStatusAfterRepairs([NOT_FIXED, FIXED])).toBe(
       AssetStatus.INACTIVE,
     );
   });

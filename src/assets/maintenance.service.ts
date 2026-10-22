@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  AssetStatus,
   type MaintenanceStatus,
   Prisma,
   TaskStatus,
@@ -17,6 +18,7 @@ import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
+import { sentId } from '../common/sent-id';
 import { watToday } from '../common/wat';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
@@ -41,6 +43,7 @@ import type {
 } from './dto/assets.request';
 import type { RepairPageResponse, RepairResponse } from './dto/assets.response';
 import {
+  assetStatusAfterRepairs,
   assetStatusForRepair,
   followUpTitle,
   isRepairStatus,
@@ -76,11 +79,6 @@ const REPAIR_COLUMNS = {
 type RepairRow = Prisma.MaintenanceRecordGetPayload<{
   select: typeof REPAIR_COLUMNS;
 }>;
-
-/** An id field as sent: a non-blank string, or nothing. */
-function sentId(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
 
 /** What an audit row says about a repair: names and dates, never ids. */
 function auditFields(row: RepairRow, assetTag: string, vendorName: string) {
@@ -291,6 +289,10 @@ export class MaintenanceService {
       data: { status: assetStatus, version: { increment: 1 } },
     });
 
+    if (current !== null && current.assetId !== asset.id) {
+      await this.releaseAsset(tx, current.assetId);
+    }
+
     if (taskId !== undefined) {
       await this.linkTask(tx, actor, taskId, saved.id);
     } else if (current === null) {
@@ -342,6 +344,32 @@ export class MaintenanceService {
     const [answer] = await this.answerMany(tx, [saved]);
 
     return answer;
+  }
+
+  /**
+   * The asset a repair was moved off (an update naming another asset):
+   * while it stands Under Repair it follows its remaining repairs
+   * (`assetStatusAfterRepairs`), so a repair logged on the wrong asset and
+   * corrected does not leave that asset Under Repair with no open repair.
+   * Any other status is left as it is: Active or Inactive may be a
+   * manager's own choice on `asset.save`, while Under Repair with nothing
+   * open is only ever a moved repair's leftover. One conditional update,
+   * as for the repair's own asset, so the version moves only on a change.
+   */
+  private async releaseAsset(tx: Tx, assetId: string): Promise<void> {
+    const remaining = await tx.maintenanceRecord.findMany({
+      where: { assetId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { status: true },
+    });
+    const status = assetStatusAfterRepairs(remaining.map((r) => r.status));
+
+    if (status === AssetStatus.UNDER_REPAIR) return;
+
+    await tx.asset.updateMany({
+      where: { id: assetId, status: AssetStatus.UNDER_REPAIR },
+      data: { status, version: { increment: 1 } },
+    });
   }
 
   /**

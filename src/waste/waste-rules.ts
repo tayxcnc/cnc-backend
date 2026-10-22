@@ -93,6 +93,17 @@ export function qtyReasonProblem(
   return wholeQty && isWasteReason(reason) ? null : message;
 }
 
+/**
+ * Whether a write-off's value fits `WasteEntry.valueKobo`, an `Int`. The
+ * quantity is capped, but a capped quantity times a menu price is not: a
+ * typed 10000 for 10 of a ₦2,500 drink is 2,500,000,000 kobo. A value that
+ * does not fit is refused with the command's own sentence rather than
+ * reaching Postgres as a 500 (*Data and migrations*).
+ */
+export function fitsValueColumn(valueKobo: number): boolean {
+  return valueKobo <= INT4_MAX;
+}
+
 /** One stock movement a status change makes, as the demo's `waste.status` moves it. */
 export interface StatusMove {
   /** The sign the entry's quantity moves with: −1 takes it, +1 returns it. */

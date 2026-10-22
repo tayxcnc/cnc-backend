@@ -43,6 +43,15 @@ export const WASTE_STATUS_MESSAGE = 'Select a waste record and valid status.';
 export const REVIEW_PENDING_WASTE_MESSAGE =
   'Only pending waste can be reviewed.';
 
+/**
+ * `waste.approve` and `waste.status` to Approved on an entry valued, at the
+ * decision, above what its value column holds (409). New: the demo has no
+ * column limit. A price or cost raised since the entry was logged is the
+ * only way there, so the entry's quantity is what to correct.
+ */
+export const WASTE_VALUE_TOO_LARGE_MESSAGE =
+  'This write-off is worth more than can be recorded. Correct its quantity first.';
+
 /** A waste filter naming an unknown view (400). New. */
 export const WASTE_VIEW_MESSAGE = 'Choose Pending, History or All.';
 

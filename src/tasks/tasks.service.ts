@@ -3,12 +3,8 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
-import {
-  MaintenanceStatus,
-  Prisma,
-  TaskStatus,
-  TaskType,
-} from '../../generated/cnc-client';
+import { Prisma, TaskStatus, TaskType } from '../../generated/cnc-client';
+import { isResolved } from '../assets/maintenance-rules';
 import { AuditService, staffActor } from '../audit/audit.service';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import { isManager } from '../auth/staff-roles';
@@ -16,6 +12,7 @@ import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
+import { sentId } from '../common/sent-id';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
@@ -69,17 +66,6 @@ const TASK_COLUMNS = {
 } satisfies Prisma.TaskSelect;
 
 type TaskRow = Prisma.TaskGetPayload<{ select: typeof TASK_COLUMNS }>;
-
-/** The repairs a task can no longer be linked to (the demo's closed repairs). */
-const CLOSED_REPAIRS: readonly MaintenanceStatus[] = [
-  MaintenanceStatus.FIXED,
-  MaintenanceStatus.NOT_FIXED,
-];
-
-/** An id field as sent: a non-blank string, or nothing. */
-function sentId(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
 
 /** A save's fields as the rules read them. */
 function saveOf(request: CreateTaskRequest | UpdateTaskRequest): TaskSave {
@@ -345,8 +331,7 @@ export class TasksService {
             });
       const open =
         repair !== null &&
-        (!CLOSED_REPAIRS.includes(repair.status) ||
-          repair.id === stored?.maintenanceId);
+        (!isResolved(repair.status) || repair.id === stored?.maintenanceId);
 
       if (!open) throw new BadRequestException(OPEN_MAINTENANCE_MESSAGE);
     }

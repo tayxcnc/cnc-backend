@@ -18,6 +18,7 @@ import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
+import { sentId } from '../common/sent-id';
 import {
   LIMITED_DECISIONS,
   MoneyControlService,
@@ -148,13 +149,6 @@ function purchaseSearch(q: string): Prisma.PurchaseWhereInput {
       { lines: { some: { vendor: { name: contains } } } },
     ],
   };
-}
-
-/** The vendor id a plain line object carries, or undefined. */
-function lineVendorId(line: PurchaseLineRequest): string | undefined {
-  const value = (line as unknown as Record<string, unknown>).vendorId;
-
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
 /**
@@ -795,7 +789,9 @@ export class PurchasesService {
    * Check a requisition's lines against the database, line by line, in the
    * demo's order: `purchase.create` checks the vendor and then the item and
    * cost, `purchase.edit` the other way round. The list's own rules
-   * (empty, duplicates, quantities) were checked by the DTO.
+   * (empty, duplicates, quantities) were checked by the DTO; each line's
+   * item is checked only here, so a line with neither a vendor nor an item
+   * answers the vendor sentence on a create, as in the demo.
    */
   private async checkLines(
     tx: Tx,
@@ -810,7 +806,7 @@ export class PurchasesService {
 
     for (const line of lines) {
       const vendorCheck = async () => {
-        const vendorId = lineVendorId(line) ?? rules.defaultVendorId;
+        const vendorId = sentId(line.vendorId) ?? rules.defaultVendorId;
         const vendor =
           vendorId === undefined
             ? null
@@ -826,10 +822,17 @@ export class PurchasesService {
         return vendor;
       };
       const itemCheck = async () => {
-        const item = await tx.stockItem.findUnique({
-          where: { id: line.stockItemId },
-          select: { id: true, name: true },
-        });
+        // The lines are plain objects: the DTO checks the list, not each
+        // line's item (`purchaseLines`), so a blank or non-text id is read
+        // here as no item, in the command's own sentence.
+        const stockItemId = sentId(line.stockItemId);
+        const item =
+          stockItemId === undefined
+            ? null
+            : await tx.stockItem.findUnique({
+                where: { id: stockItemId },
+                select: { id: true, name: true },
+              });
 
         if (item === null || !isLineCost(line.costKobo)) {
           throw new BadRequestException(rules.itemCostMessage);

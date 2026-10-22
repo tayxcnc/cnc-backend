@@ -123,6 +123,24 @@ export function assetStatusForRepair(status: MaintenanceStatus): AssetStatus {
 }
 
 /**
+ * The status an asset's repairs leave it at, given their statuses newest
+ * first: Under Repair while any is still open, else as its newest repair
+ * left it (`assetStatusForRepair`), else Active when it has none. Used for
+ * the asset a repair is moved off, which no save of its own would update.
+ */
+export function assetStatusAfterRepairs(
+  newestFirst: readonly MaintenanceStatus[],
+): AssetStatus {
+  if (newestFirst.some((status) => !isResolved(status))) {
+    return AssetStatus.UNDER_REPAIR;
+  }
+
+  return newestFirst.length === 0
+    ? AssetStatus.ACTIVE
+    : assetStatusForRepair(newestFirst[0]);
+}
+
+/**
  * The resolved date after a save (plan §17, R3): set once, to today, on the
  * first move to Fixed or Not Fixed, and never reset after. The demo set it
  * to today on every save of a closed repair, so editing a fixed repair's

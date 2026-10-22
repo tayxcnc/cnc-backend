@@ -47,7 +47,12 @@ import type {
 } from './dto/stock.response';
 import { assertStockNameFree, rethrowStockNameClash } from './stock-item-name';
 import { StockLedgerService } from './stock-ledger.service';
-import { isLow, locationHolds, scopedStockLocation } from './stock-locations';
+import {
+  ISSUE_TYPE,
+  isLow,
+  locationHolds,
+  scopedStockLocation,
+} from './stock-locations';
 import {
   COUNT_ROLE_MESSAGE,
   ISSUE_ITEM_MESSAGE,
@@ -87,12 +92,6 @@ function auditView(item: StockItemRow) {
     minimum: item.minimum,
   };
 }
-
-/** The movement type for a direct issue to each destination. */
-const ISSUE_TYPE = {
-  [StockLocation.KITCHEN]: StockMovementType.ISSUE_TO_KITCHEN,
-  [StockLocation.BAR]: StockMovementType.ISSUE_TO_BAR,
-} as const;
 
 /**
  * Stock & Requests' stock core (plan §5.4, §7.6; card C4-2): balances and

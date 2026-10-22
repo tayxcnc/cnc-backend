@@ -696,6 +696,18 @@ describe('Vendors and purchases (e2e)', () => {
         [[riceLine(1, 10.5)], CREATE_LINE_ITEM_COST_MESSAGE],
         // The vendor is checked before the item, as in the demo.
         [[{ ...riceLine(1, 0), vendorId: inactive.id }], ACTIVE_VENDOR_MESSAGE],
+        // The staff app's untouched new line: neither vendor nor item. The
+        // demo's `positiveLines` never checks the item, so the vendor
+        // sentence comes first.
+        [[{ stockItemId: '', qty: 1, costKobo: 0 }], ACTIVE_VENDOR_MESSAGE],
+        [
+          [{ ...riceLine(1, 100), stockItemId: '' }],
+          CREATE_LINE_ITEM_COST_MESSAGE,
+        ],
+        [
+          [{ ...riceLine(1, 100), stockItemId: 7 }],
+          CREATE_LINE_ITEM_COST_MESSAGE,
+        ],
       ];
 
       for (const [lines, message] of cases) {
@@ -1127,6 +1139,12 @@ describe('Vendors and purchases (e2e)', () => {
         reason: 'x',
       }).expect(400);
       expect(messageOf(badCost)).toBe(EDIT_LINE_ITEM_COST_MESSAGE);
+      // Neither item nor vendor: the edit asks for the item first.
+      const blank = await edit('manager', small, {
+        lines: [{ stockItemId: '', qty: 1, costKobo: 0 }],
+        reason: 'x',
+      }).expect(400);
+      expect(messageOf(blank)).toBe(EDIT_LINE_ITEM_COST_MESSAGE);
 
       const noReason = await edit('manager', small, {
         lines: [riceLine(1, 100)],

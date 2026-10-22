@@ -23,6 +23,7 @@ import {
   ownRecordMessage,
 } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
+import { INT4_MAX } from '../src/prisma/int4';
 import { STALE_VERSION_MESSAGE } from '../src/prisma/optimistic-version';
 import { StockLedgerService } from '../src/stock/stock-ledger.service';
 import {
@@ -40,6 +41,7 @@ import {
   STORE_WASTE_ONLY_MESSAGE,
   WASTE_NOT_FOUND_MESSAGE,
   WASTE_STATUS_MESSAGE,
+  WASTE_VALUE_TOO_LARGE_MESSAGE,
   WASTE_VIEW_MESSAGE,
 } from '../src/waste/waste-messages';
 import { createTestApp } from './create-test-app';
@@ -826,6 +828,65 @@ describe('Waste (e2e)', () => {
 
       const stale = await edit('manager', entry, good).expect(409);
       expect(messageOf(stale)).toBe(STALE_VERSION_MESSAGE);
+    });
+
+    it('refuses a value its column cannot hold with the command’s sentence, never a 500', async () => {
+      // A quantity within an Int whose value at the drink's price is not.
+      const tooMany = Math.floor(INT4_MAX / drink.priceKobo) + 1;
+      const bar = { location: 'BAR', stockItemId: drink.id };
+
+      const created = await create('bartender', {
+        ...bar,
+        qty: tooMany,
+        reason: 'SPILLED',
+      }).expect(400);
+      expect(sentencesOf(created)).toEqual([CREATE_QTY_REASON_MESSAGE]);
+
+      const entry = await log('bartender', StockLocation.BAR, drink.id, 1);
+      const edited = await edit('owner', entry, {
+        ...bar,
+        qty: tooMany,
+        wasteReason: 'SPILLED',
+        reason: 'Typo',
+      }).expect(400);
+      expect(sentencesOf(edited)).toEqual([EDIT_QTY_REASON_MESSAGE]);
+
+      // A price raised after the entry was logged: valued afresh at the
+      // decision, the approval cannot be recorded either, for the Owner too.
+      const menuItemId = (
+        await prisma.stockItem.findUniqueOrThrow({
+          where: { id: drink.id },
+          select: { menuItemId: true },
+        })
+      ).menuItemId!;
+      const fits = await log(
+        'bartender',
+        StockLocation.BAR,
+        drink.id,
+        tooMany - 1,
+      );
+
+      await prisma.menuItem.update({
+        where: { id: menuItemId },
+        data: { priceKobo: drink.priceKobo * 2 },
+      });
+
+      try {
+        for (const [path, body] of [
+          ['approve', {}],
+          ['status', { status: 'APPROVED', reason: 'Seen' }],
+        ] as const) {
+          const refused = await command('owner', fits, path, body).expect(409);
+          expect(messageOf(refused)).toBe(WASTE_VALUE_TOO_LARGE_MESSAGE);
+        }
+      } finally {
+        await prisma.menuItem.update({
+          where: { id: menuItemId },
+          data: { priceKobo: drink.priceKobo },
+        });
+      }
+
+      expect((await stored(fits.id)).status).toBe(WasteStatus.PENDING);
     });
 
     it('applies the limits and the own-record rule when a status change approves, and moves stock both ways', async () => {

@@ -518,6 +518,49 @@ describe('Assets and maintenance (e2e)', () => {
       expect((await assetRow(fan.id)).status).toBe(AssetStatus.INACTIVE);
     });
 
+    it('releases the asset a repair is moved off, unless another repair on it is open', async () => {
+      const wrong = await newAsset('TV1', 'Lounge television');
+      const right = await newAsset('TV2', 'Bar television');
+      const repair = (body: Record<string, unknown>) => ({
+        vendorId,
+        description: 'No picture',
+        costKobo: 0,
+        status: MaintenanceStatus.PENDING,
+        ...body,
+      });
+      const logged = (
+        await logRepair('reception', repair({ assetId: wrong.id })).expect(201)
+      ).body as Repair;
+
+      expect((await assetRow(wrong.id)).status).toBe(AssetStatus.UNDER_REPAIR);
+
+      const moved = (
+        await updateRepair(
+          'reception',
+          logged.id,
+          repair({ assetId: right.id, version: logged.version }),
+        ).expect(200)
+      ).body as Repair;
+
+      expect(moved.assetId).toBe(right.id);
+      expect((await assetRow(right.id)).status).toBe(AssetStatus.UNDER_REPAIR);
+      expect((await assetRow(wrong.id)).status).toBe(AssetStatus.ACTIVE);
+
+      // With a repair of its own still open, the asset stays Under Repair.
+      await logRepair('reception', repair({ assetId: wrong.id })).expect(201);
+      const second = (
+        await logRepair('reception', repair({ assetId: wrong.id })).expect(201)
+      ).body as Repair;
+
+      await updateRepair(
+        'reception',
+        second.id,
+        repair({ assetId: right.id, version: second.version }),
+      ).expect(200);
+
+      expect((await assetRow(wrong.id)).status).toBe(AssetStatus.UNDER_REPAIR);
+    });
+
     it('links the task a repair is logged for, instead of raising a follow-up', async () => {
       const printer = await newAsset('PRN1', 'Docket printer');
       const raised = await request(server())

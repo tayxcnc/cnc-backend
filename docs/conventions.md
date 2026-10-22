@@ -129,7 +129,18 @@ They are here so the first card that builds it starts from the rule.
   answers the demo's `positiveLines` sentences in its order (empty,
   duplicates, quantities), then the command's own sentence for a bad item
   id. The lines stay plain objects, and a service reads only the keys the
-  rules name.
+  rules name. A command that checks each line's item in its own order
+  against another field passes `idMessage: null` and checks the item
+  itself (from C5: purchases, whose create asks for the vendor first);
+  `positiveLines` never looks at the item, so a DTO refusal of it would
+  answer before a sentence the demo gives first.
+- **An id field read in a service is read through `sentId`
+  (`src/common/sent-id.ts`): a non-blank string, or undefined for anything
+  else** (from C5: tasks, repairs and purchase lines). A service that
+  judges a field itself, in the demo's order, needs the plain answer to
+  "was an id sent"; one copy keeps the three commands agreeing on it, and
+  a non-text id becomes the command's sentence instead of a Prisma
+  validation 500.
 - **A business date in a request or query is checked with
   `@Checked(calendarDate(sentence))` (`src/common/checked.ts`)** (from C4).
   It accepts a real `YYYY-MM-DD` day only (`parseIsoDate`) and answers the
@@ -1055,6 +1066,9 @@ They are here so the first card that builds it starts from the rule.
   How Many in One at the request's location (`STOCK_RECEIVED`), both through
   `StockLedgerService.move` with the request number as the ref** (plan
   §7.6). The C5 gate's step 4 is two bags of rice: Store −2, Kitchen +100.
+  The Store-side type comes from `ISSUE_TYPE` (`src/stock/stock-locations.ts`),
+  the one map the direct issue uses too, so the same transfer is recorded
+  under the same type whichever route made it.
 - **An issue's packs are judged in the service, not the DTO
   (`issueProblem`), because the demo's sentence names the item's pack:
   "Enter a whole number of bags within the remaining request."** The DTO
@@ -1174,8 +1188,12 @@ They are here so the first card that builds it starts from the rule.
   duplicates, quantities) come first, from `@ValidLines`.** The cost is
   checked in the service (`isLineCost`), beside the item, because the
   demo's one sentence names both ("Choose a stock item and positive unit
-  cost."). One exception: a blank item id is refused by `@ValidLines` with
-  the item sentence before any vendor is looked at.
+  cost."). The item id itself is left to the service too (`@ValidLines`
+  with `idMessage: null`; a blank or non-text id reads as no item through
+  `sentId`): the demo's `positiveLines` never checks the item, so the
+  staff app's untouched new line, with neither vendor nor item, answers
+  "Choose an active vendor for every line." on a create, as in the demo
+  (C5 review; it used to answer the item sentence, refused in the DTO).
 - **`vendor.save` replaces the whole profile, and changes `isActive` only
   when it is sent** (R2's rule for staff accounts, applied to vendors). The
   demo made a vendor Active again whenever the form left the status out; a
@@ -1250,6 +1268,39 @@ They are here so the first card that builds it starts from the rule.
   made). A purchase recorded between the logging and the approval would
   otherwise let a write-off be approved at a stale, smaller value, and the
   row then holds the value the decision was judged on.
+- **A value `WasteEntry.valueKobo` (an `Int`) cannot hold is refused
+  before it is written (`fitsValueColumn`): on `waste.create` and
+  `waste.edit` with the command's quantity sentence, 400; on an approval
+  with "This write-off is worth more than can be recorded. Correct its
+  quantity first." (new), 409, before the limits** (C5 review). The
+  quantity is capped at `INT4_MAX`, but a capped quantity times a menu
+  price is not (a typed 10000 for 10 of a ₦2,500 drink), and Postgres
+  would answer 500 (*Data and migrations*). The approval's check comes
+  before the limits because the Owner is exempt from them; it is a 409
+  because the request is sound and the entry's state is what blocks it (a
+  price raised after the entry was logged is the only way there).
+- **Two money-control points raised in the C5 review wait on the founder,
+  not on code** (recorded so they are not mistaken for oversights):
+  - *The pack cost comes from any requisition that is not Rejected or
+    Cancelled, Pending included* (`latestPackCostKobo`, the demo's
+    `wasteValue`). Whoever raises a requisition therefore sets the cost
+    that waste, the approvals prediction and the Q28 count limit are judged
+    on, before any manager has reviewed it; with Store waste valued per
+    unit, that is a way under the Owner Approval Limit. Q25's own default
+    ("latest cost would mean the most recently received line", Store waste
+    per pack) closes both, and the plan ports the coded formula until Q25
+    is answered; changing it is a pricing rule, not an implementation
+    choice. Answering Q25 changes `COSTLESS_PURCHASES` to an allow-list
+    (received lines, or Approved and Fulfilled purchases).
+  - *A correction of an approved entry (`waste.edit`, and `purchase.edit`
+    of an Approved requisition) is held to the Owner Approval Limit only*
+    (plan §6.2 "edit: L"; the demo's `withinLimit` without counting), so a
+    manager can raise an approved value past the Daily Approval Limit, or
+    raise their own record after a colleague approved it. Counting the
+    increase toward the day and applying the own-record rule (as
+    `order.discount` counts "the increase only"), or sending a raised
+    approved record back to Pending, is a change to the approved rule
+    table and needs the founder's agreement, as §17's corrections had.
 - **An approval (`waste.approve`, and `waste.status` to Approved from any
   other status) runs `MoneyControlService.withinLimit` with
   `LIMITED_DECISIONS.writeOff`, counted toward the day, then `notOwn` with
@@ -1422,6 +1473,15 @@ They are here so the first card that builds it starts from the rule.
   rule; a manager's open asset form is made stale only by a real change,
   and the comparison is on the row as it stands, so two repairs on one
   asset cannot leave it on a status read before the other's save.
+- **A repair moved to another asset releases the one it left: if that
+  asset stands Under Repair, it follows its remaining repairs (Under
+  Repair while one is open, else as its newest left it, else Active;
+  `assetStatusAfterRepairs`), in the same transaction** (C5 review). The
+  demo set only the named asset, so a repair logged on the wrong asset and
+  corrected left that asset Under Repair with no open repair until a
+  manager noticed. Active or Inactive are left alone: either may be a
+  manager's own choice on `asset.save`, while Under Repair with nothing
+  open is only ever a moved repair's leftover.
 - **The resolved date is set once, to the Lagos date of the first move to
   Fixed or Not Fixed, and kept after, a reopened repair included; the
   reported date is the date the repair was logged** (plan §17, R3,

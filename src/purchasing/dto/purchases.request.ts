@@ -21,8 +21,6 @@ import {
 } from '../purchase-rules';
 import {
   ACTIVE_VENDOR_MESSAGE,
-  CREATE_LINE_ITEM_COST_MESSAGE,
-  EDIT_LINE_ITEM_COST_MESSAGE,
   PURCHASE_VIEW_MESSAGE,
   PURCHASING_NOTE_MAX_LENGTH,
   STATUS_RECEIVE_MESSAGE,
@@ -68,9 +66,15 @@ export class PurchaseLineRequest {
   vendorId?: string;
 }
 
-/** The line-list rules, answering the command's item sentence for a bad item id. */
-const purchaseLines = (itemMessage: string) =>
-  ValidLines({ ...POSITIVE_STOCK_LINES, idMessage: itemMessage });
+/**
+ * The line-list rules: the demo's `positiveLines` only (empty, duplicates,
+ * quantities). Each line's item is checked in the service with its cost,
+ * in the command's order against the vendor (`purchase.create` asks for
+ * the vendor first), so a line with neither answers the vendor sentence on
+ * a create, as in the demo.
+ */
+const purchaseLines = () =>
+  ValidLines({ ...POSITIVE_STOCK_LINES, idMessage: null });
 
 const LINES_DESCRIPTION =
   `"${LINES_EMPTY_MESSAGE}", "${LINES_DUPLICATE_MESSAGE}" for an item named ` +
@@ -93,7 +97,7 @@ export class CreatePurchaseRequest {
     isArray: true,
     description: LINES_DESCRIPTION,
   })
-  @purchaseLines(CREATE_LINE_ITEM_COST_MESSAGE)
+  @purchaseLines()
   lines!: PurchaseLineRequest[];
 
   @ApiPropertyOptional({
@@ -115,7 +119,7 @@ export class EditPurchaseRequest extends VersionedWriteDto {
       'with received goods the Store moves by each line’s new quantity less ' +
       'what was received.',
   })
-  @purchaseLines(EDIT_LINE_ITEM_COST_MESSAGE)
+  @purchaseLines()
   lines!: PurchaseLineRequest[];
 
   @ApiPropertyOptional({
