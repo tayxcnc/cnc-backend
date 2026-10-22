@@ -20,7 +20,11 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
-import { CodeRequestThrottle, SignInThrottle } from '../auth/auth-throttle';
+import {
+  CodeRequestThrottle,
+  ProfileSaveThrottle,
+  SignInThrottle,
+} from '../auth/auth-throttle';
 import type { CustomerPrincipal } from '../auth/customer-principal';
 import { CurrentCustomer } from '../auth/decorators/current-customer.decorator';
 import { CncCustomerGuard } from '../auth/guards/cnc-customer.guard';
@@ -104,6 +108,8 @@ export class CustomerMeController {
   }
 
   @Patch()
+  @UseGuards(ClientAddressThrottlerGuard)
+  @ProfileSaveThrottle()
   @Header('Cache-Control', 'no-store')
   @ApiOperation({
     operationId: 'updateCustomerProfile',
@@ -139,6 +145,7 @@ export class CustomerMeController {
     description: '"This phone number is already on another CNC account."',
     type: ApiErrorResponse,
   })
+  @ApiResponse(tooMany('per customer, 30 in 15 minutes'))
   update(
     @CurrentCustomer() customer: CustomerPrincipal,
     @Body() request: UpdateMeRequest,

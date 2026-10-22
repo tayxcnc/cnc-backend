@@ -48,7 +48,8 @@ describe('mail templates', () => {
       date: 'Sat 24 Oct 2026',
       time: '19:00',
       party: 2,
-      phone: '08022188797',
+      // As `ReservationMail` passes it: the site's form (`phoneForDisplay`).
+      phone: '0802 218 8797',
       accountUrl: 'https://tayxcnc.com/cnc/account',
     };
 
@@ -62,7 +63,7 @@ describe('mail templates', () => {
       expect(mail.text).toContain('Arrival: 19:00');
       expect(mail.text).toContain('Party: 2 guests');
       expect(mail.text).toContain(
-        'up to 24 hours before it starts. After that, please call CNC on 08022188797.',
+        'up to 24 hours before it starts. After that, please call CNC on 0802 218 8797.',
       );
       expect(mail.html).toContain('Ada &lt;b&gt;');
       expect(mail.html).not.toContain('Ada <b>');
@@ -107,7 +108,7 @@ describe('mail templates', () => {
       );
       expect(mail.text).toContain('Party: 2 guests');
       expect(mail.text).toContain(
-        'If you can no longer come, please call CNC on 08022188797. ' +
+        'If you can no longer come, please call CNC on 0802 218 8797. ' +
           'Nothing is charged.',
       );
       // Inside 24 hours the account can no longer change it.

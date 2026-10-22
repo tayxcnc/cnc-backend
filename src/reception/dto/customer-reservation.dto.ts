@@ -193,7 +193,12 @@ export class CustomerReservationResponse {
   @ApiProperty({ example: 'Ada Okafor' })
   name!: string;
 
-  @ApiProperty({ example: '' })
+  @ApiProperty({
+    example: '',
+    description:
+      'What the guest wrote in "Anything we should know?" when booking ' +
+      'online; blank for a booking Reception took. Never Reception’s own note.',
+  })
   note!: string;
 
   @ApiProperty({ enum: ReservationStatus, enumName: 'ReservationStatus' })

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '../../generated/cnc-client';
+import { phoneForDisplay } from '../common/nigerian-phone';
 import { CncConfigService } from '../config/cnc.config';
 import { bookingNotification } from '../customer-notifications/customer-notification-texts';
 import { CustomerNotificationsService } from '../customer-notifications/customer-notifications.service';
@@ -119,7 +120,10 @@ export class ReservationMail {
         date: bookingDateText(row.businessDate),
         time: clockText(row.startMinutes),
         party: row.party,
-        phone: business?.phone || 'the number on our website',
+        // Stored as digits; shown as the site shows it (Q6).
+        phone: business?.phone
+          ? phoneForDisplay(business.phone)
+          : 'the number on our website',
         accountUrl: this.config.buildWebUrl('/account') ?? null,
       },
       dedupeKey,

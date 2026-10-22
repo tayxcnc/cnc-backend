@@ -2,6 +2,10 @@ import { applyDecorators } from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { clientAddressOf } from '../common/client-address';
 import { normaliseEmail } from '../common/normalise-email';
+import {
+  CUSTOMER_PRINCIPAL_KEY,
+  type CustomerRequest,
+} from './customer-principal';
 import { STAFF_PRINCIPAL_KEY, type StaffRequest } from './staff-principal';
 
 /**
@@ -131,6 +135,54 @@ export function signedInStaffTracker(req: Record<string, unknown>): string {
   }
 
   return principal.id;
+}
+
+/**
+ * The signed-in customer, as `CncCustomerGuard` verified it. Throws when the
+ * guard has not run, for the reason `signedInStaffTracker` gives.
+ */
+export function signedInCustomerTracker(req: Record<string, unknown>): string {
+  const principal = (req as CustomerRequest)[CUSTOMER_PRINCIPAL_KEY];
+
+  if (principal === undefined) {
+    throw new Error(
+      'signedInCustomerTracker ran before CncCustomerGuard. List the ' +
+        'throttler after the customer guard on this route.',
+    );
+  }
+
+  return `customer:${principal.id}`;
+}
+
+/**
+ * Profile saves per signed-in customer in the window (`PATCH /me`). A
+ * phone number belongs to one account (`Customer.phone` is unique, plan
+ * §4.2), so the 409 for a number already taken says whether that number
+ * is a CNC customer's; without a number, one account could test a list
+ * of numbers. Thirty leaves room for a person flipping every switch on
+ * the Notifications panel twice; a list of numbers needs far more.
+ */
+export const PROFILE_SAVE_LIMIT = 30;
+
+/**
+ * `PATCH /me`, per customer from any address. The route lists the throttler
+ * after `CncCustomerGuard` (the controller's guard runs first), so a
+ * request without a valid token is refused before it is counted.
+ */
+export function ProfileSaveThrottle(): MethodDecorator {
+  return applyDecorators(
+    Throttle({
+      [THROTTLERS.account]: {
+        limit: PROFILE_SAVE_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+        getTracker: signedInCustomerTracker,
+      },
+    }),
+    SkipThrottle({
+      [THROTTLERS.address]: true,
+      [THROTTLERS.accountAnywhere]: true,
+    }),
+  );
 }
 
 /** `POST /auth/staff/sign-in`. */

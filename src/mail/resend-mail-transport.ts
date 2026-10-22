@@ -1,7 +1,11 @@
 import { Logger } from '@nestjs/common';
 import { type CreateEmailResponse, Resend } from 'resend';
 import type { CncConfigService } from '../config/cnc.config';
-import type { MailTransport, OutgoingMail } from './mail-transport';
+import {
+  MAIL_SEND_TIMEOUT_MS,
+  type MailTransport,
+  type OutgoingMail,
+} from './mail-transport';
 
 /**
  * Delivery through Resend with CNC's own key, copied from TAY's
@@ -54,20 +58,38 @@ export class ResendMailTransport implements MailTransport {
 
     let result: CreateEmailResponse;
 
+    let timer: NodeJS.Timeout | undefined;
+
     try {
-      result = await this.client.emails.send({
-        from,
-        to: mail.to,
-        subject: mail.subject,
-        html: mail.html,
-        text: mail.text,
-        replyTo: mail.replyTo,
-      });
+      result = await Promise.race([
+        this.client.emails.send(
+          {
+            from,
+            to: mail.to,
+            subject: mail.subject,
+            html: mail.html,
+            text: mail.text,
+            replyTo: mail.replyTo,
+          },
+          mail.idempotencyKey === undefined
+            ? undefined
+            : { idempotencyKey: mail.idempotencyKey },
+        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Resend did not answer in time.')),
+            MAIL_SEND_TIMEOUT_MS,
+          );
+        }),
+      ]);
     } catch (cause) {
       // Thrown rather than returned in `result.error`: the request never
-      // got an answer (DNS, TLS, a dead socket).
+      // got an answer (DNS, TLS, a dead socket, or none within
+      // `MAIL_SEND_TIMEOUT_MS`).
       this.logger.error(`Mail to ${mail.to} failed: no response from Resend.`);
       throw new Error('No response from Resend.', { cause });
+    } finally {
+      clearTimeout(timer);
     }
 
     if (result.error) {

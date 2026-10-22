@@ -22,6 +22,7 @@ import {
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
 import { watToday } from '../common/wat';
+import { lockCustomerEmail } from '../customers/customer-email-lock';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { verifiedCustomerId } from './customer-link';
 import { ReservationMail } from './reservation-mail';
@@ -100,6 +101,12 @@ export interface BookingInput {
   party: number;
   note: string;
   ipAddress: string;
+  /**
+   * The hashed client address of a website or app booking, which the
+   * stored booking caps count (`assertOnlineBookingCaps`); null for
+   * Reception's.
+   */
+  ipHash: string | null;
 }
 
 /**
@@ -146,6 +153,7 @@ export class ReservationsService {
       party: request.party,
       note: request.note ?? '',
       ipAddress,
+      ipHash: null,
     });
   }
 
@@ -196,6 +204,9 @@ export class ReservationsService {
       () =>
         tx.reservation.create({
           data: {
+            // On the service's clock (A11): the stored booking caps count
+            // creation times against it.
+            createdAt: now,
             number,
             tableId: table.id,
             customerId,
@@ -207,6 +218,12 @@ export class ReservationsService {
             party: input.party,
             source: input.source,
             note: input.note,
+            // The guest's own words, the only note they are shown; a
+            // Reception note is staff's (*Bookings from the website and the
+            // app*).
+            guestNote:
+              input.source === ReservationSource.RECEPTION ? '' : input.note,
+            ipHash: input.ipHash,
             // Q32: no reminder for a booking made under 24 hours ahead.
             reminderSentAt: initialReminderStamp(
               businessDate,
@@ -458,7 +475,7 @@ export class ReservationsService {
           const now = new Date();
           const found = await tx.reservation.findUnique({
             where: { id },
-            select: { tableId: true },
+            select: { tableId: true, customerId: true, email: true },
           });
 
           if (found === null) {
@@ -469,6 +486,19 @@ export class ReservationsService {
             found.tableId,
             request.tableId ?? found.tableId,
           ]);
+
+          // An unlinked booking may link below (`verifiedCustomerId`), which
+          // takes the email's lock. Taken here, before the claim locks the
+          // booking's row, in the order every path takes them (table, email,
+          // row): a first sign-in holds the email's lock and then updates
+          // the unlinked bookings' rows, so taking the row first could
+          // deadlock against it. A change to the booking between this read
+          // and the claim moves its version, and the claim refuses.
+          const linkEmail = request.email ?? found.email;
+
+          if (found.customerId === null && linkEmail !== '') {
+            await lockCustomerEmail(tx, linkEmail);
+          }
 
           const row = await this.claim(tx, id, request.version, false);
 

@@ -13,6 +13,7 @@ import type { AuditActor } from '../audit/audit.service';
 import { AuditService } from '../audit/audit.service';
 import type { CustomerPrincipal } from '../auth/customer-principal';
 import { formatIsoDate, parseIsoDate } from '../common/calendar-date';
+import { hashClientAddress } from '../common/client-address';
 import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
@@ -37,6 +38,7 @@ import {
   customerCapacityMessage,
   customerTakenMessage,
 } from './reception-messages';
+import { assertOnlineBookingCaps } from './booking-throttle';
 import { lockTables } from './reception-records';
 import { ReservationMail } from './reservation-mail';
 import {
@@ -64,7 +66,9 @@ const CUSTOMER_COLUMNS = {
   party: true,
   status: true,
   source: true,
-  note: true,
+  // The guest's own note, never Reception's (`note`): staff write that for
+  // each other, and Q35 links phone bookings to accounts.
+  guestNote: true,
   cancelledAt: true,
   createdAt: true,
   version: true,
@@ -125,6 +129,16 @@ export class CustomerReservationsService {
     // "no such table" (400), not a 404: the path names no record.
     if (table === null) throw new BadRequestException(CAPACITY_MESSAGE);
 
+    // The stored caps, before the command takes the table's lock: a script
+    // must not hold the floor or fill an inbox from one address.
+    const ipHash = hashClientAddress(ipAddress);
+
+    await assertOnlineBookingCaps(
+      tx,
+      { ipHash, email: request.email },
+      new Date(),
+    );
+
     const actor: AuditActor =
       customer === null
         ? { kind: 'SYSTEM', name: `Website guest ${request.name}` }
@@ -146,6 +160,7 @@ export class CustomerReservationsService {
       party: request.party,
       note: request.note ?? '',
       ipAddress,
+      ipHash,
     });
 
     return this.read(tx, made.id, new Date());
@@ -553,7 +568,7 @@ function customerReservation(
     startMinutes: row.startMinutes,
     party: row.party,
     name: row.name,
-    note: row.note,
+    note: row.guestNote,
     status: row.status,
     source: row.source,
     startsAt: bookingStart(row.businessDate, row.startMinutes).toISOString(),

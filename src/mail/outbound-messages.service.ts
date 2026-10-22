@@ -54,6 +54,15 @@ export function retryAfterFor(attempts: number, now: Date): Date {
   return new Date(now.getTime() + MESSAGE_RETRY_BACKOFF_MS[index]);
 }
 
+/**
+ * How long a claimed message is left alone while its send is in flight
+ * (`retryAfter` set at the claim). Longer than the transport's own limit on
+ * a send (`MAIL_SEND_TIMEOUT_MS`), so a sweep never claims a message whose
+ * first send may still succeed; short enough that a send lost with its
+ * process is retried by the next sweep but one.
+ */
+export const MESSAGE_SEND_LEASE_MS = 2 * 60 * 1000;
+
 /** `lastError` while mail is not configured: the message is still waiting. */
 export const MAIL_NOT_CONFIGURED = 'Mail is not configured.';
 
@@ -108,8 +117,11 @@ type DispatchOutcome = 'sent' | 'failed' | 'waiting' | 'expired' | 'skipped';
  *   minutes), and gives up on those past `expiresAt`.
  *
  * A message is claimed before it is sent, by a conditional increment of
- * `attempts`, so the request's own dispatch and a sweep running at the same
- * moment cannot both send it. While the transport is not configured (no key
+ * `attempts` that also leases it (`retryAfter` moved `MESSAGE_SEND_LEASE_MS`
+ * ahead), so the request's own dispatch and a sweep cannot both send it,
+ * whether they arrive together or one starts while the other's send is in
+ * flight. A failure is recorded only by the claim that made it and never
+ * over a delivery. While the transport is not configured (no key
  * on staging yet) the message stays `PENDING` and no attempt is spent.
  *
  * **Logs carry the recipient and the outcome only**: never a subject, a
@@ -165,29 +177,50 @@ export class OutboundMessagesService {
   }
 
   /**
-   * Give up, in the caller's transaction, every message still waiting for
-   * `to`: its payload is cleared and the sweep never sends it. For an
-   * address that must receive nothing more (a deleted account, Q36).
-   * Returns how many were given up.
+   * Forget, in the caller's transaction, every message about a person who
+   * must be forgotten (a deleted account, Q36): those sent to `to`, and
+   * those whose dedupe key is one of `keys` or starts with one of
+   * `keyPrefixes` (their bookings' and codes' messages, which reach earlier
+   * addresses too). A message still waiting is given up with `reason` and
+   * the sweep never sends it; every one loses its recipient and its
+   * payload, so no row ties a kept record (a booking named in a dedupe key)
+   * back to the person's address. Returns how many were forgotten.
    */
-  async abandonTo(
+  async forget(
     tx: MessageWriter,
-    to: string,
+    match: { to: string | null; keys: string[]; keyPrefixes: string[] },
     reason: string,
   ): Promise<number> {
-    const { count } = await tx.outboundMessage.updateMany({
+    const where: Prisma.OutboundMessageWhereInput = {
+      OR: [
+        ...(match.to === null ? [] : [{ to: match.to }]),
+        ...(match.keys.length === 0 ? [] : [{ dedupeKey: { in: match.keys } }]),
+        ...match.keyPrefixes.map((prefix) => ({
+          dedupeKey: { startsWith: prefix },
+        })),
+      ],
+    };
+
+    if ((where.OR as unknown[]).length === 0) return 0;
+
+    await tx.outboundMessage.updateMany({
       where: {
-        to,
-        status: {
-          in: [OutboundMessageStatus.PENDING, OutboundMessageStatus.FAILED],
-        },
-        payload: { not: null },
+        AND: [
+          where,
+          {
+            status: {
+              in: [OutboundMessageStatus.PENDING, OutboundMessageStatus.FAILED],
+            },
+            payload: { not: null },
+          },
+        ],
       },
-      data: {
-        status: OutboundMessageStatus.FAILED,
-        payload: null,
-        lastError: reason,
-      },
+      data: { status: OutboundMessageStatus.FAILED, lastError: reason },
+    });
+
+    const { count } = await tx.outboundMessage.updateMany({
+      where,
+      data: { to: '', payload: null },
     });
 
     return count;
@@ -357,7 +390,12 @@ export class OutboundMessagesService {
       return 'waiting';
     }
 
-    // The claim: only the caller whose increment lands sends the message.
+    // The claim, as a lease: only the caller whose increment lands sends
+    // the message, and `retryAfter` moves past the send's longest wait, so
+    // no sweep picks the row up while the send is still in flight (every
+    // reader skips a row whose `retryAfter` is ahead). A process that dies
+    // mid-send leaves the lease to run out, and the sweep tries again.
+    const attempts = row.attempts + 1;
     const claimed = await this.prisma.outboundMessage.updateMany({
       where: {
         id: row.id,
@@ -365,8 +403,12 @@ export class OutboundMessagesService {
         status: {
           in: [OutboundMessageStatus.PENDING, OutboundMessageStatus.FAILED],
         },
+        OR: [{ retryAfter: null }, { retryAfter: { lte: now } }],
       },
-      data: { attempts: { increment: 1 } },
+      data: {
+        attempts: { increment: 1 },
+        retryAfter: new Date(now.getTime() + MESSAGE_SEND_LEASE_MS),
+      },
     });
 
     if (claimed.count !== 1) {
@@ -374,14 +416,25 @@ export class OutboundMessagesService {
     }
 
     try {
-      await this.transport.send({ to: row.to, ...mail });
+      await this.transport.send({
+        to: row.to,
+        ...mail,
+        // The row's id: a retry after a send whose answer was lost (a
+        // timeout) is recognised by the provider and not delivered twice.
+        idempotencyKey: `cnc-outbound-${row.id}`,
+      });
     } catch (error) {
-      const attempts = row.attempts + 1;
       const reason =
         error instanceof Error ? error.message.slice(0, 500) : 'Send failed.';
 
-      await this.prisma.outboundMessage.update({
-        where: { id: row.id },
+      // Only while this claim is the latest and nothing has marked the
+      // message sent: a late failure never overwrites a delivery.
+      await this.prisma.outboundMessage.updateMany({
+        where: {
+          id: row.id,
+          attempts,
+          status: { not: OutboundMessageStatus.SENT },
+        },
         data: {
           status: OutboundMessageStatus.FAILED,
           lastError: reason,
@@ -398,8 +451,9 @@ export class OutboundMessagesService {
       return 'failed';
     }
 
-    await this.prisma.outboundMessage.update({
-      where: { id: row.id },
+    // A delivery is a fact whichever claim made it.
+    await this.prisma.outboundMessage.updateMany({
+      where: { id: row.id, status: { not: OutboundMessageStatus.SENT } },
       data: {
         status: OutboundMessageStatus.SENT,
         sentAt: new Date(),

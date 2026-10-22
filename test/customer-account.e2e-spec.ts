@@ -4,12 +4,18 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import sharp from 'sharp';
 import {
+  ContactChannel,
   OtpPurpose,
+  OutboundMessageStatus,
   ReservationSource,
   ReservationStatus,
   SubjectType,
   TableKind,
 } from '../generated/cnc-client';
+import {
+  PROFILE_SAVE_LIMIT,
+  TOO_MANY_ATTEMPTS_MESSAGE,
+} from '../src/auth/auth-throttle';
 import { CncTokenService } from '../src/auth/cnc-token.service';
 import { CUSTOMER_REFRESH_COOKIE } from '../src/auth/refresh-cookie';
 import { addDays } from '../src/common/calendar-date';
@@ -215,6 +221,20 @@ describe('customer account (e2e)', () => {
       const taken = await patchMe(second, { phone }).expect(409);
 
       expect(messageOf(taken)).toBe(PHONE_TAKEN_MESSAGE);
+    });
+
+    it(`counts saves per customer, ${PROFILE_SAVE_LIMIT} in the window, so numbers cannot be tried as a list (429)`, async () => {
+      const me = await customer();
+      const other = await customer();
+
+      for (let saved = 0; saved < PROFILE_SAVE_LIMIT; saved++) {
+        await patchMe(me, { phone: newPhone() }).expect(200);
+      }
+
+      const refused = await patchMe(me, { phone: newPhone() }).expect(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+      // Another customer's saves are their own count.
+      await patchMe(other, { name: 'Bola' }).expect(200);
     });
 
     it('keeps a phone on an account with no email', async () => {
@@ -452,6 +472,7 @@ describe('customer account (e2e)', () => {
       customerId: string,
       days: number,
       status: ReservationStatus = ReservationStatus.CONFIRMED,
+      source: ReservationSource = ReservationSource.APP,
     ) =>
       prisma.reservation.create({
         data: {
@@ -465,8 +486,9 @@ describe('customer account (e2e)', () => {
           startMinutes: 1140,
           party: 2,
           status,
-          source: ReservationSource.APP,
+          source,
           note: 'Window please',
+          guestNote: 'Window please',
         },
       });
 
@@ -506,6 +528,38 @@ describe('customer account (e2e)', () => {
       expect(messageOf(refused)).toBe(DELETE_WITH_UPCOMING_MESSAGE);
     });
 
+    it('is not blocked by an upcoming website or Reception booking linked by email: it is unlinked and kept', async () => {
+      const me = await customer();
+      // Anyone can book under someone's email; Q35 links it to them.
+      const web = await booking(
+        me.id,
+        0,
+        ReservationStatus.CONFIRMED,
+        ReservationSource.WEB,
+      );
+      const desk = await booking(
+        me.id,
+        2,
+        ReservationStatus.CONFIRMED,
+        ReservationSource.RECEPTION,
+      );
+
+      await request(server()).delete('/api/v1/me').set(me.auth).expect(204);
+
+      for (const made of [web, desk]) {
+        expect(
+          await prisma.reservation.findUniqueOrThrow({
+            where: { id: made.id },
+          }),
+        ).toMatchObject({
+          customerId: null,
+          name: 'Ada Obi',
+          status: ReservationStatus.CONFIRMED,
+          version: made.version,
+        });
+      }
+    });
+
     it('anonymises the account and its bookings, ends every session, and a new sign-in starts afresh', async () => {
       const email = newEmail();
       const me = await signIn(email);
@@ -523,6 +577,21 @@ describe('customer account (e2e)', () => {
         await prisma.customer.findUniqueOrThrow({ where: { id: me.id } })
       ).photo!;
       const past = await booking(me.id, -3, ReservationStatus.COMPLETED);
+      // Its confirmation went to the address the account had before an
+      // email change; the sign-in code's email went to this one.
+      const earlier = newEmail();
+      const confirmation = await prisma.outboundMessage.create({
+        data: {
+          channel: ContactChannel.EMAIL,
+          to: earlier,
+          template: 'reservation.confirmed',
+          dedupeKey: `reservation:${past.id}:confirmed`,
+          status: OutboundMessageStatus.SENT,
+        },
+      });
+      expect(
+        await prisma.outboundMessage.count({ where: { to: email } }),
+      ).toBeGreaterThan(0);
 
       const deleted = await request(server())
         .delete('/api/v1/me')
@@ -558,10 +627,24 @@ describe('customer account (e2e)', () => {
         phone: '',
         email: '',
         note: '',
+        guestNote: '',
         version: past.version + 1,
       });
 
       expect(await prisma.otpCode.count({ where: { contact: email } })).toBe(0);
+      // No message row ties an anonymised booking, or anything, back to the
+      // person's address: neither the current one nor an earlier one.
+      expect(await prisma.outboundMessage.count({ where: { to: email } })).toBe(
+        0,
+      );
+      expect(
+        await prisma.outboundMessage.findUniqueOrThrow({
+          where: { id: confirmation.id },
+        }),
+      ).toMatchObject({ to: '', payload: null });
+      expect(
+        await prisma.outboundMessage.count({ where: { to: earlier } }),
+      ).toBe(0);
 
       // The access token is refused at once, and the session cannot renew.
       await request(server()).get('/api/v1/me').set(me.auth).expect(401);

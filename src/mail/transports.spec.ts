@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { CncConfigService } from '../config/cnc.config';
 import { mailTransportFor } from './mail.module';
-import type { OutgoingMail } from './mail-transport';
+import { MAIL_SEND_TIMEOUT_MS, type OutgoingMail } from './mail-transport';
 import {
   RECORDED_MAIL_LIMIT,
   RecordingMailTransport,
@@ -114,5 +114,47 @@ describe('ResendMailTransport', () => {
     await expect(
       new ResendMailTransport(configWith()).send(mail('a@cnc.test')),
     ).rejects.toThrow('Mail is not configured.');
+  });
+
+  /** A configured transport whose Resend client is `send`, never the network. */
+  const stubbed = (send: jest.Mock) => {
+    const transport = new ResendMailTransport(
+      configWith('re_x', 'CNC <cnc@x.example>'),
+    );
+    (transport as unknown as { client: unknown }).client = {
+      emails: { send },
+    };
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+    return transport;
+  };
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('hands Resend the message’s idempotency key', async () => {
+    const send = jest
+      .fn()
+      .mockResolvedValue({ data: { id: 'x' }, error: null });
+
+    await stubbed(send).send({ ...mail('a@cnc.test'), idempotencyKey: 'k-1' });
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'a@cnc.test' }),
+      { idempotencyKey: 'k-1' },
+    );
+  });
+
+  it(`gives up on a send Resend has not answered in ${MAIL_SEND_TIMEOUT_MS / 1000} s`, async () => {
+    jest.useFakeTimers();
+    const transport = stubbed(jest.fn(() => new Promise(() => undefined)));
+    const sending = transport.send(mail('a@cnc.test'));
+    const outcome = expect(sending).rejects.toThrow('No response from Resend.');
+
+    await jest.advanceTimersByTimeAsync(MAIL_SEND_TIMEOUT_MS);
+    await outcome;
   });
 });

@@ -1,4 +1,22 @@
-import { canonicalNigerianPhone, NIGERIAN_PHONE } from './nigerian-phone';
+import {
+  canonicalNigerianPhone,
+  NIGERIAN_PHONE,
+  phoneForDisplay,
+} from './nigerian-phone';
+
+describe('phoneForDisplay', () => {
+  it('shows a stored number as the website does', () => {
+    // cnc-frontend/lib/site.ts: phoneDisplay "0802 218 8797".
+    expect(phoneForDisplay('08022188797')).toBe('0802 218 8797');
+    expect(phoneForDisplay('08031234567')).toBe('0803 123 4567');
+  });
+
+  it('leaves anything not in the stored form as it is', () => {
+    expect(phoneForDisplay('+442079460958')).toBe('+442079460958');
+    expect(phoneForDisplay('0802 218 8797')).toBe('0802 218 8797');
+    expect(phoneForDisplay('')).toBe('');
+  });
+});
 
 /** The stored form, as the CHECK on `Customer.phone` in the C3 migration. */
 const STORED_FORM = /^0[789][01]\d{8}$/;

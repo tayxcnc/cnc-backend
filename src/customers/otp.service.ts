@@ -7,7 +7,8 @@ import {
 } from '@nestjs/common';
 import type { OtpPurpose, Prisma } from '../../generated/cnc-client';
 import { TOO_MANY_ATTEMPTS_MESSAGE } from '../auth/auth-throttle';
-import { CncTokenService } from '../auth/cnc-token.service';
+import { deriveKey } from '../common/derived-key';
+import { CncConfigService } from '../config/cnc.config';
 import type {
   MailTemplateName,
   MailTemplateParams,
@@ -20,10 +21,14 @@ import {
   OTP_ADDRESS_LIMIT,
   OTP_CAP_WINDOW_MS,
   OTP_CONTACT_LIMIT,
+  OTP_DAILY_FAILED_LIMIT,
+  OTP_DAILY_WINDOW_MS,
+  OTP_HASH_KEY_INFO,
   OTP_MAX_ATTEMPTS,
   OTP_PATTERN,
   OTP_RESEND_AFTER_MS,
   OTP_TTL_MS,
+  otpCodeHash,
 } from './one-time-code';
 
 /** No code is waiting for this email (400). The account app's wording. */
@@ -76,14 +81,17 @@ type Tx = Prisma.TransactionClient;
  * the same caps and sentences as sign-in.
  *
  * **The code exists in clear only in the request that draws it and in the
- * email.** The row holds its SHA-256 (`codeHash`), the queued email holds it
- * sealed (`MessageSeal`), and no response or log line carries it.
+ * email.** The row holds its keyed digest (`codeHash`, HMAC-SHA256 under a
+ * key derived from `CNC_JWT_SECRET`: `otpCodeHash`), the queued email holds
+ * it sealed (`MessageSeal`), and no response or log line carries it.
  *
  * **Issuance caps count the stored rows**, not memory, so they hold across
  * instances and restarts (A18 leaves the in-memory throttler per instance):
  * a new code per email only after `OTP_RESEND_AFTER_MS`, at most
  * `OTP_CONTACT_LIMIT` per email and `OTP_ADDRESS_LIMIT` per address in
- * `OTP_CAP_WINDOW_MS`. The rows are kept a day past expiry for exactly this
+ * `OTP_CAP_WINDOW_MS`, and none once the email's codes have taken
+ * `OTP_DAILY_FAILED_LIMIT` wrong tries in `OTP_DAILY_WINDOW_MS`, which
+ * bounds a patient guesser. The rows are kept a day past expiry for exactly this
  * (`OTP_RETENTION_HOURS`). Issuance for one email is serialised by an
  * advisory lock, so two requests at once cannot both pass a cap.
  *
@@ -96,10 +104,16 @@ type Tx = Prisma.TransactionClient;
  */
 @Injectable()
 export class OtpService {
+  /** The key `codeHash` is computed under; the database never holds it. */
+  private readonly hashKey: Buffer;
+
   constructor(
     private readonly prisma: CncPrismaService,
     private readonly outbound: OutboundMessagesService,
-  ) {}
+    config: CncConfigService,
+  ) {
+    this.hashKey = deriveKey(config.jwtSecret, OTP_HASH_KEY_INFO);
+  }
 
   /**
    * Draw a code for `contact`, store its hash, queue its email, and send it
@@ -128,7 +142,7 @@ export class OtpService {
           purpose: input.purpose,
           contact: input.contact,
           customerId: input.customerId,
-          codeHash: CncTokenService.digest(code),
+          codeHash: otpCodeHash(this.hashKey, code),
           expiresAt,
           resendAfter: new Date(now.getTime() + OTP_RESEND_AFTER_MS),
           ipAddress: input.ipAddress,
@@ -208,7 +222,7 @@ export class OtpService {
 
     if (
       !OTP_PATTERN.test(input.code) ||
-      !matches(input.code, newest.codeHash)
+      !this.matches(input.code, newest.codeHash)
     ) {
       throw new BadRequestException(await this.spendTry(newest.id));
     }
@@ -286,6 +300,32 @@ export class OtpService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
+
+    // The long cap: wrong tries on every code sent to this email in the
+    // day, whatever the purpose, so restarting the short window does not
+    // restart a guessing run.
+    const failed = await tx.otpCode.aggregate({
+      where: {
+        contact: input.contact,
+        createdAt: { gt: new Date(now.getTime() - OTP_DAILY_WINDOW_MS) },
+      },
+      _sum: { attempts: true },
+    });
+
+    if ((failed._sum.attempts ?? 0) >= OTP_DAILY_FAILED_LIMIT) {
+      throw new HttpException(
+        TOO_MANY_ATTEMPTS_MESSAGE,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  /** A typed code against a stored digest, in constant time. */
+  private matches(code: string, codeHash: string): boolean {
+    const offered = Buffer.from(otpCodeHash(this.hashKey, code), 'hex');
+    const held = Buffer.from(codeHash, 'hex');
+
+    return offered.length === held.length && timingSafeEqual(offered, held);
   }
 
   /**
@@ -311,12 +351,4 @@ export class OtpService {
 
     return left > 0 ? wrongCodeMessage(left) : CODE_ATTEMPTS_SPENT_MESSAGE;
   }
-}
-
-/** A typed code against a stored digest, in constant time. */
-function matches(code: string, codeHash: string): boolean {
-  const offered = Buffer.from(CncTokenService.digest(code), 'hex');
-  const held = Buffer.from(codeHash, 'hex');
-
-  return offered.length === held.length && timingSafeEqual(offered, held);
 }

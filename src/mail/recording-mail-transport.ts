@@ -33,9 +33,22 @@ export class RecordingMailTransport implements MailTransport {
   /** Set to make the next sends throw this, as a failing provider would. */
   failWith: Error | undefined;
 
+  /**
+   * Set to make each send wait for this promise before it lands, as a slow
+   * provider would; a suite races the queue's dispatch against a sweep with
+   * it.
+   */
+  hold: Promise<void> | undefined;
+
   constructor(private readonly logBodies: boolean) {}
 
-  send(mail: OutgoingMail): Promise<void> {
+  async send(mail: OutgoingMail): Promise<void> {
+    if (this.hold !== undefined) await this.hold;
+
+    return this.record(mail);
+  }
+
+  private record(mail: OutgoingMail): Promise<void> {
     if (!this.configured) {
       return Promise.reject(new Error('Mail is not configured.'));
     }

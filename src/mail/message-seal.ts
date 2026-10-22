@@ -1,10 +1,6 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  hkdfSync,
-  randomBytes,
-} from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
+import { deriveKey } from '../common/derived-key';
 import { CncConfigService } from '../config/cnc.config';
 
 /** The version tag every sealed payload starts with. */
@@ -29,8 +25,10 @@ const IV_BYTES = 12;
  * first send fails or mail is not yet configured on staging, so the code
  * has to be stored somewhere until then. Stored in clear, a database read
  * (a backup, a support query, a leaked dump) would yield a working code
- * for ten minutes and undo `OtpCode.codeHash`. Sealed, the row is useless
- * without the service's signing secret, which the database never holds.
+ * for ten minutes. Sealed, the row is useless without the service's
+ * signing secret, which the database never holds. `OtpCode.codeHash` is
+ * keyed for the same reason (`OtpService`): an unkeyed hash of six digits
+ * is reversed by trying all of them.
  * Booking and order messages carry names and addresses, so every payload
  * is sealed alike rather than judged case by case.
  *
@@ -51,15 +49,7 @@ export class MessageSeal {
   private readonly key: Buffer;
 
   constructor(config: CncConfigService) {
-    this.key = Buffer.from(
-      hkdfSync(
-        'sha256',
-        Buffer.from(config.jwtSecret, 'utf8'),
-        Buffer.alloc(0),
-        Buffer.from(KEY_INFO, 'utf8'),
-        32,
-      ),
-    );
+    this.key = deriveKey(config.jwtSecret, KEY_INFO);
   }
 
   seal(value: unknown): string {

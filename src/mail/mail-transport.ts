@@ -13,7 +13,23 @@ export interface OutgoingMail {
   /** The plain-text alternative, as composed: there is no banner in text. */
   text: string;
   replyTo?: string;
+  /**
+   * The same for every attempt at one queued message (its row id), so a
+   * provider that honours it delivers a retried message once, even when an
+   * earlier attempt's answer was lost.
+   */
+  idempotencyKey?: string;
 }
+
+/**
+ * How long a transport waits for the provider's answer before it treats
+ * the send as failed (the queue then retries it, under the same
+ * idempotency key). Without a limit a hung provider would hold a
+ * customer's request (`POST /auth/code` dispatches after its commit) for as
+ * long as it hangs. Shorter than the queue's lease on a claimed message
+ * (`MESSAGE_SEND_LEASE_MS`).
+ */
+export const MAIL_SEND_TIMEOUT_MS = 20 * 1000;
 
 /**
  * Where rendered mail goes. Two implementations, chosen once at boot by

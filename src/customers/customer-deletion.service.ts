@@ -1,5 +1,9 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { ContactChannel, SubjectType } from '../../generated/cnc-client';
+import {
+  ContactChannel,
+  ReservationSource,
+  SubjectType,
+} from '../../generated/cnc-client';
 import { CncTokenService } from '../auth/cnc-token.service';
 import { watToday } from '../common/wat';
 import { PhotoStore } from '../images/photo-store.service';
@@ -39,19 +43,26 @@ export const ACCOUNT_DELETED_REASON = 'The account was deleted.';
  *
  * - the account's name, email, phone, address, photo and preferences
  *   (a CHECK refuses a deleted row that keeps a contact or an address);
- * - the name, phone, email and note on every booking, and the guest name
- *   on every bill, linked to it (their `version` moves, so a screen
+ * - the name, phone, email and both notes on every booking, and the guest
+ *   name on every bill, linked to it (their `version` moves, so a screen
  *   holding the old copy is told to refresh);
  * - the in-app notifications, the one-time codes sent to it or for it,
  *   and the stored answers of its idempotent requests;
  * - every session (all refresh tokens revoked; the guard refuses its
- *   access tokens at once), and every email still waiting to reach it.
+ *   access tokens at once);
+ * - every email to its address or about its bookings and codes: the
+ *   waiting ones given up, and every one's recipient and payload cleared
+ *   (`OutboundMessagesService.forget`).
  *
  * The photo object is removed after the commit. The audit log is
  * append-only by trigger and keeps what it recorded (A13).
  *
- * Refused while a booking still holds a table on a date from today on, or
- * a bill linked to the account is still open.
+ * Refused while a booking the customer made in the app still holds a table
+ * on a date from today on, or a bill linked to the account is still open.
+ * An upcoming website or Reception booking linked by its email or phone
+ * (Q35) does not refuse it: it is unlinked and stays the guest booking it
+ * was made as, so a stranger's guest booking under someone's email cannot
+ * block their deletion.
  */
 @Injectable()
 export class CustomerDeletionService {
@@ -68,13 +79,18 @@ export class CustomerDeletionService {
 
     const photo = await this.prisma.$transaction(async (tx) => {
       const current = await this.customers.lockLive(tx, customerId);
+      const holding = {
+        customerId,
+        status: { in: HOLDING_STATUSES },
+        businessDate: { gte: watToday(now) },
+      };
 
+      // Only a booking the customer made in the app blocks. A website or
+      // Reception booking reached the account by its email or phone (Q35),
+      // which anyone can type, so counting it would let a stranger block
+      // a deletion with a guest booking; it is unlinked below instead.
       const upcoming = await tx.reservation.count({
-        where: {
-          customerId,
-          status: { in: HOLDING_STATUSES },
-          businessDate: { gte: watToday(now) },
-        },
+        where: { ...holding, source: ReservationSource.APP },
       });
       const open = await tx.order.count({
         where: { customerId, status: { in: UNSETTLED_ORDER_STATUSES } },
@@ -84,6 +100,28 @@ export class CustomerDeletionService {
         throw new ConflictException(DELETE_WITH_UPCOMING_MESSAGE);
       }
 
+      // An upcoming booking made without the account goes back to being
+      // the guest booking it was made as: still held, with the name and
+      // number Reception greets and calls, out of the deleted account.
+      await tx.reservation.updateMany({
+        where: holding,
+        data: { customerId: null },
+      });
+
+      const bookings = await tx.reservation.findMany({
+        where: { customerId },
+        select: { id: true },
+      });
+      const codes = await tx.otpCode.findMany({
+        where: {
+          OR: [
+            { customerId },
+            ...(current.email === null ? [] : [{ contact: current.email }]),
+          ],
+        },
+        select: { id: true },
+      });
+
       await tx.reservation.updateMany({
         where: { customerId },
         data: {
@@ -91,6 +129,7 @@ export class CustomerDeletionService {
           phone: '',
           email: '',
           note: '',
+          guestNote: '',
           version: { increment: 1 },
         },
       });
@@ -100,25 +139,28 @@ export class CustomerDeletionService {
       });
 
       await tx.customerNotification.deleteMany({ where: { customerId } });
-      await tx.otpCode.deleteMany({
-        where: {
-          OR: [
-            { customerId },
-            ...(current.email === null ? [] : [{ contact: current.email }]),
-          ],
+
+      // Every message to the account's address, and every message about its
+      // bookings and codes (which reach earlier addresses too: a booking's
+      // email before an email change, the "email changed" notice to the old
+      // one): a message's recipient beside a booking id in its dedupe key
+      // would name the person an anonymised booking belonged to.
+      await this.outbound.forget(
+        tx,
+        {
+          to: current.email,
+          keys: codes.flatMap(({ id }) => [`otp:${id}`, `email-changed:${id}`]),
+          keyPrefixes: bookings.map(({ id }) => `reservation:${id}:`),
         },
+        ACCOUNT_DELETED_REASON,
+      );
+
+      await tx.otpCode.deleteMany({
+        where: { id: { in: codes.map(({ id }) => id) } },
       });
       await tx.idempotencyKey.deleteMany({
         where: { scope: idempotencyScope.customer(customerId) },
       });
-
-      if (current.email !== null) {
-        await this.outbound.abandonTo(
-          tx,
-          current.email,
-          ACCOUNT_DELETED_REASON,
-        );
-      }
 
       await this.tokens.revokeAllForSubject(
         customerId,

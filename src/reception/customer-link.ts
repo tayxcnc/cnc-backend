@@ -17,7 +17,11 @@ type Tx = Prisma.TransactionClient;
  *   screen promises: "Sign in with the phone number or email you gave".
  *
  * Both take the email's advisory lock (`lockCustomerEmail`), so a booking
- * and a first sign-in for one address at once still end linked.
+ * and a first sign-in for one address at once still end linked. Every path
+ * takes its locks in one order, the table's, the email's, then a booking's
+ * row: `linkBookingsToVerifiedEmail` updates rows under the email's lock,
+ * so a caller that already holds a booking's row must not then wait for
+ * the email's (Reception's change takes the email's lock before its claim).
  */
 
 /**

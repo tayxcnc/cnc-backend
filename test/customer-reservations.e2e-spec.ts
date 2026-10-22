@@ -19,7 +19,13 @@ import { CustomerService } from '../src/customers/customer.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { STALE_VERSION_MESSAGE } from '../src/prisma/optimistic-version';
 import { drawNumber } from '../src/prisma/sequences';
-import { BOOKING_ADDRESS_LIMIT } from '../src/reception/booking-throttle';
+import { lockCustomerEmail } from '../src/customers/customer-email-lock';
+import {
+  BOOKING_ADDRESS_DAILY_LIMIT,
+  BOOKING_ADDRESS_LIMIT,
+  BOOKING_CAP_WINDOW_MS,
+  BOOKING_EMAIL_DAILY_LIMIT,
+} from '../src/reception/booking-throttle';
 import {
   ARRIVAL_SLOT_MESSAGE,
   CANCEL_CONFIRMED_MESSAGE,
@@ -501,6 +507,40 @@ describe('customer reservations (e2e)', () => {
       expect(messageOf(last!)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
     });
 
+    it(`keeps a stored number per email: ${BOOKING_EMAIL_DAILY_LIMIT} a day, from any address (429)`, async () => {
+      const email = newEmail();
+
+      for (let made = 0; made < BOOKING_EMAIL_DAILY_LIMIT; made++) {
+        await book(guest({ email })).expect(201);
+      }
+
+      const refused = await book(guest({ email })).expect(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+      expect(sentMail(app).allTo(email)).toHaveLength(
+        BOOKING_EMAIL_DAILY_LIMIT,
+      );
+
+      // A day on, the count has rolled over.
+      await prisma.reservation.updateMany({
+        where: { email },
+        data: { createdAt: new Date(Date.now() - BOOKING_CAP_WINDOW_MS) },
+      });
+      await book(guest({ email })).expect(201);
+    });
+
+    it(`keeps a stored number per address: ${BOOKING_ADDRESS_DAILY_LIMIT} a day (429)`, async () => {
+      const address = clientAddress();
+
+      for (let made = 0; made < BOOKING_ADDRESS_DAILY_LIMIT; made++) {
+        await book(guest(), { address }).expect(201);
+      }
+
+      const refused = await book(guest(), { address }).expect(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+      // Another address is not held back by it.
+      await book(guest()).expect(201);
+    });
+
     it('refuses a staff token (403) and a bad token (401) rather than booking as a guest', async () => {
       await book(guest(), { auth: receptionAuth }).expect(403);
       await book(guest(), {
@@ -603,6 +643,101 @@ describe('customer reservations (e2e)', () => {
       expect(linked.customerId).toBe(me.id);
       expect(notLinked.customerId).toBeNull();
       expect((await mine(me)).map((b) => b.id)).toContain(linked.id);
+    });
+
+    it('never shows the guest Reception’s note: only what they wrote themselves', async () => {
+      const me = await customer();
+      const desk = (
+        await request(server())
+          .post('/api/v1/staff/reservations')
+          .set(receptionAuth)
+          .set('Idempotency-Key', randomUUID())
+          .send({
+            name: 'Phone guest',
+            phone: '08011112222',
+            email: me.email,
+            tableId: await tableId('dining', 'B3'),
+            businessDate: freshDate(),
+            time: '13:00',
+            party: 2,
+            note: 'Paid late last time, ask for card up front',
+          })
+          .expect(201)
+      ).body as { id: string; customerId: string | null; note: string };
+      expect(desk.customerId).toBe(me.id);
+      expect(desk.note).toBe('Paid late last time, ask for card up front');
+
+      const web = (
+        await book(
+          guest({ email: me.email, table: 'TDS3', note: 'A birthday' }),
+        ).expect(201)
+      ).body as Booking;
+      // Reception adds to the website booking's note for the team.
+      const current = await prisma.reservation.findUniqueOrThrow({
+        where: { id: web.id },
+      });
+      await request(server())
+        .patch(`/api/v1/staff/reservations/${web.id}`)
+        .set(receptionAuth)
+        .send({
+          note: 'A birthday. Seat away from the door',
+          version: current.version,
+        })
+        .expect(200);
+
+      const listed = await mine(me);
+      expect(listed.find((b) => b.id === desk.id)?.note).toBe('');
+      expect(listed.find((b) => b.id === web.id)?.note).toBe('A birthday');
+      expect(JSON.stringify(listed)).not.toContain('card up front');
+      expect(JSON.stringify(listed)).not.toContain('away from the door');
+    });
+
+    it('takes Reception’s change of an unlinked booking’s contact without deadlocking a first sign-in (email lock before the row)', async () => {
+      const email = newEmail();
+      const made = (await book(guest({ email, table: 'TS4' })).expect(201))
+        .body as Booking;
+
+      // A first sign-in for that email holds its lock (and would next update
+      // the email's unlinked bookings).
+      let release: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holding: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        holding = resolve;
+      });
+      const signIn = prisma.$transaction(
+        async (tx) => {
+          await lockCustomerEmail(tx, email);
+          holding();
+          await released;
+        },
+        { timeout: 30_000 },
+      );
+      await held;
+
+      const changing = request(server())
+        .patch(`/api/v1/staff/reservations/${made.id}`)
+        .set(receptionAuth)
+        .send({ phone: '08099998888', version: made.version })
+        .then((response) => response);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // Reception's change waits for the email's lock without holding the
+      // booking's row, so the sign-in's update of that row would not wait
+      // on it: no cycle.
+      const rowFree = await prisma
+        .$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT "id" FROM "Reservation" WHERE "id" = ${made.id} FOR UPDATE NOWAIT`;
+          return true;
+        })
+        .catch(() => false);
+
+      release();
+      await signIn;
+      expect(rowFree).toBe(true);
+      expect((await changing).status).toBe(200);
     });
 
     it('collects a guest’s earlier bookings when that email is first proved by a code', async () => {

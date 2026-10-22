@@ -797,8 +797,29 @@ They are here so the first card that builds it starts from the rule.
   (`src/customers/otp.service.ts`), purpose-generic so the email change
   (C6-3) shares its caps and sentences.** One-time code rules, with the
   numbers in `src/customers/one-time-code.ts`:
-  - 6 digits from `crypto.randomInt`, stored as SHA-256 (`codeHash`),
+  - 6 digits from `crypto.randomInt`, stored as a keyed digest
+    (`codeHash`: HMAC-SHA256 under a key derived by HKDF from
+    `CNC_JWT_SECRET` with its own label, `otpCodeHash`, `deriveKey`),
     10 minutes, 5 tries (A15); the code is in no response and no log line.
+    **Never a bare SHA-256** (from the C6 review): six digits are a million
+    values, so anyone who read an unkeyed digest from the database (a
+    backup, a support query, a dump) would recover a live code by hashing
+    them all in under a second and sign in as that customer. Codes stored
+    before the change expire within ten minutes, so it needed no migration.
+  - **A long cap on wrong tries (from the C6 review): no new code for an
+    email whose codes took 25 wrong tries in 24 hours**
+    (`OTP_DAILY_FAILED_LIMIT`, counted on the stored rows, any purpose;
+    429 "Too many attempts…"). The fifteen-minute caps alone let a patient
+    guesser make about 2,400 guesses a day (some 7% a month at one in a
+    million each); with it about 30 a day. The window sits inside the day
+    the tokens sweep keeps the rows (`one-time-code.spec.ts`).
+  - **Known and accepted: a stranger who knows an email can hold its
+    sign-in back** by asking for codes and spending their tries, whatever
+    the numbers, because every per-email cap counts requests anyone can
+    make. A cap per requesting address instead would let a script on many
+    addresses fill a stranger's inbox, which the per-email cap exists to
+    stop; the inbox wins. The owner is told "Too many attempts…" and can
+    still book as a guest.
   - **Caps count the stored `OtpCode` rows, not memory**: another code for
     the same email only after 30 s ("Please wait N seconds before asking
     for a new code.", 429, the account app's sentence); at most 5 codes per
@@ -878,6 +899,22 @@ They are here so the first card that builds it starts from the rule.
   moment cannot both send one message. **While mail is not configured, a
   message waits `PENDING` without spending an attempt** (`lastError` "Mail
   is not configured.").
+- **The claim is a lease (from the C6 review): it also moves `retryAfter`
+  `MESSAGE_SEND_LEASE_MS` (2 minutes) ahead**, so a sweep that starts
+  while the request's own send is still in flight skips the row; the
+  claim alone did not cover that, and the sweep claimed the next attempt
+  and sent a second copy (`customer-messages` races the two with a slow
+  transport, `RecordingMailTransport.hold`; seen failing without the
+  lease). A process that dies mid-send leaves the lease to run out and the
+  sweep tries again. **A failure is written only by the claim that made it
+  (`attempts` still the claimed value) and never over `SENT`; a success is
+  written whichever claim made it.**
+- **Every send carries the message's row id as Resend's idempotency key
+  (`OutgoingMail.idempotencyKey`) and gives up after `MAIL_SEND_TIMEOUT_MS`
+  (20 s)**, shorter than the lease. A hung provider would otherwise hold a
+  customer's request (`POST /auth/code` dispatches after its commit) for as
+  long as it hangs, and a retry after a lost answer is then recognised by
+  the provider instead of delivered twice.
 - **The transport is chosen once by `CNC_ENV`** (`mailTransportFor`):
   locally, and in every test, `RecordingMailTransport` sends nothing and
   writes the text, code included, to the local log, so a local walk reads
@@ -943,6 +980,16 @@ They are here so the first card that builds it starts from the rule.
   `Customer.phone` is unique, so the second account to save a number gets
   409 "This phone number is already on another CNC account." rather than a
   500.
+- **`PATCH /me` is counted per customer: 30 saves in 15 minutes
+  (`ProfileSaveThrottle`, `signedInCustomerTracker`, listed after the
+  controller's `CncCustomerGuard`)** (from the C6 review). The 409 above
+  says whether a number is a CNC customer's, so without a number one
+  account could test a list of them. Thirty covers a person flipping every
+  Notifications switch twice. **Still open, for the founder:** an
+  unverified number saved first blocks its real owner, because the plan
+  makes `Customer.phone` unique (§4.2) and phones are never verified while
+  there is no SMS (Q5, Q19). Unique only among verified phones would end
+  that; it waits for phone verification, with the SMS provider.
 - **A delivery address is one shape for the profile and checkout:
   `src/common/delivery-address.ts`** (zone `JOS`/`PLATEAU`, street, area,
   town, landmark; the landmark required by D53, each line at most 120
@@ -987,10 +1034,27 @@ They are here so the first card that builds it starts from the rule.
   row that keeps or regains a contact or an address. The guard, the
   refresh and every `CustomerService` read treat a deleted account as
   gone (401). The same email then signs in to a new, empty account. **It
-  is refused (409) while a booking holds a table on a date from today on,
-  or a linked bill is open**: an anonymised upcoming booking would leave
-  Reception a table held for nobody. The audit log keeps what it recorded
-  (A13).
+  is refused (409) while a booking the customer made in the app (`APP`)
+  holds a table on a date from today on, or a linked bill is open**: an
+  anonymised upcoming booking would leave Reception a table held for
+  nobody. The audit log keeps what it recorded (A13).
+- **An upcoming website or Reception booking linked to the account by its
+  email or phone (Q35) does not refuse a deletion: it is unlinked and kept
+  as the guest booking it was made as** (from the C6 review). Anyone can
+  type someone's email into the website's form, and a booking under 24
+  hours away cannot be cancelled online (Q6), so counting those let a
+  stranger block a person's deletion every day. Unlinked, it keeps the
+  name and number Reception greets and calls.
+- **Deletion forgets the account's messages too
+  (`OutboundMessagesService.forget`): every `OutboundMessage` to its
+  address, and every one whose dedupe key names its bookings
+  (`reservation:<id>:…`) or its codes (`otp:<id>`, `email-changed:<id>`),
+  loses its recipient and payload; those still waiting are given up**
+  (from the C6 review). A sent message's `to` beside a booking id in its
+  key named the person an anonymised booking belonged to, which undid
+  Q36; the key match also reaches addresses the account had before an
+  email change. The codes are read before they are deleted, for this.
+  Both booking notes are cleared (`note`, `guestNote`).
 - **"Holding" and "unsettled" are one list each:
   `HOLDING_STATUSES` (`reservation-rules.ts`) and
   `UNSETTLED_ORDER_STATUSES` (`order-rules.ts`)**, read by the booking
@@ -2296,9 +2360,27 @@ They are here so the first card that builds it starts from the rule.
 - **`POST /reservations` takes an Idempotency-Key (A9), scoped to the
   customer or, for a guest, to the hashed address**; a guest's retry comes
   from the same address. It is limited to 30 bookings per address in 15
-  minutes (`BookingThrottle`, 429 "Too many attempts…"): it needs no
-  sign-in, holds a table for a whole date and sends an email, so without
-  a number one script could empty the floor or mail any address.
+  minutes in memory (`BookingThrottle`, 429 "Too many attempts…"), the
+  first line only: it needs no sign-in, holds a table for a whole date
+  and sends an email.
+- **The real limits are stored caps on website and app bookings (from the
+  C6 review): 20 a day per client address (`Reservation.ipHash`, the
+  address hashed by `hashClientAddress`) and 10 a day per email, from any
+  address (`assertOnlineBookingCaps`, `booking-throttle.ts`), 429 "Too many
+  attempts…".** The in-memory count is per instance and forgotten on a
+  restart, and allowed one address some 2,880 table-dates a day: enough
+  to hold every table for weeks, or mail a stranger 120 confirmations an
+  hour from CNC's sender. Counted under advisory locks on the address and
+  the email (keys only this check takes, in a fixed order, before the
+  table's lock, so they cannot deadlock with the table or email locks),
+  against `createdAt` written on the service's clock (A11). Reception's
+  bookings are never counted. **No cap per phone**: CNC sends no SMS, made-up
+  numbers cost a script nothing, and a cap would refuse a family booking
+  under one number. **Still open, for the founder:** how far ahead a guest
+  may book. The website offers any future date and the plan sets no
+  horizon, so the server sets none; a horizon (for example 60 days) would
+  bound what the address cap still allows, and is a business rule, not
+  this build's to set.
 - **Linking a booking to a customer is one module, `customer-link.ts`,
   both ways, on an exact verified match only, never creating an account**
   (Q35, A15). A booking made without a session (Reception's, a website
@@ -2310,6 +2392,23 @@ They are here so the first card that builds it starts from the rule.
   directions take the email's advisory lock (`lockCustomerEmail`), so a
   booking and a first sign-in for one address at once still end linked.
   The link does not move a booking's `version`: no screen edits it.
+- **The locks are always taken in one order: the table's, then the
+  email's, then the booking's row** (from the C6 review). A first sign-in
+  holds the email's lock and then updates the email's unlinked bookings'
+  rows, so Reception's change of an unlinked booking takes the email's
+  lock (for the email it will link by) after the table's and before it
+  claims the booking's version, which locks the row; the other order could
+  deadlock the two, a 500 for Reception or the guest. `customer-reservations`
+  holds the email's lock and checks the row stays free while the change
+  waits (seen failing with the old order).
+- **A customer sees only the note they wrote (`guestNote`), never
+  Reception's (`note`)** (from the C6 review). Reception's note is staff
+  writing to staff ("ask for card up front"), and Q35 links phone bookings
+  to accounts, so `GET /me/reservations` showed it to the guest. An online
+  booking writes the guest's "Anything we should know?" into both
+  columns, so Reception still reads it and may add to `note` without the
+  guest seeing that; a Reception booking's `guestNote` is blank. The C6
+  review migration copied an online booking's existing note across.
 - **`GET /me/reservations`, `PATCH /me/reservations/:id` and `POST
   /me/reservations/:id/cancel` touch only the customer's own bookings
   (`customerId`); another customer's booking, or none, is 404 "We could
@@ -2346,7 +2445,14 @@ They are here so the first card that builds it starts from the rule.
   dedupe key is the booking and the event, a change's carrying the new
   `version`, so a replayed create sends nothing more
   (`OutboundMessagesService.dispatchByKey`). A booking with no email (an
-  anonymised one) is sent nothing.
+  anonymised one) is sent nothing. Reception's cancel and change are
+  pinned by `customer-messages` (the email, its row reaching `SENT`, the
+  in-app item; seen failing with either enqueue removed).
+- **CNC's phone goes into an email as the website shows it, `0802 218
+  8797`, never the stored digits** (`phoneForDisplay`,
+  `common/nigerian-phone.ts`; the site's `phoneDisplay`; Q6 says the
+  number is shown formatted) (from the C6 review). The guest reads and
+  dials the same number on the site and in the email.
 - **Audit: a customer's create, change and cancel are `CUSTOMER` rows;
   a website guest's create is a `SYSTEM` row named "Website guest
   <name>"**, the `AuditLog_actor_check` allowing no customer without an
@@ -2403,6 +2509,15 @@ They are here so the first card that builds it starts from the rule.
   (it gets a reminder for the new time; its dedupe key carries the
   `version`). Exactly 24 hours ahead still gets one, as Q6 still allows a
   change then.
+- **Bookings made before C6 were stamped by the C6 review migration by the
+  same rule** (`20261022215055_c6_review_fixes`): a Confirmed booking whose
+  start (its date and arrival in Jos) was under 24 hours after its
+  `createdAt` gets `reminderSentAt = createdAt`. Nothing before C6 wrote the
+  column, so without it the first reminders sweep on staging would have
+  reminded C4 and C5 bookings made late, which Q32 excludes. A booking made
+  a day or more ahead keeps null and is reminded, as Q32 asks. Checked on
+  the boundary (exactly 24 hours ahead is not stamped) before it was
+  applied.
 - **Each reminder is claimed by one conditional update (`reminderSentAt IS
   NULL`, still Confirmed) in the transaction that writes its messages**,
   and the email's dedupe key is the booking, the event and the version, so

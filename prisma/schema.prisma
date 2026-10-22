@@ -1332,6 +1332,16 @@ model KitchenDayClosed {
 /// is made, or moved to a new date or time, under 24 hours ahead (no
 /// reminder then), and cleared when it is moved further out, so the new
 /// time gets its own. The sweep reminds only rows where it is null.
+///
+/// From the C6 review: `note` is Reception's, shown to staff and edited by
+/// them; `guestNote` is what the guest typed in "Anything we should know?"
+/// on the website or in the app, and the only note a customer is shown
+/// (`GET /me/reservations`). A Reception note is staff writing to staff, and
+/// Q35 links phone bookings to accounts, so it must never reach the guest.
+/// An online booking copies the guest's text into both, so Reception still
+/// reads it. `ipHash` is the hashed client address of a website or app
+/// booking (`hashClientAddress`), null for Reception's: the stored booking
+/// caps count it.
 model Reservation {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -1349,10 +1359,12 @@ model Reservation {
   status          ReservationStatus @default(CONFIRMED)
   source          ReservationSource
   note            String            @default("")
+  guestNote       String            @default("")
   depositKobo     Int               @default(0)
   depositUsedKobo Int               @default(0)
   cancelledAt     DateTime?
   reminderSentAt  DateTime?
+  ipHash          String?
 
   version Int @default(0)
 
@@ -1365,6 +1377,8 @@ model Reservation {
   @@index([businessDate, status])
   @@index([tableId, businessDate])
   @@index([customerId])
+  @@index([ipHash, createdAt])
+  @@index([email, createdAt])
 }
 
 /// A table's allocation (plan §4.5): guests seated (`OCCUPIED`) or the

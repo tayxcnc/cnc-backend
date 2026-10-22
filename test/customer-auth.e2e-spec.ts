@@ -42,10 +42,15 @@ import {
   ADD_YOUR_NAME_MESSAGE,
   NAME_TOO_LONG_MESSAGE,
 } from '../src/customers/dto/update-me.request';
+import { deriveKey } from '../src/common/derived-key';
+import { CncConfigService } from '../src/config/cnc.config';
 import {
   OTP_ADDRESS_LIMIT,
   OTP_CONTACT_LIMIT,
+  OTP_DAILY_FAILED_LIMIT,
+  OTP_HASH_KEY_INFO,
   OTP_MAX_ATTEMPTS,
+  otpCodeHash,
 } from '../src/customers/one-time-code';
 import {
   ASK_FOR_NEW_CODE_MESSAGE,
@@ -141,6 +146,13 @@ describe('customer auth (e2e)', () => {
     return code;
   };
 
+  /** A code as `OtpCode.codeHash` keeps it, under the service's key. */
+  const keyedCodeHash = (code: string): string =>
+    otpCodeHash(
+      deriveKey(app.get(CncConfigService).jwtSecret, OTP_HASH_KEY_INFO),
+      code,
+    );
+
   /** A wrong code, certainly not the one sent. */
   const wrongCode = (email: string): string =>
     String((Number(codeSentTo(email)) + 1) % 1_000_000).padStart(6, '0');
@@ -210,7 +222,9 @@ describe('customer auth (e2e)', () => {
         where: { contact: email },
       });
       expect(row.purpose).toBe(OtpPurpose.SIGN_IN);
-      expect(row.codeHash).toBe(CncTokenService.digest(code));
+      // Keyed: a bare SHA-256 of six digits is reversed by trying them all.
+      expect(row.codeHash).toBe(keyedCodeHash(code));
+      expect(row.codeHash).not.toBe(CncTokenService.digest(code));
       expect(row.codeHash).not.toContain(code);
       // Ten minutes from the request (the row's createdAt is stamped by the
       // database, a few milliseconds apart from the server's clock).
@@ -269,6 +283,39 @@ describe('customer auth (e2e)', () => {
       expect(await prisma.otpCode.count({ where: { contact: email } })).toBe(
         OTP_CONTACT_LIMIT,
       );
+    });
+
+    it(`sends no new code once the email's codes took ${OTP_DAILY_FAILED_LIMIT} wrong tries in a day`, async () => {
+      const email = newEmail();
+      const rounds = OTP_DAILY_FAILED_LIMIT / OTP_MAX_ATTEMPTS;
+
+      for (let round = 0; round < rounds; round++) {
+        await askCode(email).expect(200);
+        const wrong = wrongCode(email);
+
+        for (let attempt = 0; attempt < OTP_MAX_ATTEMPTS; attempt++) {
+          await verifyCall(email, wrong).expect(400);
+        }
+
+        await skipResendGap(email);
+      }
+
+      // Out of the fifteen-minute window, still inside the day: only the
+      // long cap refuses.
+      const ageCodes = (ms: number) =>
+        prisma.otpCode.updateMany({
+          where: { contact: email },
+          data: { createdAt: new Date(Date.now() - ms) },
+        });
+
+      await ageCodes(60 * 60 * 1000);
+      const refused = await askCode(email);
+      expect(refused.status).toBe(429);
+      expect(messageOf(refused)).toBe(TOO_MANY_ATTEMPTS_MESSAGE);
+
+      // A day later the tries have rolled out of the count.
+      await ageCodes(25 * 60 * 60 * 1000);
+      await askCode(email).expect(200);
     });
 
     it(`caps codes per address at ${OTP_ADDRESS_LIMIT} in the window, over every email`, async () => {
@@ -699,7 +746,7 @@ describe('customer auth (e2e)', () => {
 
       const code = codeSentTo(email);
       expect(waiting.payload).not.toContain(code);
-      expect(row.codeHash).toBe(CncTokenService.digest(code));
+      expect(row.codeHash).toBe(keyedCodeHash(code));
 
       const sent = await prisma.outboundMessage.findUniqueOrThrow({
         where: { id: waiting.id },

@@ -30,7 +30,10 @@ import {
 import { watToday } from '../src/common/wat';
 import { CustomerService } from '../src/customers/customer.service';
 import { SWEEP_TOKEN_HEADER } from '../src/internal/sweep-token.guard';
-import { MESSAGE_MAX_ATTEMPTS } from '../src/mail/outbound-messages.service';
+import {
+  MESSAGE_MAX_ATTEMPTS,
+  OutboundMessagesService,
+} from '../src/mail/outbound-messages.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { bookingStart } from '../src/reception/reservation-rules';
 import { createTestApp, sentMail } from './create-test-app';
@@ -142,6 +145,7 @@ describe('customer messages (e2e)', () => {
   afterEach(() => {
     sentMail(app).configured = true;
     sentMail(app).failWith = undefined;
+    sentMail(app).hold = undefined;
   });
 
   const server = () => app.getHttpServer();
@@ -389,6 +393,57 @@ describe('customer messages (e2e)', () => {
         'Welcome to CNC',
       ]);
       expect((await notifications(me)).data[1].body).toContain('at 20:00.');
+    });
+
+    it('tells the guest by email and in-app when Reception cancels their booking', async () => {
+      const me = await customer();
+      // A guest booking, linked to the customer by its verified email (Q35).
+      const booking = await book({ email: me.email, table: 'TS1' });
+
+      await request(server())
+        .post(`/api/v1/staff/reservations/${booking.id}/cancel`)
+        .set(receptionAuth)
+        .send({ version: booking.version })
+        .expect(200);
+
+      const mail = sentMail(app).lastTo(me.email);
+      expect(mail?.subject).toBe(
+        `Your CNC booking ${booking.number} is cancelled`,
+      );
+      // CNC's number as the website shows it, not the stored digits.
+      expect(mail?.text).toContain('please call CNC on 0802 218 8797.');
+      expect(
+        await prisma.outboundMessage.findUniqueOrThrow({
+          where: { dedupeKey: `reservation:${booking.id}:cancelled` },
+        }),
+      ).toMatchObject({ status: OutboundMessageStatus.SENT, to: me.email });
+      expect((await notifications(me)).data[0].title).toBe(
+        'Reservation cancelled',
+      );
+    });
+
+    it('tells the guest by email and in-app when Reception changes their booking’s party', async () => {
+      const me = await customer();
+      const booking = await book({ email: me.email, table: 'TS2' });
+
+      const changed = await request(server())
+        .patch(`/api/v1/staff/reservations/${booking.id}`)
+        .set(receptionAuth)
+        .send({ party: 1, version: booking.version })
+        .expect(200);
+      const version = (changed.body as { version: number }).version;
+
+      expect(sentMail(app).lastTo(me.email)?.subject).toBe(
+        `Your CNC booking ${booking.number} has changed`,
+      );
+      expect(
+        await prisma.outboundMessage.findUniqueOrThrow({
+          where: { dedupeKey: `reservation:${booking.id}:changed:${version}` },
+        }),
+      ).toMatchObject({ status: OutboundMessageStatus.SENT, to: me.email });
+      expect((await notifications(me)).data[0].title).toBe(
+        'Reservation changed',
+      );
     });
 
     it('writes nothing in-app for a guest booking, and nobody else sees a customer’s list', async () => {
@@ -692,6 +747,45 @@ describe('customer messages (e2e)', () => {
         MESSAGE_MAX_ATTEMPTS,
       );
       expect(sentMail(app).allTo(email)).toHaveLength(0);
+    });
+
+    it('sends once when a sweep runs while the request’s own send is still in flight', async () => {
+      // Queued while mail is down, so the request's dispatch sent nothing.
+      sentMail(app).configured = false;
+      const email = newEmail();
+      const booking = await book({ email });
+      const { id } = await messageFor(booking.id);
+      sentMail(app).configured = true;
+
+      // A slow provider: every send waits until released.
+      let release: () => void = () => undefined;
+      sentMail(app).hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const outbound = app.get(OutboundMessagesService, { strict: false });
+
+      const dispatching = outbound.dispatch(id);
+      // The dispatch has claimed the message and is waiting on the send.
+      for (
+        let tries = 0;
+        (await messageFor(booking.id)).attempts < 1;
+        tries++
+      ) {
+        if (tries > 200) throw new Error('The dispatch never claimed.');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const sweeping = outbound.sweep(new Date());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      release();
+      await Promise.all([dispatching, sweeping]);
+
+      expect(sentMail(app).allTo(email)).toHaveLength(1);
+      expect(await messageFor(booking.id)).toMatchObject({
+        status: OutboundMessageStatus.SENT,
+        attempts: 1,
+        retryAfter: null,
+      });
     });
 
     it('spends no attempt and sets no backoff while mail is not configured', async () => {
