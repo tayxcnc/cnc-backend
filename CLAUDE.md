@@ -46,7 +46,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | The C5 tables' CHECKs, one open shift per person, task links, pack cost | Stock requests, purchasing, waste, tasks, assets and attendance: the schema |
 | Stock requests: location, packs, issue, own record, reads, history | Stock requests |
 | Purchases, approvals and their limits, receiving, R1's automatic tasks, vendors, the lite list, the assigned-task bell item | Purchasing and vendors |
-| Waste: each role's location, stock on approval, Q25's coded value, approvals and corrections, the read and history | Waste |
+| Waste: each role's location, stock on approval, Q25's per-pack value, approvals, corrections of approved records (day limit, own record), the read and history | Waste |
 | `GET /staff/approvals`: a read only, what awaits whom, `approvalRefusal` and `standing()`, fresh waste values | Approvals |
 | `task.save`: the role gate, who may raise and save what, links, assignees, history, who sees which task | Tasks |
 | `asset.save` by tag, repairs, the asset following its repair, R3's resolved date, the follow-up task, the MT- reader, the assets lite list | Assets and repairs |

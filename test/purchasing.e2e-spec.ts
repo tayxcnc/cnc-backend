@@ -26,6 +26,7 @@ import {
   dailyLimitMessage,
   LIMITED_DECISIONS,
   OWN_RECORD_KINDS,
+  ownRecordCorrectionMessage,
   ownRecordMessage,
 } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
@@ -88,7 +89,9 @@ describe('Vendors and purchases (e2e)', () => {
     | 'storekeeper'
     | 'kitchen'
     | 'reception'
-    | 'waiter';
+    | 'waiter'
+    | 'manager4'
+    | 'manager5';
 
   const ROLE: Record<Actor, StaffRole> = {
     owner: StaffRole.OWNER,
@@ -99,6 +102,8 @@ describe('Vendors and purchases (e2e)', () => {
     kitchen: StaffRole.KITCHEN,
     reception: StaffRole.RECEPTION,
     waiter: StaffRole.WAITER,
+    manager4: StaffRole.MANAGER,
+    manager5: StaffRole.MANAGER,
   };
 
   const staffId: Partial<Record<Actor, string>> = {};
@@ -1186,6 +1191,183 @@ describe('Vendors and purchases (e2e)', () => {
     });
   });
 
+  describe('correcting an approved requisition (the founder’s decision of 2026-10-22)', () => {
+    /** A requisition the Storekeeper (or `by`) raises and the Owner approves. */
+    async function approvedPurchase(
+      lines: Record<string, unknown>[],
+      by: Actor = 'storekeeper',
+    ): Promise<Purchase> {
+      const raised = await raise(by, lines);
+
+      return (await command('owner', raised, 'approve').expect(200))
+        .body as Purchase;
+    }
+
+    async function editRows(actor: Actor) {
+      return prisma.approvalLedger.findMany({
+        where: { staffId: staffId[actor], action: 'purchase.edit' },
+        orderBy: { createdAt: 'asc' },
+        select: { amountKobo: true, ref: true },
+      });
+    }
+
+    /** `count` approvals of ₦40,000 requisitions by `actor`, to fill a day. */
+    async function approveForty(actor: Actor, count: number): Promise<void> {
+      for (let n = 0; n < count; n += 1) {
+        const p = await raise('storekeeper', [riceLine(1, 4000000)]);
+        await command(actor, p, 'approve').expect(200);
+      }
+    }
+
+    it('counts an Approved or Fulfilled requisition’s increase toward the editor’s day, nothing for a decrease or a Pending one, and still holds the new total to the Owner Approval Limit', async () => {
+      let p = await approvedPurchase([riceLine(1, 1000000)]);
+
+      p = (
+        await edit('manager4', p, {
+          lines: [riceLine(3, 1000000)],
+          reason: 'Three bags came',
+        }).expect(200)
+      ).body as Purchase;
+      expect(await editRows('manager4')).toEqual([
+        { amountKobo: 2000000, ref: p.number },
+      ]);
+
+      p = (
+        await edit('manager4', p, {
+          lines: [riceLine(2, 1000000)],
+          reason: 'Two after all',
+        }).expect(200)
+      ).body as Purchase;
+      expect(await editRows('manager4')).toHaveLength(1);
+
+      const over = await edit('manager4', p, {
+        lines: [riceLine(6, 1000000)],
+        reason: 'Six',
+      }).expect(403);
+      expect(messageOf(over)).toBe(
+        approvalLimitMessage(LIMITED_DECISIONS.purchase, 5000000),
+      );
+      expect((await read(p.id)).totalKobo).toBe(2000000);
+
+      // A Pending requisition's correction decides nothing yet.
+      const pending = await raise('storekeeper', [riceLine(1, 100000)]);
+      await edit('manager4', pending, {
+        lines: [riceLine(4, 100000)],
+        reason: 'Four',
+      }).expect(200);
+      expect(await editRows('manager4')).toHaveLength(1);
+
+      // A received (Fulfilled) requisition was approved: its increase counts.
+      let received = await approvedPurchase([riceLine(1, 1000000)]);
+      received = (
+        (await command('storekeeper', received, 'receive').expect(200))
+          .body as { purchase: Purchase }
+      ).purchase;
+      const storeBefore = await storeBalance(rice.id);
+      await edit('manager4', received, {
+        lines: [riceLine(2, 1000000)],
+        reason: 'Two bags arrived',
+      }).expect(200);
+      expect(await storeBalance(rice.id)).toBe(storeBefore + 1);
+      expect(await editRows('manager4')).toEqual([
+        { amountKobo: 2000000, ref: p.number },
+        { amountKobo: 1000000, ref: received.number },
+      ]);
+      await expectLedgerHolds(rice.id);
+    });
+
+    it('refuses the increase that crosses the Daily Approval Limit and lets the Owner make it', async () => {
+      // manager4's day: ₦30,000 from the case above and three ₦40,000
+      // approvals, ₦150,000, the limit itself.
+      await approveForty('manager4', 3);
+      expect(await ledgerTotal('manager4')).toBe(15000000);
+
+      const p = await approvedPurchase([riceLine(1, 1000000)]);
+      const crossing = await edit('manager4', p, {
+        lines: [riceLine(2, 1000000)],
+        reason: 'Two',
+      }).expect(403);
+      expect(messageOf(crossing)).toBe(dailyLimitMessage(16000000, 15000000));
+      expect(await read(p.id)).toMatchObject({
+        totalKobo: 1000000,
+        version: p.version,
+      });
+      expect(
+        await prisma.approvalLedger.count({ where: { ref: p.number } }),
+      ).toBe(0);
+
+      // The Owner has no limit and is never recorded.
+      await edit('owner', p, {
+        lines: [riceLine(2, 1000000)],
+        reason: 'Two',
+      }).expect(200);
+      expect(await ledgerTotal('owner')).toBe(0);
+    });
+
+    it('refuses a manager correcting an approved requisition they raised, either way; another manager, the Owner on their own, and a Pending one pass', async () => {
+      const mine = await approvedPurchase([riceLine(2, 1000000)], 'manager2');
+
+      for (const packs of [3, 1]) {
+        const refused = await edit('manager2', mine, {
+          lines: [riceLine(packs, 1000000)],
+          reason: 'Mine',
+        }).expect(403);
+        expect(messageOf(refused)).toBe(
+          ownRecordCorrectionMessage(OWN_RECORD_KINDS.purchase),
+        );
+        expect(messageOf(refused)).toBe(
+          'You cannot change an approved purchase you created. The Owner or another manager must change it.',
+        );
+      }
+      expect((await read(mine.id)).version).toBe(mine.version);
+
+      await edit('manager3', mine, {
+        lines: [riceLine(1, 1000000)],
+        reason: 'One',
+      }).expect(200);
+
+      const ownersOwn = await approvedPurchase([riceLine(1, 1000000)], 'owner');
+      await edit('owner', ownersOwn, {
+        lines: [riceLine(2, 1000000)],
+        reason: 'Two',
+      }).expect(200);
+
+      const pending = await raise('manager2', [riceLine(1, 100000)]);
+      await edit('manager2', pending, {
+        lines: [riceLine(2, 100000)],
+        reason: 'Two',
+      }).expect(200);
+    });
+
+    it('lets two increases by one manager racing past the day’s limit through one at a time: one passes, the other is refused', async () => {
+      await approveForty('manager5', 3);
+
+      const first = await approvedPurchase([riceLine(1, 1000000)]);
+      const second = await approvedPurchase([riceLine(1, 1000000)]);
+
+      // Each +₦30,000 fits alone (₦150,000); both would be ₦180,000.
+      const results = await Promise.all(
+        [first, second].map((p) =>
+          edit('manager5', p, {
+            lines: [riceLine(4, 1000000)],
+            reason: 'Four',
+          }),
+        ),
+      );
+
+      expect(results.map((response) => response.status).sort()).toEqual([
+        200, 403,
+      ]);
+      expect(
+        messageOf(results.find((response) => response.status === 403)!),
+      ).toBe(dailyLimitMessage(18000000, 15000000));
+      expect(await editRows('manager5')).toEqual([
+        expect.objectContaining({ amountKobo: 3000000 }),
+      ]);
+      expect(await ledgerTotal('manager5')).toBe(15000000);
+    });
+  });
+
   describe('the reads and the history', () => {
     it('lists the active and history views with the screen’s figures', async () => {
       const all = await request(server())
@@ -1332,33 +1514,54 @@ describe('Vendors and purchases (e2e)', () => {
       expect(receive?.assignedToId).toBe(staffId.manager);
     });
 
-    it('values a Kitchen item at the latest requisition that was not rejected or cancelled', async () => {
+    it('values a Kitchen item at the latest Approved or Fulfilled requisition only (Q25)', async () => {
       const item = await kitchenItem(
         `Purchasing Oil ${randomUUID()}`,
         'tin',
         10,
       );
+      const oilLine = (costKobo: number) => ({
+        stockItemId: item.id,
+        qty: 1,
+        costKobo,
+        vendorId: food.id,
+      });
       expect(await latestPackCostKobo(prisma, item.id)).toBeNull();
 
-      await raise('storekeeper', [
-        { stockItemId: item.id, qty: 1, costKobo: 200000, vendorId: food.id },
-      ]);
+      // A Pending requisition sets no cost: nobody has agreed it yet.
+      const first = await raise('storekeeper', [oilLine(200000)]);
+      expect(await latestPackCostKobo(prisma, item.id)).toBeNull();
+      await command('manager2', first, 'approve').expect(200);
       expect(await latestPackCostKobo(prisma, item.id)).toBe(200000);
 
-      const later = await raise('storekeeper', [
-        { stockItemId: item.id, qty: 1, costKobo: 300000, vendorId: food.id },
-      ]);
-      expect(await latestPackCostKobo(prisma, item.id)).toBe(300000);
+      const later = await raise('storekeeper', [oilLine(300000)]);
+      expect(await latestPackCostKobo(prisma, item.id)).toBe(200000);
 
       await command('manager2', later, 'reject').expect(200);
       expect(await latestPackCostKobo(prisma, item.id)).toBe(200000);
+
+      // Received (Fulfilled) still sets it; Cancelled never does.
+      let received = await raise('storekeeper', [oilLine(250000)]);
+      received = (await command('manager2', received, 'approve').expect(200))
+        .body as Purchase;
+      await command('storekeeper', received, 'receive').expect(200);
+      expect(await latestPackCostKobo(prisma, item.id)).toBe(250000);
+
+      let cancelled = await raise('storekeeper', [oilLine(900000)]);
+      cancelled = (await command('manager2', cancelled, 'approve').expect(200))
+        .body as Purchase;
+      expect(await latestPackCostKobo(prisma, item.id)).toBe(900000);
+      await command('manager', cancelled, 'archive', {
+        reason: 'Vendor closed',
+      }).expect(200);
+      expect(await latestPackCostKobo(prisma, item.id)).toBe(250000);
 
       const valued = await prisma.stockItem.findUniqueOrThrow({
         where: { id: item.id },
         select: { id: true, kind: true, factor: true, menuItemId: true },
       });
       expect(valued.kind).toBe(StockKind.KITCHEN);
-      expect(await stockValueKobo(prisma, valued, 5)).toBe(100000);
+      expect(await stockValueKobo(prisma, valued, 5)).toBe(125000);
     });
   });
 });

@@ -11,6 +11,8 @@ import {
   approvalLimitMessage,
   approvalRefusal,
   dailyLimitMessage,
+  increaseKobo,
+  ownRecordCorrectionMessage,
   ownRecordMessage,
 } from './money-control.service';
 
@@ -324,6 +326,44 @@ describe('MoneyControlService', () => {
       expect(() =>
         money.notOwn(manager, undefined, OWN_RECORD_KINDS.stockRequest),
       ).not.toThrow();
+    });
+  });
+
+  describe('notOwnCorrection (approved records, the founder’s decision of 2026-10-22)', () => {
+    it('stops a manager correcting an approved write-off or purchase they created', async () => {
+      for (const what of [
+        OWN_RECORD_KINDS.wasteEntry,
+        OWN_RECORD_KINDS.purchase,
+      ]) {
+        expect(
+          await refusal(() =>
+            money.notOwnCorrection(manager, manager.id, what),
+          ),
+        ).toBe(ownRecordCorrectionMessage(what));
+      }
+      expect(ownRecordCorrectionMessage(OWN_RECORD_KINDS.wasteEntry)).toBe(
+        'You cannot change an approved waste entry you created. The Owner or another manager must change it.',
+      );
+    });
+
+    it('lets another manager, the Owner on their own record, and a record with no creator through', () => {
+      expect(() =>
+        money.notOwnCorrection(manager2, manager.id, OWN_RECORD_KINDS.purchase),
+      ).not.toThrow();
+      expect(() =>
+        money.notOwnCorrection(owner, owner.id, OWN_RECORD_KINDS.wasteEntry),
+      ).not.toThrow();
+      expect(() =>
+        money.notOwnCorrection(manager, null, OWN_RECORD_KINDS.wasteEntry),
+      ).not.toThrow();
+    });
+  });
+
+  describe('increaseKobo', () => {
+    it('is the rise from the old value to the new, and nothing for a fall', () => {
+      expect(increaseKobo(1_000_000, 3_000_000)).toBe(2_000_000);
+      expect(increaseKobo(3_000_000, 1_000_000)).toBe(0);
+      expect(increaseKobo(500_000, 500_000)).toBe(0);
     });
   });
 

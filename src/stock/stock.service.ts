@@ -60,7 +60,7 @@ import {
   STOCK_ITEM_NOT_FOUND_MESSAGE,
   WHOLE_ABOVE_ZERO_MESSAGE,
 } from './stock-messages';
-import { stockValueKobo } from './stock-value';
+import { stockValueAtKobo } from './stock-value';
 
 type Tx = Prisma.TransactionClient;
 
@@ -354,11 +354,11 @@ export class StockService {
    * - The balances are locked while they are read and moved, so a sale or
    *   an issue landing mid-count cannot be counted over.
    * - **Q28's default:** the differences are valued as waste is valued
-   *   (`stockValueKobo`) and checked like a money decision: above the Owner
-   *   Approval Limit only the Owner may record them, and the value counts
-   *   toward the Daily Approval Limit. A count with no difference decides
-   *   nothing and is never limited. A Store count is in packs, so its
-   *   difference is valued as packs × How Many in One units.
+   *   (`stockValueAtKobo`) and checked like a money decision: above the
+   *   Owner Approval Limit only the Owner may record them, and the value
+   *   counts toward the Daily Approval Limit. A count with no difference
+   *   decides nothing and is never limited. A Store count is in packs, so
+   *   its difference is valued per pack (Q25), as a Store write-off is.
    *
    * The role rule is checked before the idempotency service runs, as
    * Correct Balance's Owner rule is.
@@ -434,14 +434,14 @@ export class StockService {
       });
 
       // The Store counts packs; the Kitchen and the Bar count units.
-      // `stockValueKobo` values units, so a Store difference is turned into
-      // units first (packs × How Many in One).
-      const units =
-        request.location === StockLocation.STORE
-          ? difference * item.factor
-          : difference;
-
-      valueKobo += await stockValueKobo(tx, item, units);
+      // `stockValueAtKobo` values each as its location holds it, as a
+      // write-off of the same goods is valued (Q25).
+      valueKobo += await stockValueAtKobo(
+        tx,
+        item,
+        request.location,
+        difference,
+      );
     }
 
     if (changes.length > 0) {

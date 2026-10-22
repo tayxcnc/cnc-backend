@@ -3,6 +3,7 @@ import { INT4_MAX } from '../prisma/int4';
 import {
   correctionMoves,
   hasReceived,
+  isApprovedPurchase,
   isClosedPurchase,
   isLineCost,
   purchaseTotalKobo,
@@ -13,6 +14,14 @@ import {
 } from './purchase-rules';
 
 describe('purchase rules', () => {
+  it('calls Approved and Fulfilled purchases approved, and nothing else (Q25, purchase.edit)', () => {
+    expect(
+      Object.values(PurchaseStatus).filter((status) =>
+        isApprovedPurchase(status),
+      ),
+    ).toEqual([PurchaseStatus.APPROVED, PurchaseStatus.FULFILLED]);
+  });
+
   it('totals packs × cost per pack, as the demo’s purchaseTotal', () => {
     expect(
       purchaseTotalKobo([

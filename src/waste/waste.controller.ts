@@ -192,8 +192,10 @@ export class WasteController {
     summary: 'Correct a waste record (waste.edit)',
     description:
       'Managers, with a reason; the new value is held to the Owner Approval ' +
-      'Limit. On an approved entry the old quantity returns to its location ' +
-      'and the new one leaves.',
+      'Limit. On an approved entry the increase in value counts toward the ' +
+      'editor’s Daily Approval Limit, a manager may not correct an entry ' +
+      'they logged (the Owner may), and the old quantity returns to its ' +
+      'location and the new one leaves.',
   })
   @ApiResponse({ status: 200, type: WasteResponse })
   @ApiResponse({
@@ -208,9 +210,11 @@ export class WasteController {
   @ApiResponse({
     status: 403,
     description:
-      '"Your current staff role cannot perform this action.", or "This ' +
+      '"Your current staff role cannot perform this action.", "This ' +
       'write-off is above the Owner Approval Limit of …. The Owner must ' +
-      'approve it."',
+      'approve it.", the daily limit sentence, or "You cannot change an ' +
+      'approved waste entry you created. The Owner or another manager must ' +
+      'change it."',
     type: ApiErrorResponse,
   })
   @ApiResponse(NOT_FOUND)

@@ -246,7 +246,7 @@ describe('C5 core schema (e2e)', () => {
       await expect(waste(1, -1)).rejects.toThrow(/WasteEntry_values_check/);
     });
 
-    it('reads the latest pack cost from the newest purchase that was not rejected or cancelled (C4’s latestPackCostKobo)', async () => {
+    it('reads the latest pack cost from the newest Approved or Fulfilled purchase only (C4’s latestPackCostKobo, Q25)', async () => {
       const item = (
         await prisma.stockItem.create({
           data: {
@@ -266,11 +266,12 @@ describe('C5 core schema (e2e)', () => {
       await line(first.id, { stockItemId: item, costKobo: 600000 });
       await expect(latestPackCostKobo(prisma, item)).resolves.toBe(600000);
 
-      const second = await purchase(PurchaseStatus.PENDING);
+      const second = await purchase(PurchaseStatus.APPROVED);
       await line(second.id, { stockItemId: item, costKobo: 650000 });
       await expect(latestPackCostKobo(prisma, item)).resolves.toBe(650000);
 
       for (const status of [
+        PurchaseStatus.PENDING,
         PurchaseStatus.REJECTED,
         PurchaseStatus.CANCELLED,
       ]) {

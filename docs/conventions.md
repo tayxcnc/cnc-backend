@@ -787,10 +787,17 @@ They are here so the first card that builds it starts from the rule.
   exported constants there, never retyped** (plan §6.2). `ownerOnly` with
   `OWNER_ONLY_ACTIONS`, `requireOwner` with the price, new-item and
   settings sentences, `withinLimit` with `LIMITED_DECISIONS`, `notOwn` with
-  `OWN_RECORD_KINDS`, `mayChangeAccount` and `keepsAnActiveOwner` for staff
+  `OWN_RECORD_KINDS` (and `notOwnCorrection` for a correction of an
+  approved record), `mayChangeAccount` and `keepsAnActiveOwner` for staff
   accounts. The screens show these refusals verbatim (A7); one home per
   sentence is the only way two commands applying the same rule print it the
   same way.
+- **A correction that raises an already-counted decision counts only its
+  increase, through `increaseKobo` passed as `withinLimit`'s
+  `countedKobo`, while `amountKobo` stays the whole new value for the
+  per-decision limit** (`order.discount`, and from 2026-10-22 `waste.edit`
+  and `purchase.edit` of an approved record). One helper, so "the increase
+  only" is computed the same way wherever the founder has applied it.
 - **A figure inside a ported sentence is formatted with `formatKoboShort`**
   (`src/common/money.ts`): whole naira with no decimals, otherwise two, as
   the staff app's `money()` prints. "…above the Owner Approval Limit of
@@ -951,7 +958,7 @@ They are here so the first card that builds it starts from the rule.
   otherwise be counted over; the id order means two counts over the same
   items cannot deadlock each other.
 - **A stock count follows Q28's default: its differences are valued by
-  `stockValueKobo` (`src/stock/stock-value.ts`) and passed to
+  `stockValueAtKobo` (`src/stock/stock-value.ts`) and passed to
   `MoneyControlService.withinLimit` as `LIMITED_DECISIONS.stockCount`,
   counted toward the day** (the plan places the limit "if Q28 says so"; Q28
   is unanswered, and its stated default is "yes to both"). Above the Owner
@@ -961,15 +968,17 @@ They are here so the first card that builds it starts from the rule.
   advisory lock after the count has locked its balances; a waste approval
   (C5) takes them the other way round, so the two by one manager on one
   item at one moment can deadlock, which Postgres breaks by failing one.
-- **`stockValueKobo` is the demo's coded `wasteValue` until Q25 is
-  answered, and waste (C5) uses the same function** (plan §4.6, §7.8): a
-  Bar item at menu price × quantity at any location; a Kitchen item at the
-  latest purchase cost ÷ the pack's units × quantity, zero when no cost is
-  known. Purchases are C5's schema, so until C5 fills in
-  `latestPackCostKobo` every Kitchen item values at zero, exactly as the
-  demo does with no purchases (C5-1 has filled it in: see the C5 schema
-  section). One function, so a count and a write-off of the same stock can
-  never be valued two ways.
+- **Stock is valued as its location holds it, by one function,
+  `stockValueAtKobo`, which a count and a write-off both call** (plan
+  §4.6, §7.8; Q25 answered by the founder on 2026-10-22). The Kitchen and
+  the Bar hold units, valued by `stockValueKobo` (the demo's `wasteValue`):
+  a Bar item at menu price × quantity, a Kitchen item at the latest pack
+  cost ÷ the pack's units × quantity, rounded to the kobo. The Store holds
+  packs, valued per pack: a Kitchen item at packs × the latest pack cost
+  exactly, a Bar item at packs × How Many in One × its menu price. Zero when
+  no cost is known, as in the demo. One function, so a count and a
+  write-off of the same stock can never be valued two ways; Q25's answer
+  is that they must agree.
 - **A direct issue and a Correct Balance take an `Idempotency-Key`; a count
   and a new stock item do not** (the *Idempotency* rule for creates). A
   retried issue or correction would move stock twice; a retried count finds
@@ -986,15 +995,14 @@ They are here so the first card that builds it starts from the rule.
   rule.** A8 does not list it, and a rule is replaced, not edited, so the
   last save wins; the lock stops two saves interleaving their portions. The
   rule never fills in a kitchen entry or moves stock.
-- **A Store count's difference is valued in units: packs × the item's
-  `factor`, then `stockValueKobo`; a Kitchen or Bar count's difference is
-  already in units** (from the C4 review). The Store holds packs and
-  `stockValueKobo` values units, so a Store count of nine batches of a
-  ₦5,000 drink (108 servings) was valued at ₦45,000 and slipped under the
-  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock
-  converts the same way, **except a write-off**: Q25 keeps waste on the
-  coded formula, which values a Store entry's packs as units, until the
-  founder answers it (see *Waste*).
+- **A Store count's difference is valued per pack, through
+  `stockValueAtKobo`; a Kitchen or Bar count's difference is in units**
+  (from the C4 review, kept by Q25's answer). Valued as units, a Store
+  count of nine batches of a ₦5,000 drink (108 servings) was ₦45,000 and
+  slipped under the ₦50,000 Owner Approval Limit. Every caller valuing
+  stock at a location goes through `stockValueAtKobo`, a write-off included
+  (see *Waste*); calling `stockValueKobo` on Store packs is the bug the C4
+  review found.
 - **`stock.count` takes an `Idempotency-Key` after all; this replaces the
   count half of the rule above that a count needs none** (from the C4
   review). A count writes `counted − recorded` as read at retry time, so a
@@ -1037,13 +1045,19 @@ They are here so the first card that builds it starts from the rule.
   `stockItemId`).** A cuid or a timestamp is no order a requisition can be
   read back in, and the demo's duplicate rule ("Combine duplicate items
   into one quantity.") already allows one line per item.
-- **`latestPackCostKobo` (`src/stock/stock-value.ts`) is the demo's
-  `wasteValue` cost: the line for the item on the most recently raised
-  purchase that is not Rejected or Cancelled** (C5-1 fills in C4's null).
-  One query whose relation filter and order are joins, so it is safe inside
-  a transaction. Every stock count, and from C5-4 every write-off, is
-  valued through it; Q25 asks whether "latest" should mean the latest
-  received line instead, and until it is answered this is the rule.
+- **`latestPackCostKobo` (`src/stock/stock-value.ts`) is the line for the
+  item on the most recently raised purchase that is Approved or Fulfilled
+  (`APPROVED_PURCHASE_STATUSES`, `src/purchasing/purchase-rules.ts`), never
+  Pending, Rejected or Cancelled** (C5-1 filled in C4's null; Q25 answered
+  by the founder on 2026-10-22: "pack cost comes only from Approved or
+  received purchases"). A Pending requisition is a cost nobody has agreed:
+  whoever raised it would set the value their own write-offs, the approvals
+  prediction and the Q28 count limit are judged on, before any manager
+  reviewed it (the C5 review). Receiving is all at once (D39), so
+  "received" is Fulfilled; there is no partly received status. "Latest"
+  stays the most recently raised costing purchase: the decision names which
+  purchases count, not a new order. One query whose relation filter and
+  order are joins, so it is safe inside a transaction.
 
 ## Stock requests *(from C5)*
 
@@ -1129,9 +1143,23 @@ They are here so the first card that builds it starts from the rule.
   L, D, N"). The limit sentence before the own-record one is the demo's
   order, so a manager approving their own ₦140,000 purchase is told about
   the limit. A rejection spends nothing: a manager may reject their own,
-  and nothing is counted. `purchase.edit` holds both the old and the new
-  total to the Owner Approval Limit without counting either: an edit
-  decides nothing.
+  and nothing is counted.
+- **`purchase.edit` holds both the old and the new total to the Owner
+  Approval Limit. On an approved purchase (Approved or Fulfilled,
+  `isApprovedPurchase`) the increase of the total (`increaseKobo`) also
+  counts toward the editor's Daily Approval Limit, and a manager may not
+  correct a purchase they raised (`notOwnCorrection`, 403 "You cannot
+  change an approved purchase you created. The Owner or another manager
+  must change it."); the Owner is exempt from all of it** (the founder's
+  decision of 2026-10-22, amending plan §6.2's "L on the old and new
+  totals"). Raising an approved total is a fresh decision of the
+  difference, counted as `order.discount` counts "the increase only";
+  without it a manager could take an approved purchase past the day's
+  limit, or raise their own once a colleague had approved it. A decrease
+  adds nothing to the day, and a Pending requisition's correction counts
+  nothing because its approval will. The checks run in the approval's
+  order (limit, day, own record), and a refusal rolls back the ledger row
+  and any Store correction with the command.
 - **The automatic tasks are raised and closed only through
   `src/tasks/automatic-tasks.ts` (`raiseAutomaticTask`, `closeOpenTasks`,
   `managerForTask`, `storekeeperForTask`), in the command's transaction**
@@ -1252,15 +1280,19 @@ They are here so the first card that builds it starts from the rule.
   `WASTE_CORRECTION_DEDUCTION`), as the demo moves them. A location that
   cannot cover the approval refuses it with the ledger's "Insufficient …
   stock for …." and the approval, its ledger row included, rolls back.
-- **The value is the coded formula until Q25 is answered: `stockValueKobo`
-  on the entry's quantity as it stands, at any location, so a Store entry's
-  packs are valued as units (one bag of rice at ₦70,000 a bag of 50 is
-  ₦1,400)** (plan §4.6, §7.8; card C5-4). This is Q25's own
-  description of the current rule, which the plan ports until the founder
-  answers; it departs from the C4 count rule that converts Store packs
-  first, because that conversion is exactly the change Q25 asks the founder
-  to approve. Answering Q25 changes `WasteService`'s valuation, not the
-  shared function.
+- **The value is Q25's, as the founder answered it on 2026-10-22:
+  `stockValueAtKobo` on the entry's quantity as its location holds it, so
+  Store waste is valued per pack (one bag of rice at ₦70,000 is ₦70,000),
+  Kitchen waste at the pack cost ÷ How Many in One × units, and Bar waste
+  at menu price × quantity; the pack cost comes only from Approved or
+  Fulfilled purchases (`latestPackCostKobo`)** (plan §4.6, §7.8; card
+  C5-4). Valued as units, as the coded formula did, one bag was ₦1,400,
+  which kept most Store write-offs under a Manager's ₦50,000 limit, and a
+  Store count of the same bag was valued at ₦70,000: the founder's answer
+  is that the two agree and the Owner approves a write-off worth more than
+  the limit. The count and the write-off share the one function, so they
+  cannot drift apart again. Entries stored before the answer keep the
+  value they were logged at until they are corrected or approved.
 - **The value is stored on the row when the entry is logged and corrected,
   and valued afresh when it is approved (by `waste.approve` or by
   `waste.status` to Approved), which stores the new value** (plan §4.6
@@ -1279,39 +1311,49 @@ They are here so the first card that builds it starts from the rule.
   before the limits because the Owner is exempt from them; it is a 409
   because the request is sound and the entry's state is what blocks it (a
   price raised after the entry was logged is the only way there).
-- **Two money-control points raised in the C5 review wait on the founder,
-  not on code** (recorded so they are not mistaken for oversights):
-  - *The pack cost comes from any requisition that is not Rejected or
-    Cancelled, Pending included* (`latestPackCostKobo`, the demo's
-    `wasteValue`). Whoever raises a requisition therefore sets the cost
-    that waste, the approvals prediction and the Q28 count limit are judged
-    on, before any manager has reviewed it; with Store waste valued per
-    unit, that is a way under the Owner Approval Limit. Q25's own default
-    ("latest cost would mean the most recently received line", Store waste
-    per pack) closes both, and the plan ports the coded formula until Q25
-    is answered; changing it is a pricing rule, not an implementation
-    choice. Answering Q25 changes `COSTLESS_PURCHASES` to an allow-list
-    (received lines, or Approved and Fulfilled purchases).
-  - *A correction of an approved entry (`waste.edit`, and `purchase.edit`
-    of an Approved requisition) is held to the Owner Approval Limit only*
-    (plan §6.2 "edit: L"; the demo's `withinLimit` without counting), so a
-    manager can raise an approved value past the Daily Approval Limit, or
-    raise their own record after a colleague approved it. Counting the
-    increase toward the day and applying the own-record rule (as
-    `order.discount` counts "the increase only"), or sending a raised
-    approved record back to Pending, is a change to the approved rule
-    table and needs the founder's agreement, as §17's corrections had.
+- **The two money-control points the C5 review left for the founder are
+  decided (2026-10-22) and built** (recorded so the history of the rule is
+  in one place):
+  - *The pack cost came from any requisition not Rejected or Cancelled,
+    Pending included*, so whoever raised one set the cost their write-offs
+    and counts were judged on. Decided: only Approved or Fulfilled
+    purchases set it (see the C5 schema section).
+  - *A correction of an approved record was held to the Owner Approval
+    Limit only* (plan §6.2 "edit: L"), so a manager could raise an
+    approved value past the Daily Approval Limit, or raise their own record
+    after a colleague approved it. Decided: the increase counts toward the
+    day and the own-record rule applies (the `waste.edit` rule below, and
+    `purchase.edit` under *Purchasing and vendors*). This amends plan
+    §6.2's `waste.edit` and `purchase.edit` rows.
 - **An approval (`waste.approve`, and `waste.status` to Approved from any
   other status) runs `MoneyControlService.withinLimit` with
   `LIMITED_DECISIONS.writeOff`, counted toward the day, then `notOwn` with
-  `OWN_RECORD_KINDS.wasteEntry`, in the demo's order; a correction holds the
-  new value to the Owner Approval Limit without counting it** (plan §6.2
-  "approve: L, D, N; edit: L"). The C5 gate's steps 5 and 6 are the
+  `OWN_RECORD_KINDS.wasteEntry`, in the demo's order** (plan §6.2
+  "approve: L, D, N"). The C5 gate's steps 5 and 6 are the
   own-record refusal and the fourth ₦40,000 approval refused at ₦160,000.
   A rejection writes nothing off: a manager may reject their own entry, and
   nothing is counted. The approval takes the limit's advisory lock before
   the ledger's balance row; a stock count takes them the other way round
   (see *Stock*).
+- **`waste.edit` holds the new value to the Owner Approval Limit; on an
+  Approved entry the increase over the stored value (`increaseKobo`) also
+  counts toward the editor's Daily Approval Limit, and a manager may not
+  correct an entry they logged, up or down (`notOwnCorrection`, 403 "You
+  cannot change an approved waste entry you created. The Owner or another
+  manager must change it."); the Owner is exempt from all of it** (the
+  founder's decision of 2026-10-22, amending plan §6.2's "edit: L"; new
+  sentence, in the own-record sentence's form, because the demo had none).
+  Raising an approved write-off is a fresh decision of the difference,
+  counted as `order.discount` counts "the increase only", so the day's
+  limit cannot be walked round by approving small and correcting upward.
+  The old value is the stored one, the value the approval or the last
+  correction was judged on. A decrease adds nothing; a Pending entry's
+  correction counts nothing, because its approval will. The checks run in
+  the approval's order (limit, day, own record) before any stock moves, so
+  a refusal moves nothing and leaves no ledger row; two increases by one
+  manager racing past the limit are serialised by the ledger's advisory
+  lock and the second is refused (`test/waste.e2e-spec.ts`,
+  `test/purchasing.e2e-spec.ts`).
 - **`waste.create` takes an Idempotency-Key; every other waste command does
   not** (the *Idempotency* rule for creates): a retried create would log the
   loss twice, and every other command names a version the first attempt

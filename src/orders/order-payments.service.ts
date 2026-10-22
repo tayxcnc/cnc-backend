@@ -18,6 +18,7 @@ import { AuditService, staffActor } from '../audit/audit.service';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import { watToday } from '../common/wat';
 import {
+  increaseKobo,
   LIMITED_DECISIONS,
   MoneyControlService,
   OWNER_ONLY_ACTIONS,
@@ -334,7 +335,7 @@ export class OrderPaymentsService {
         amountKobo: request.amountKobo,
         what: LIMITED_DECISIONS.discount,
         count: true,
-        countedKobo: Math.max(0, request.amountKobo - order.discountKobo),
+        countedKobo: increaseKobo(order.discountKobo, request.amountKobo),
         action: 'order.discount',
         ref: order.number,
       });
