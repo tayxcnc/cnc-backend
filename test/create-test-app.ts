@@ -9,8 +9,15 @@ import {
 } from '../src/bootstrap';
 import { requestIdMiddleware } from '../src/common/request-id.middleware';
 import { CncConfigService } from '../src/config/cnc.config';
+import { MAIL_TRANSPORT } from '../src/mail/mail-transport';
+import { RecordingMailTransport } from '../src/mail/recording-mail-transport';
 import { MediaStorage } from '../src/storage/media-storage';
 import { FakeMediaStorage } from './fake-media-storage';
+
+/** The recording mail transport of an app `createTestApp` built. */
+export function sentMail(app: INestApplication<App>): RecordingMailTransport {
+  return app.get<RecordingMailTransport>(MAIL_TRANSPORT, { strict: false });
+}
 
 /**
  * A CNC application wired the way `bootstrap()` wires the real one.
@@ -22,10 +29,12 @@ import { FakeMediaStorage } from './fake-media-storage';
  *
  * Helmet and Swagger are left out: neither changes a status code or a body.
  * Every third party is replaced by a fake here, so no suite ever reaches
- * one over the network: today the media bucket (`MediaStorage`, an
- * in-memory `FakeMediaStorage`; read it back with
- * `app.get(MediaStorage, { strict: false })`). Mail and Paystack join it
- * with their cards.
+ * one over the network: the media bucket (`MediaStorage`, an in-memory
+ * `FakeMediaStorage`; read it back with
+ * `app.get(MediaStorage, { strict: false })`) and, from C6, mail
+ * (`MAIL_TRANSPORT`, a `RecordingMailTransport` that logs nothing, whatever
+ * `CNC_ENV` says; read the messages with `sentMail(app)`). Paystack joins
+ * them with its card.
  *
  * `controllers` adds test-only routes beside the real ones, for a suite that
  * proves a piece of shared infrastructure (optimistic versions, idempotency)
@@ -41,6 +50,8 @@ export async function createTestApp(
   })
     .overrideProvider(MediaStorage)
     .useValue(new FakeMediaStorage())
+    .overrideProvider(MAIL_TRANSPORT)
+    .useValue(new RecordingMailTransport(false))
     .compile();
 
   // `rawBody` matches bootstrap(): the Paystack webhook (C7) authenticates by

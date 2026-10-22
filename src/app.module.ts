@@ -9,6 +9,7 @@ import { CncAuthModule } from './auth/cnc-auth.module';
 import { CashModule } from './cash/cash.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { CncConfigModule } from './config/cnc-config.module';
+import { CustomersModule } from './customers/customers.module';
 import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
 import { HealthController } from './health/health.controller';
 import { SERVICE_NAME } from './health/service-name.token';
@@ -51,6 +52,7 @@ import { WasteModule } from './waste/waste.module';
     CncPrismaModule,
     IdempotencyModule,
     CncAuthModule,
+    CustomersModule,
     AuditViewerModule,
     StaffModule,
     SettingsModule,

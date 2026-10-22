@@ -175,7 +175,33 @@ export function SignedInCredentialThrottle(): MethodDecorator {
   );
 }
 
-/** `POST /auth/staff/refresh`. */
+/**
+ * `POST /auth/code`, a customer asking for a sign-in code (C6): the address
+ * over every email, at the sign-in ceiling. This is only the in-memory
+ * first line, so a flood is refused before it reaches the database; the
+ * real caps on issuance (per email and per address, counted on the stored
+ * code rows so they hold across instances and restarts) are
+ * `OtpService`'s.
+ */
+export function CodeRequestThrottle(): MethodDecorator {
+  return applyDecorators(
+    Throttle({
+      [THROTTLERS.address]: {
+        limit: SIGN_IN_ADDRESS_LIMIT,
+        ttl: AUTH_ATTEMPT_WINDOW_MS,
+      },
+    }),
+    SkipThrottle({
+      [THROTTLERS.account]: true,
+      [THROTTLERS.accountAnywhere]: true,
+    }),
+  );
+}
+
+/**
+ * `POST /auth/staff/refresh`, and from C6 the customer's `POST
+ * /auth/refresh`: a refused refresh signs a real person out either way.
+ */
 export function RefreshThrottle(): MethodDecorator {
   return applyDecorators(
     Throttle({

@@ -39,6 +39,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `migrate dev` local only; `migrate deploy` by hand before the merge | Data and migrations |
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
+| Customer email codes: caps, tries, sentences, `OtpService`, `CncCustomerGuard`, creating customers | Auth |
+| Email: the outbound queue, sealed payloads, expiry, the transports, the mail frame, `sentMail` in tests | Mail and the outbound queue |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
@@ -116,7 +118,13 @@ src/
                      one-sentence field checks, the admin reason, item lists
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
-  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens sweep
+  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens and
+                     messages sweeps
+  customers/         the customer email-code sign-in (/auth/code, verify, refresh,
+                     sign-out), GET/PATCH /me; CustomerService (the one creator
+                     of customers), OtpService (codes and their caps)
+  mail/              the outbound queue (OutboundMessagesService), templates, the
+                     CNC mail frame, MessageSeal, the Resend and recording transports
   images/            PhotoStore: byte inspection, sharp resizing, the upload route
                      decorator; the only importer of storage/
   storage/           MediaStorage and its Cloud Storage binding (gs:// URIs, V4 links)
@@ -173,7 +181,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      assets-maintenance: assets and repairs; attendance:
                      the scan, corrections, reads and step 7;
                      approvals: the approvals read and the C5 races;
-                     c5-gate: the C5 gate walk, steps 1 to 7),
+                     c5-gate: the C5 gate walk, steps 1 to 7;
+                     customer-auth: the email-code sign-in, its caps,
+                     the realms, the outbound queue and TAY's cookies),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

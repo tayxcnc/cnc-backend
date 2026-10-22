@@ -373,6 +373,34 @@ describe('getters', () => {
     expect(config.staffUrl).toBeUndefined();
     expect(config.contactEmail).toBeUndefined();
   });
+
+  it('treats a placeholder mail key or sender as unset (C6)', () => {
+    environment(
+      { CNC_JWT_SECRET: SECRET },
+      {
+        CNC_RESEND_API_KEY: 'PLACEHOLDER_NOT_SET',
+        CNC_MAIL_FROM: 'CHANGE_ME',
+      },
+    );
+    const config = new CncConfigService();
+
+    expect(config.resendApiKey).toBeUndefined();
+    expect(config.mailFrom).toBeUndefined();
+  });
+
+  it('reads a real mail key and sender', () => {
+    environment(
+      { CNC_JWT_SECRET: SECRET },
+      {
+        CNC_RESEND_API_KEY: 're_not_a_real_key',
+        CNC_MAIL_FROM: 'CNC <cnc@example.com>',
+      },
+    );
+    const config = new CncConfigService();
+
+    expect(config.resendApiKey).toBe('re_not_a_real_key');
+    expect(config.mailFrom).toBe('CNC <cnc@example.com>');
+  });
 });
 
 describe('secureCookies (A16)', () => {

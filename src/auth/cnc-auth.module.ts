@@ -13,6 +13,7 @@ import {
   TOO_MANY_ATTEMPTS_MESSAGE,
 } from './auth-throttle';
 import { CncTokenService } from './cnc-token.service';
+import { CncCustomerGuard } from './guards/cnc-customer.guard';
 import { CncStaffGuard } from './guards/cnc-staff.guard';
 import { StaffAuthController } from './staff-auth.controller';
 import { StaffAuthService } from './staff-auth.service';
@@ -25,18 +26,26 @@ import {
 /**
  * CNC's authentication realm: the staff session routes, the admin password
  * reset, and the primitives other modules build on (`CncTokenService`,
- * `CncStaffGuard`, `@Roles`, `@CurrentStaff`).
+ * `CncStaffGuard`, `@Roles`, `@CurrentStaff`, and from C6 the customer
+ * realm's `CncCustomerGuard` and `@CurrentCustomer`). The customer session
+ * routes live in `CustomersModule`, which imports this one and runs its
+ * throttled routes against the `ThrottlerModule` registered here: that
+ * module is global, so a second registration would replace these counts
+ * for every route rather than add its own.
  *
  * Tokens are signed HS256 with `CncConfigService.jwtSecret`, which refuses
  * to boot on a placeholder or a value under 32 characters. TAY's realm has
  * its own secret, so a TAY token presented here fails verification (401).
  *
- * `ThrottlerModule` is registered here, module-locally, with in-memory
- * storage (plan A18: no Redis at launch). It provides the options and
- * storage `ClientAddressThrottlerGuard` resolves against and registers no
+ * `ThrottlerModule` is registered here, with in-memory storage (plan A18:
+ * no Redis at launch). It provides the options and storage
+ * `ClientAddressThrottlerGuard` resolves against and registers no
  * APP_GUARD, so the limits reach only the routes that apply the guard by
- * hand (`auth-throttle.ts`). A module that later throttles its own routes
- * registers its own, as TAY's contact form does.
+ * hand (`auth-throttle.ts`). `ThrottlerModule` is `@Global`, so this is the
+ * one registration: a module that throttles its own routes provides the
+ * guard and names its counts with `@Throttle`, and never calls `forRoot`
+ * again (corrected in C6; a second `forRoot` replaces the options for
+ * every route).
  *
  * `StaffAuthService` decides who gets a session and stays private to this
  * module. It audits the password change and the admin reset through
@@ -73,9 +82,10 @@ import {
     CncJwtStrategy,
     CncTokenService,
     CncStaffGuard,
+    CncCustomerGuard,
     StaffAuthService,
     ClientAddressThrottlerGuard,
   ],
-  exports: [CncTokenService, CncStaffGuard],
+  exports: [CncTokenService, CncStaffGuard, CncCustomerGuard],
 })
 export class CncAuthModule {}

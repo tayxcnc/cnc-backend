@@ -520,18 +520,36 @@ export class CncConfigService {
     return this.ownOrThrow('PAYSTACK_SECRET_KEY');
   }
 
-  /** CNC's own Resend API key. Optional until email lands (C6). */
+  /**
+   * CNC's own Resend API key, or undefined when unset, blank or still a
+   * placeholder (C6).
+   *
+   * A placeholder reads as unset rather than as a key: staging carries
+   * `PLACEHOLDER_NOT_SET` until the founder's Resend steps are done, and
+   * handing that string to Resend would turn every message into a failed
+   * send that burns a retry. Unset, the outbound queue leaves each message
+   * waiting for the retry sweep (`OutboundMessagesService`), and no
+   * customer's request fails for it. Never logged.
+   */
   get resendApiKey(): string | undefined {
-    return this.ownOptional('RESEND_API_KEY');
+    return this.ownUnlessPlaceholder('RESEND_API_KEY');
   }
 
   /**
    * Sender address for CNC's transactional mail, a bare address or the
    * `CNC <cnc@example.com>` form. Resend delivers to arbitrary recipients only
-   * from a domain verified in its dashboard.
+   * from a domain verified in its dashboard. Undefined when unset, blank or a
+   * placeholder, for the reason `resendApiKey` gives.
    */
   get mailFrom(): string | undefined {
-    return this.ownOptional('MAIL_FROM');
+    return this.ownUnlessPlaceholder('MAIL_FROM');
+  }
+
+  /** An optional own value, undefined when unset, blank or a placeholder. */
+  private ownUnlessPlaceholder(suffix: string): string | undefined {
+    const value = this.ownOptional(suffix);
+
+    return value === undefined || PLACEHOLDERS.has(value) ? undefined : value;
   }
 
   /**

@@ -779,6 +779,126 @@ They are here so the first card that builds it starts from the rule.
   `CNC_ENV=staging`, so a check on `cncEnv` would drop `Secure` on staging
   while every e2e suite (`NODE_ENV=test`) still passed; the getter's spec
   fails if it moves.
+- **Customers sign in by email only** (Q5's default; from C6): `POST
+  /auth/code` mails a 6-digit code, `POST /auth/verify` checks it, creates
+  the customer on first use and starts the session, `POST /auth/refresh`
+  restores it from `cnc_refresh_token`, `POST /auth/sign-out` ends every
+  customer session. A phone number at `/auth/code` is refused with the
+  sign-in screen's own sentence, "Enter your email address."; SMS sign-in
+  waits for an SMS provider (Q5, Q19).
+- **The customer realm is `CncCustomerGuard` and `@CurrentCustomer()`
+  (`src/auth/`), the mirror of the staff guard: a `CUSTOMER` token whose row
+  still exists.** A staff token on a customer route is `403` ("This route
+  is for customers. The token presented is a staff token."), a customer
+  whose row is gone `401`. Each realm's refresh redeems only its own
+  `SubjectType`, and a token of the other realm is refused without being
+  spent, so a customer cookie sent to the staff route signs nobody out.
+- **The code is issued and checked only by `OtpService`
+  (`src/customers/otp.service.ts`), purpose-generic so the email change
+  (C6-3) shares its caps and sentences.** One-time code rules, with the
+  numbers in `src/customers/one-time-code.ts`:
+  - 6 digits from `crypto.randomInt`, stored as SHA-256 (`codeHash`),
+    10 minutes, 5 tries (A15); the code is in no response and no log line.
+  - **Caps count the stored `OtpCode` rows, not memory**: another code for
+    the same email only after 30 s ("Please wait N seconds before asking
+    for a new code.", 429, the account app's sentence); at most 5 codes per
+    email and 30 per client address in 15 minutes ("Too many attempts. Wait
+    a few minutes and try again.", 429). Rows hold across instances and
+    restarts, where A18's in-memory throttler is per instance; the tokens
+    sweep keeps them a day for this. 5 per email holds what a stranger can
+    push into someone's inbox to twenty an hour; 30 per address leaves room
+    for a mobile carrier's NAT or the venue's Wi-Fi.
+  - Issuance for one email runs under `pg_advisory_xact_lock` on
+    `cnc:otp:<purpose>:<email>`, so requests arriving together cannot both
+    pass a cap (seen failing without it).
+  - **Only the email's newest code counts**; a new one supersedes the old,
+    as in the account app. The sentences are the app's, byte for byte: "Ask
+    for a new code.", "That code has expired. Ask for a new one.", "That
+    code is not right. N tries left." ("1 try left."), "Too many attempts.
+    Ask for a new code.", all 400; a malformed code is "Enter the 6 digit
+    code." (the screen's sentence with the server's six).
+  - A wrong code spends a try by one conditional increment; the right one is
+    spent by one conditional update (`consumedAt IS NULL`, unexpired, tries
+    left) inside the transaction that creates the customer, so two verifies
+    of one code cannot both sign in (seen failing without the condition),
+    and a failure after it leaves the code unspent.
+  - The in-memory throttles are the first line only: `/auth/code` counts the
+    address (100), `/auth/verify` uses `SignInThrottle` (the email at an
+    address 10, the email anywhere 30, the address 100), `/auth/refresh`
+    `RefreshThrottle`. Every route runs against the one `ThrottlerModule`
+    `CncAuthModule` registers: that module is `@Global`, so a second
+    `forRoot` would replace these counts for every route instead of adding
+    its own.
+- **A customer is created only by `CustomerService.findOrCreateVerified`,
+  under `pg_advisory_xact_lock` on `cnc:customer-email:<email>`**, drawing
+  the member number only when it creates. Two first sign-ins with one email
+  (or, from C7, a sign-in racing checkout's "Save my details") make one
+  customer, never a unique-index 500, and returning customers burn no
+  numbers. A new customer's name is empty, and `isNew` is "no name yet"
+  (the account app's `isNew || !name`), so a person who closed the name
+  step is asked again.
+- **Customer sign-in writes no audit row**, as staff sign-in writes none:
+  it is not a command in the staff app's record. The code row keeps who
+  verified (`customerId`), from which address and when.
+- **Customer sign-out ends every customer session, as TAY's member
+  sign-out does**: a refresh token carries no id a client could name, so
+  one-device sign-out would be a token-service change.
+
+## Mail and the outbound queue *(from C6)*
+
+- **Every email goes through `OutboundMessagesService` (`src/mail/`):
+  `enqueue(tx, …)` writes an `OutboundMessage` in the command's own
+  transaction, and `dispatch(id)` sends it after the commit.** A failed
+  send never rolls back a command and never fails a customer's request
+  (plan §4.8): the message waits for `POST /internal/sweeps/messages`.
+  `dedupeKey` (`otp:<OtpCode.id>`, later `reservation:<id>:confirmed` and
+  the like) is inserted with `ON CONFLICT DO NOTHING`, because a P2002
+  inside the caller's transaction would abort the command.
+- **The row stores the template's name and its parameters, sealed, never a
+  rendered body** (`payload`, AES-256-GCM under a key derived by HKDF from
+  `CNC_JWT_SECRET` with its own label, `MessageSeal`). The queue must be
+  able to re-send a sign-in code, so the code is stored until then; in
+  clear, a database read would yield a working code and undo `codeHash`.
+  The payload is cleared once the message is sent or given up. A new secret
+  was not added: it would need a Secret Manager entry and deploy change on
+  every environment, for a value only this service must hold. Rotating the
+  JWT secret makes waiting payloads unreadable, and the queue gives those
+  messages up.
+- **A template is rendered at send time, and its parameters are checked
+  by a guard when read back** (`mail-templates.ts`); `enqueue` renders once
+  and discards, so a misfit fails the command at once, not silently in a
+  sweep. Every caller-supplied value goes through `escapeHtml`.
+- **Every message has an `expiresAt`; past it the sweep gives up**
+  (`FAILED`, "Expired before it could be sent."). A code's email expires
+  with the code; others default to 24 hours. A confirmation days late is
+  worse than none, and a staging service without a key would otherwise
+  send its whole backlog the day the key is set.
+- **Three attempts, claimed by a conditional increment of `attempts`
+  before each send**, so the request's dispatch and a sweep at the same
+  moment cannot both send one message. **While mail is not configured, a
+  message waits `PENDING` without spending an attempt** (`lastError` "Mail
+  is not configured.").
+- **The transport is chosen once by `CNC_ENV`** (`mailTransportFor`):
+  locally, and in every test, `RecordingMailTransport` sends nothing and
+  writes the text, code included, to the local log, so a local walk reads
+  the code from the server's output and no local run can send real mail
+  even with a real key. Staging and production use `ResendMailTransport`
+  with CNC's own key, which logs the recipient and the outcome only, never
+  a subject or body (TAY's rule: a body in a log line is a credential in a
+  log line). A built container refuses `CNC_ENV=local`, so the logging
+  transport cannot reach a deployed service.
+- **`CncConfigService.resendApiKey` and `mailFrom` read a placeholder
+  (`PLACEHOLDER_NOT_SET`, `CHANGE_ME`) as unset.** Staging carries the
+  placeholder until the founder's Resend steps; handed to Resend it would
+  make every send a failure that burns a retry.
+- **The e2e harness replaces the transport with a `RecordingMailTransport`
+  that logs nothing; a suite reads mail with `sentMail(app)`** and takes a
+  code from the email's text, as a customer would. Its `configured` and
+  `failWith` switches stand in for an unconfigured or failing provider.
+- **The mail frame is `cnc-mail-frame.ts`: TAY's table structure, CNC's
+  colours (`cnc-frontend/app/globals.css`), the wordmark "CHEF NORO
+  CULINARY" and the site's icon from `buildWebUrl('/icons/icon-192.png')`**
+  (plan §9.2). With no web URL it shows the wordmark alone.
 
 ## Money controls and the audit log *(from C3)*
 

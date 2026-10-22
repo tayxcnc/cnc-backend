@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { MailModule } from '../mail/mail.module';
 import { SweepsController } from './sweeps.controller';
 import { SweepTokenGuard } from './sweep-token.guard';
 import { TokensSweepService } from './tokens-sweep.service';
@@ -11,6 +12,8 @@ import { TokensSweepService } from './tokens-sweep.service';
  * `IdempotencyService` and the Prisma client are global.
  */
 @Module({
+  // The messages sweep's work is the outbound queue's (`MailModule`).
+  imports: [MailModule],
   controllers: [SweepsController],
   providers: [SweepTokenGuard, TokensSweepService],
 })

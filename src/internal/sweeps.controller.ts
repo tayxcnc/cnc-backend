@@ -14,6 +14,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
+import { OutboundMessagesService } from '../mail/outbound-messages.service';
+import { MessagesSweepResponse } from './dto/messages-sweep.response';
 import { TokensSweepResponse } from './dto/tokens-sweep.response';
 import { SWEEP_TOKEN_HEADER, SweepTokenGuard } from './sweep-token.guard';
 import { TokensSweepService } from './tokens-sweep.service';
@@ -21,7 +23,8 @@ import { TokensSweepService } from './tokens-sweep.service';
 /**
  * The housekeeping sweeps, as routes Cloud Scheduler calls (plan §5.5),
  * copied from TAY's `SweepsController` (§11). C3-9 adds the tokens sweep;
- * the messages and reminders sweeps arrive with C6-8, and the checkouts
+ * C6-1 the messages sweep (the outbound queue's retry, built with the first
+ * email CNC sends); the reminders sweep arrives with C6-8, and the checkouts
  * and payments sweeps with C7-5, each with its Scheduler job.
  *
  * ## Housekeeping, not correctness
@@ -46,7 +49,10 @@ import { TokensSweepService } from './tokens-sweep.service';
 export class SweepsController {
   private readonly logger = new Logger(SweepsController.name);
 
-  constructor(private readonly tokens: TokensSweepService) {}
+  constructor(
+    private readonly tokens: TokensSweepService,
+    private readonly messages: OutboundMessagesService,
+  ) {}
 
   @Post('tokens')
   @HttpCode(HttpStatus.OK)
@@ -81,6 +87,39 @@ export class SweepsController {
         `${result.passwordResetTokens} password-reset token(s), ` +
         `${result.otpCodes} one-time code(s) and ` +
         `${result.idempotencyKeys} idempotency key(s).`,
+    );
+
+    return result;
+  }
+
+  @Post('messages')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'sweepMessages',
+    summary: 'Retry outbound email that has not gone',
+    description:
+      'Every 5 minutes (C6-8 creates the Scheduler job). Gives up on ' +
+      'messages past their expiry, then retries waiting and failed ' +
+      'messages, oldest first, 50 a run, 3 attempts each. While mail is ' +
+      'not configured a message waits without spending an attempt.',
+  })
+  @ApiHeader({
+    name: SWEEP_TOKEN_HEADER,
+    description: 'The shared secret, `CNC_SWEEP_TOKEN`.',
+    required: true,
+  })
+  @ApiResponse({ status: 200, type: MessagesSweepResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'The token is absent, wrong, or not configured.',
+    type: ApiErrorResponse,
+  })
+  async messagesSweep(): Promise<MessagesSweepResponse> {
+    const result = await this.messages.sweep(new Date());
+
+    this.logger.log(
+      `Sweep messages sent ${result.sent}, failed ${result.failed}, left ` +
+        `${result.waiting} waiting and gave up ${result.expired}.`,
     );
 
     return result;

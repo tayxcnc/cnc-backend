@@ -1692,6 +1692,15 @@ model CustomerNotification {
 /// and `FAILED` rows up to three attempts.
 ///
 /// `lastError` is the provider's reason, never the message body or subject.
+///
+/// From C6: `payload` holds what the template needs to render the message
+/// (a name, a sign-in code, a booking's details), **sealed** with
+/// AES-256-GCM under a key derived from `CNC_JWT_SECRET`
+/// (`src/mail/message-seal.ts`), so a database read never yields a usable
+/// sign-in code or a customer's details in clear. It is set to null once the
+/// message is sent or given up. `expiresAt` is when the retry sweep gives up
+/// on the message: a sign-in code's mail is worthless after the code
+/// expires, and a confirmation sent days late is worse than none.
 model OutboundMessage {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -1705,6 +1714,8 @@ model OutboundMessage {
   attempts  Int                   @default(0)
   sentAt    DateTime?
   lastError String?
+  payload   String?
+  expiresAt DateTime?
 
   @@index([status, createdAt])
 }
