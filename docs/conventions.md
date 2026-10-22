@@ -980,8 +980,10 @@ They are here so the first card that builds it starts from the rule.
   already in units** (from the C4 review). The Store holds packs and
   `stockValueKobo` values units, so a Store count of nine batches of a
   ₦5,000 drink (108 servings) was valued at ₦45,000 and slipped under the
-  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock (C5's
-  waste, purchases) converts the same way.
+  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock
+  converts the same way, **except a write-off**: Q25 keeps waste on the
+  coded formula, which values a Store entry's packs as units, until the
+  founder answers it (see *Waste*).
 - **`stock.count` takes an `Idempotency-Key` after all; this replaces the
   count half of the rule above that a count needs none** (from the C4
   review). A count writes `counted − recorded` as read at retry time, so a
@@ -1198,6 +1200,139 @@ They are here so the first card that builds it starts from the rule.
   hides a manager's own review tasks while the approvals alert is on,
   because the Purchase Approval item stands in for them; that item is C8-2's,
   so until it exists the review task shows as an assigned task.
+
+## Waste *(from C5)*
+
+- **Every waste command is in `WasteService` (`src/waste/waste.service.ts`)
+  and, after the create, claims the entry's `version` first; an id that
+  names nothing is 404 "Waste record not found." (the demo's `waste.edit`
+  sentence, used by every command), and approving or rejecting an entry
+  that is not Pending is 409 "Only pending waste can be reviewed."** The
+  claim is the row lock the rest runs under, so two managers approving one
+  entry end as one approval and one stale 409, and the stock leaves once.
+- **Each role logs and reads waste at its own location: the Kitchen the
+  Kitchen's, a Bartender or a Cashier (from the till) the Bar's, the
+  Storekeeper the Store's; managers any location** (`wasteLocationFor`,
+  `src/waste/waste-rules.ts`; plan §6.1, the demo's `WasteRecords`). Logging
+  elsewhere is 403 with the role's own demo sentence ("Kitchen staff can log
+  kitchen waste only."), because it is a refusal by role, not bad input; a
+  scoped role reading another location is the role sentence, as on the
+  requests read. The item must be one the location holds (`locationHolds`).
+- **`waste.create` checks in the demo's order (location, the role's own
+  location, quantity and reason, item), so the item, quantity and reason
+  are `@Allow()` in the DTO and judged in the service.** The demo's sentences
+  each cover two fields ("Enter a whole quantity and a waste reason.",
+  "Choose an item for this stock location."); checked in the DTO, a request
+  wrong in both would answer the sentence twice (*Errors*). `waste.edit`
+  does the same with its own words, after its reason (`@AdminReason`).
+- **Stock moves only when an entry is approved, and only through
+  `StockLedgerService.move` under the waste number** (plan §7.8): an
+  approval takes the quantity (`WASTE`), a status change away from Approved
+  returns it (`WASTE_APPROVAL_CORRECTION`), and a correction of an approved
+  entry returns the old quantity at the old location and takes the new one
+  at the new location (`WASTE_CORRECTION_RETURN`,
+  `WASTE_CORRECTION_DEDUCTION`), as the demo moves them. A location that
+  cannot cover the approval refuses it with the ledger's "Insufficient …
+  stock for …." and the approval, its ledger row included, rolls back.
+- **The value is the coded formula until Q25 is answered: `stockValueKobo`
+  on the entry's quantity as it stands, at any location, so a Store entry's
+  packs are valued as units (one bag of rice at ₦70,000 a bag of 50 is
+  ₦1,400)** (plan §4.6, §7.8; card C5-4). This is Q25's own
+  description of the current rule, which the plan ports until the founder
+  answers; it departs from the C4 count rule that converts Store packs
+  first, because that conversion is exactly the change Q25 asks the founder
+  to approve. Answering Q25 changes `WasteService`'s valuation, not the
+  shared function.
+- **The value is stored on the row when the entry is logged and corrected,
+  and valued afresh when it is approved (by `waste.approve` or by
+  `waste.status` to Approved), which stores the new value** (plan §4.6
+  stores it at creation and on edit; the demo values the decision as it is
+  made). A purchase recorded between the logging and the approval would
+  otherwise let a write-off be approved at a stale, smaller value, and the
+  row then holds the value the decision was judged on.
+- **An approval (`waste.approve`, and `waste.status` to Approved from any
+  other status) runs `MoneyControlService.withinLimit` with
+  `LIMITED_DECISIONS.writeOff`, counted toward the day, then `notOwn` with
+  `OWN_RECORD_KINDS.wasteEntry`, in the demo's order; a correction holds the
+  new value to the Owner Approval Limit without counting it** (plan §6.2
+  "approve: L, D, N; edit: L"). The C5 gate's steps 5 and 6 are the
+  own-record refusal and the fourth ₦40,000 approval refused at ₦160,000.
+  A rejection writes nothing off: a manager may reject their own entry, and
+  nothing is counted. The approval takes the limit's advisory lock before
+  the ledger's balance row; a stock count takes them the other way round
+  (see *Stock*).
+- **`waste.create` takes an Idempotency-Key; every other waste command does
+  not** (the *Idempotency* rule for creates): a retried create would log the
+  loss twice, and every other command names a version the first attempt
+  moved.
+- **The read (`GET /staff/waste`) answers `pendingCount`, the entries
+  awaiting review at the locations the reader sees, beside the page**, as
+  the requests read carries `openCount`; the views are the screen's
+  Pending, History and All. Each entry carries `measure`, the item's pack at
+  the Store and its unit elsewhere, so a screen never has to work out what
+  "2" counts.
+- **`WasteModule` registers the `AuditRefAccess` reader for `W-` numbers:
+  each logging role for its own location's entries**
+  (`src/waste/waste-audit-reader.ts`, plan §4.8), matching the read. The
+  Cashier logs Bar waste from the till and sees the Bar's recent entries
+  there, so it reads their history too.
+
+## Tasks *(from C5)*
+
+- **`task.save` is two routes, `POST /staff/tasks` and
+  `PATCH /staff/tasks/:id`, in `TasksService` (`src/tasks/tasks.service.ts`);
+  the update claims the task's `version` first, and an id that names
+  nothing is 404 "Task not found." (new)** (plan §5.4). The demo saved an
+  unknown id as a new task; on the server an update names a task, and the
+  version claim needs a not-found sentence.
+- **Only Reception, the Cashier, the Kitchen, the Storekeeper and managers
+  may read or save a task (`@Roles`, D42's role gate); a Waiter or
+  Bartender is refused with the role sentence and is never an assignee**
+  (plan §4.7, §6.2). The demo had no role check on `task.save`, so a Waiter
+  updating a task was refused only because it was not theirs; the role gate
+  is the plan's correction.
+- **Anyone but a manager raises a task to a manager (the Owner included) or
+  to themselves, and on a task that exists may change only its status, and
+  only when it is assigned to them; each refusal is 403 with the demo's
+  sentence** ("Raise a task to a manager, or to yourself.", "Only the
+  assigned staff member or a manager can update this task.", "Only a
+  manager can change task details.", "Only a manager can reassign tasks.",
+  "Only a manager can change task links or type."), checked in the demo's
+  order by `nonManagerSaveProblem` (`src/tasks/task-rules.ts`). The demo
+  checks some of these before the description; here the DTO's one-sentence
+  checks run first (*Money controls and the audit log*: a body is validated
+  before the rules on the stored record).
+- **A task's links follow its type (`linksFor`): a Purchase task links an
+  open requisition (not Fulfilled, Rejected, Cancelled or archived:
+  `isClosedPurchase`), a Maintenance task an open repair (not Fixed or Not
+  Fixed), a General task nothing; a link of the other kind is dropped, as
+  the demo drops it, and the record a task already links passes a manager's
+  save even once closed.** This keeps every saved task inside
+  `Task_values_check`, and a manager fixing the title of a task whose
+  purchase was received is not refused for its history.
+- **An assignee is an active member of staff who is neither a Waiter nor a
+  Bartender, by id (A10); anything else is 400 with the demo's sentence**
+  ("Choose an active staff member. Waiters and bartenders report…").
+- **Every save adds a `TaskHistory` row (the status, who, not automatic),
+  the status unchanged included, and an audit row `task.save` under the
+  task number, in the same transaction**, as the demo appends to its
+  history on every save. The tasks the commands raise and close themselves
+  stay in `src/tasks/automatic-tasks.ts`, whose rows are marked
+  `automatic`.
+- **The tasks read shows managers every task and anyone else the tasks
+  assigned to them and the ones they raised themselves; a task a command
+  raised by itself is not one its actor raised** (`visibleTasks`; plan
+  §6.1). The demo files an automatic task under "<name> (automatic)", so the
+  Storekeeper does not see the review of a purchase they asked for; the
+  server stores who raised it (`raisedById`) and excludes it by `automatic`.
+  The read is ordered Open, In Progress, Done (Postgres orders an enum by
+  its declared order), newest first within each, as the screen orders it,
+  and carries each task's history and the reader's `counts` by status.
+- **`POST /staff/tasks` takes an Idempotency-Key; the update does not** (the
+  *Idempotency* rule for creates).
+- **`TasksModule` registers the `AuditRefAccess` reader for `T-` numbers: a
+  role that opens Tasks, for the tasks its read shows it** (`seesTask`,
+  `src/tasks/task-audit-reader.ts`, plan §4.8).
 
 ## Orders and dockets *(from C4)*
 

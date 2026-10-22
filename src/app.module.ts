@@ -23,6 +23,8 @@ import { SettingsModule } from './settings/settings.module';
 import { ShellModule } from './shell/shell.module';
 import { StaffModule } from './staff/staff.module';
 import { StockModule } from './stock/stock.module';
+import { TasksModule } from './tasks/tasks.module';
+import { WasteModule } from './waste/waste.module';
 
 /**
  * Root module for the CNC Cloud Run service.
@@ -52,6 +54,8 @@ import { StockModule } from './stock/stock.module';
     MenuModule,
     StockModule,
     PurchasingModule,
+    WasteModule,
+    TasksModule,
     OrdersModule,
     KitchenModule,
     CashModule,
