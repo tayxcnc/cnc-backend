@@ -30,6 +30,30 @@ export const MESSAGE_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 /** How many messages one sweep run tries, oldest first. */
 export const MESSAGE_SWEEP_BATCH = 50;
 
+/**
+ * The backoff after a failed send, by how many attempts are spent: the
+ * sweep leaves the message alone for 5 minutes after the first failure and
+ * 30 after the second (C6-8). The sweep runs every 5 minutes, so without a
+ * wait one short provider outage would spend all three attempts in a
+ * quarter of an hour; with it the three are spread over more than half an
+ * hour, still well inside the default day a message may wait.
+ */
+export const MESSAGE_RETRY_BACKOFF_MS = [5 * 60 * 1000, 30 * 60 * 1000];
+
+/**
+ * When a message whose send has just failed may be tried again, after
+ * `attempts` spent. Past the last listed wait the last one repeats; a
+ * message that has spent every attempt is never tried again anyway.
+ */
+export function retryAfterFor(attempts: number, now: Date): Date {
+  const index = Math.min(
+    Math.max(attempts, 1) - 1,
+    MESSAGE_RETRY_BACKOFF_MS.length - 1,
+  );
+
+  return new Date(now.getTime() + MESSAGE_RETRY_BACKOFF_MS[index]);
+}
+
 /** `lastError` while mail is not configured: the message is still waiting. */
 export const MAIL_NOT_CONFIGURED = 'Mail is not configured.';
 
@@ -80,7 +104,8 @@ type DispatchOutcome = 'sent' | 'failed' | 'waiting' | 'expired' | 'skipped';
  * - `dispatch(id)` sends one queued message after the commit. It never
  *   throws.
  * - `sweep(now)` retries waiting and failed messages, three attempts each,
- *   and gives up on those past `expiresAt`.
+ *   a failed one only once its backoff has passed (`retryAfter`, 5 then 30
+ *   minutes), and gives up on those past `expiresAt`.
  *
  * A message is claimed before it is sent, by a conditional increment of
  * `attempts`, so the request's own dispatch and a sweep running at the same
@@ -242,6 +267,8 @@ export class OutboundMessagesService {
         },
         payload: { not: null },
         attempts: { lt: MESSAGE_MAX_ATTEMPTS },
+        // A failed message waits out its backoff (`retryAfterFor`).
+        OR: [{ retryAfter: null }, { retryAfter: { lte: now } }],
       },
       orderBy: { createdAt: 'asc' },
       take: MESSAGE_SWEEP_BATCH,
@@ -273,6 +300,7 @@ export class OutboundMessagesService {
         attempts: true,
         payload: true,
         expiresAt: true,
+        retryAfter: true,
       },
     });
 
@@ -280,7 +308,10 @@ export class OutboundMessagesService {
       row === null ||
       row.status === OutboundMessageStatus.SENT ||
       row.payload === null ||
-      row.attempts >= MESSAGE_MAX_ATTEMPTS
+      row.attempts >= MESSAGE_MAX_ATTEMPTS ||
+      // Still backing off after a failure, whoever asks (a replayed
+      // command's dispatch included).
+      (row.retryAfter !== null && row.retryAfter > now)
     ) {
       return 'skipped';
     }
@@ -290,7 +321,7 @@ export class OutboundMessagesService {
       return 'expired';
     }
 
-    let mail: { subject: string; html: string; text: string };
+    let mail: { subject: string; html: string; text: string; replyTo?: string };
 
     try {
       const rendered = renderMail(row.template, this.seal.open(row.payload));
@@ -301,6 +332,10 @@ export class OutboundMessagesService {
           logoUrl: this.config.buildWebUrl('/icons/icon-192.png'),
         }),
         text: rendered.text,
+        // Replies reach CNC's inbox (`CNC_CONTACT_EMAIL`): the sender
+        // address only sends (the founder's Q19 note, 2026-10-22). A
+        // template may name its own (an enquiry: the person who wrote).
+        replyTo: rendered.replyTo ?? this.config.contactEmail,
       };
     } catch {
       await this.giveUp(row.id, MESSAGE_UNREADABLE);
@@ -339,13 +374,7 @@ export class OutboundMessagesService {
     }
 
     try {
-      // Replies reach CNC's inbox (`CNC_CONTACT_EMAIL`): the sender
-      // address only sends (the founder's Q19 note, 2026-10-22).
-      await this.transport.send({
-        to: row.to,
-        ...mail,
-        replyTo: this.config.contactEmail,
-      });
+      await this.transport.send({ to: row.to, ...mail });
     } catch (error) {
       const attempts = row.attempts + 1;
       const reason =
@@ -357,7 +386,9 @@ export class OutboundMessagesService {
           status: OutboundMessageStatus.FAILED,
           lastError: reason,
           // The last attempt spent: nothing will read the payload again.
-          ...(attempts >= MESSAGE_MAX_ATTEMPTS ? { payload: null } : {}),
+          ...(attempts >= MESSAGE_MAX_ATTEMPTS
+            ? { payload: null, retryAfter: null }
+            : { retryAfter: retryAfterFor(attempts, now) }),
         },
       });
       this.logger.warn(
@@ -374,6 +405,7 @@ export class OutboundMessagesService {
         sentAt: new Date(),
         lastError: null,
         payload: null,
+        retryAfter: null,
       },
     });
 

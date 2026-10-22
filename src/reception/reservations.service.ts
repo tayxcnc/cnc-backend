@@ -72,6 +72,7 @@ import {
   clockMinutes,
   clockText,
   guestPhone,
+  initialReminderStamp,
   tableRef,
 } from './reservation-rules';
 
@@ -206,6 +207,12 @@ export class ReservationsService {
             party: input.party,
             source: input.source,
             note: input.note,
+            // Q32: no reminder for a booking made under 24 hours ahead.
+            reminderSentAt: initialReminderStamp(
+              businessDate,
+              startMinutes,
+              now,
+            ),
           },
           select: RESERVATION_COLUMNS,
         }),
@@ -548,6 +555,17 @@ export class ReservationsService {
               email: next.email,
               note: next.note,
               customerId,
+              // A new date or time gets its own reminder (Q32), unless it
+              // is already under 24 hours away.
+              ...(dateMoved || next.startMinutes !== before.startMinutes
+                ? {
+                    reminderSentAt: initialReminderStamp(
+                      nextDate,
+                      next.startMinutes,
+                      now,
+                    ),
+                  }
+                : {}),
             },
           });
 

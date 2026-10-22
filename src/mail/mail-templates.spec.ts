@@ -96,5 +96,100 @@ describe('mail templates', () => {
         );
       }
     });
+
+    it('reminds with the website’s words, the date and time, and whom to call', () => {
+      const mail = renderMail('reservation.reminder', booking);
+
+      expect(mail.subject).toBe('See you soon at CNC: RSV-000007');
+      expect(mail.text).toContain(
+        'Your table in the Lounge is booked for Sat 24 Oct 2026 at 19:00. ' +
+          'Your table is yours for your whole visit.',
+      );
+      expect(mail.text).toContain('Party: 2 guests');
+      expect(mail.text).toContain(
+        'If you can no longer come, please call CNC on 08022188797. ' +
+          'Nothing is charged.',
+      );
+      // Inside 24 hours the account can no longer change it.
+      expect(mail.text).not.toContain('change or cancel');
+      expect(mail.html).toContain('Hello Ada &lt;b&gt;,');
+      expect(mail.replyTo).toBeUndefined();
+    });
+  });
+
+  describe('enquiry emails', () => {
+    const contact = {
+      name: 'Ada <script>',
+      email: 'ada@example.com',
+      subject: 'Dining\nenquiry',
+      message: 'Line one\n<b>Line two</b>',
+    };
+    const group = {
+      name: 'Bola',
+      phone: '08031234567',
+      email: 'bola@example.com',
+      venue: 'Lounge',
+      date: 'Sat 24 Oct 2026',
+      guests: '8 guests',
+      message: '',
+    };
+
+    it('forwards a contact enquiry with Reply-To the sender, every value escaped, the subject on one line', () => {
+      const mail = renderMail('enquiry.contact', contact);
+
+      expect(mail.subject).toBe('CNC enquiry: Dining enquiry');
+      expect(mail.replyTo).toBe('ada@example.com');
+      expect(mail.html).toContain('Ada &lt;script&gt;');
+      expect(mail.html).not.toContain('<script>');
+      expect(mail.html).toContain(
+        'white-space:pre-wrap;">Line one\n&lt;b&gt;Line two&lt;/b&gt;</p>',
+      );
+      expect(mail.text).toContain('Name: Ada <script>');
+      expect(mail.text).toContain('Line one\n<b>Line two</b>');
+    });
+
+    it('forwards a large-group request; Reply-To only when an email was given', () => {
+      const withEmail = renderMail('enquiry.group', group);
+
+      expect(withEmail.subject).toBe(
+        'CNC large group: 8 guests in the Lounge on Sat 24 Oct 2026',
+      );
+      expect(withEmail.replyTo).toBe('bola@example.com');
+      expect(withEmail.text).toContain('Phone: 08031234567');
+      expect(withEmail.text).toContain('Email: bola@example.com');
+
+      const withoutEmail = renderMail('enquiry.group', {
+        ...group,
+        email: null,
+        message: 'A birthday',
+      });
+
+      expect(withoutEmail.replyTo).toBeUndefined();
+      expect(withoutEmail.text).not.toContain('Email:');
+      expect(withoutEmail.text).toContain('A birthday');
+      expect(withoutEmail.text).toContain(
+        'Call the guest back on the number above to arrange the tables.',
+      );
+    });
+
+    it('refuses enquiry parameters that do not fit', () => {
+      for (const params of [
+        { ...contact, email: '' },
+        { ...contact, message: 3 },
+        {},
+      ]) {
+        expect(() => renderMail('enquiry.contact', params)).toThrow(
+          /malformed/,
+        );
+      }
+
+      for (const params of [
+        { ...group, phone: '' },
+        { ...group, email: '' },
+        { ...group, message: null },
+      ]) {
+        expect(() => renderMail('enquiry.group', params)).toThrow(/malformed/);
+      }
+    });
   });
 });

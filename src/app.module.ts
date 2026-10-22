@@ -9,7 +9,9 @@ import { CncAuthModule } from './auth/cnc-auth.module';
 import { CashModule } from './cash/cash.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { CncConfigModule } from './config/cnc-config.module';
+import { CustomerNotificationsModule } from './customer-notifications/customer-notifications.module';
 import { CustomersModule } from './customers/customers.module';
+import { EnquiriesModule } from './enquiries/enquiries.module';
 import { DATABASE_HEALTH_PROBE } from './health/database-health.token';
 import { HealthController } from './health/health.controller';
 import { SERVICE_NAME } from './health/service-name.token';
@@ -69,6 +71,8 @@ import { WasteModule } from './waste/waste.module';
     KitchenModule,
     CashModule,
     ReceptionModule,
+    CustomerNotificationsModule,
+    EnquiriesModule,
     OrderingModule,
     NotificationsModule,
     ShellModule,

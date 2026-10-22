@@ -7,6 +7,8 @@ import {
 import { ContactChannel, type Prisma } from '../../generated/cnc-client';
 import { ACCOUNT_GONE_MESSAGE } from '../auth/guards/cnc-staff.guard';
 import { toDeliveryAddress } from '../common/delivery-address';
+import { WELCOME_NOTIFICATION } from '../customer-notifications/customer-notification-texts';
+import { CustomerNotificationsService } from '../customer-notifications/customer-notifications.service';
 import { PhotoStore } from '../images/photo-store.service';
 import type { UploadedImageFile } from '../images/uploaded-image';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
@@ -72,6 +74,7 @@ export class CustomerService {
   constructor(
     private readonly prisma: CncPrismaService,
     private readonly photos: PhotoStore,
+    private readonly notifications: CustomerNotificationsService,
   ) {}
 
   /**
@@ -154,6 +157,15 @@ export class CustomerService {
       },
       select: { id: true },
     });
+
+    // The first item in the in-app list (C6-8), as the account app's demo
+    // showed it.
+    await this.notifications.record(
+      tx,
+      created.id,
+      WELCOME_NOTIFICATION,
+      `customer:${created.id}:welcome`,
+    );
 
     // A15: the guest's bookings under this email join the account only
     // now that the email is proved (C6-5).

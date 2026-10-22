@@ -40,7 +40,10 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
 | Customer email codes: caps, tries, sentences, `OtpService`, `CncCustomerGuard`, creating customers | Auth |
-| Email: the outbound queue, sealed payloads, expiry, the transports, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
+| Email: the outbound queue, sealed payloads, expiry, the retry backoff, the transports, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
+| `GET /me/notifications`, what writes an item, unread, the booking reminders (Q32) and `reminderSentAt` | The customer's in-app list and booking reminders |
+| `POST /enquiries`, `POST /group-enquiries`: honeypot, the two limits, the inbox email (Q20) | Enquiries |
+| The Cloud Scheduler sweep jobs, their schedules and how to create them | Infrastructure |
 | `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
 | Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
@@ -121,8 +124,8 @@ src/
                      one-sentence field checks, the admin reason, item lists
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
-  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens and
-                     messages sweeps
+  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens,
+                     messages and reminders sweeps
   customers/         the customer email-code sign-in (/auth/code, verify, refresh,
                      sign-out), the account (/me: profile, email change, photo,
                      DELETE); CustomerService (the one creator of customers),
@@ -130,8 +133,14 @@ src/
                      CustomerDeletionService, profile-rules.ts
   ordering/          the public ordering reads (GET /ordering/config, /slots) and
                      the ordering times (ordering-times.ts); C7 adds checkout
-  mail/              the outbound queue (OutboundMessagesService), templates, the
-                     CNC mail frame, MessageSeal, the Resend and recording transports
+  mail/              the outbound queue (OutboundMessagesService, its retry
+                     backoff), templates, the CNC mail frame, MessageSeal, the
+                     Resend and recording transports
+  customer-notifications/  the customer's in-app list (GET /me/notifications,
+                     POST /me/notifications/read), CustomerNotificationsService
+                     (the one writer), the items' words
+  enquiries/         POST /enquiries and /group-enquiries: honeypot, the stored
+                     cap and the throttle, the email to CNC's inbox
   images/            PhotoStore: byte inspection, sharp resizing, the upload route
                      decorator; the only importer of storage/
   storage/           MediaStorage and its Cloud Storage binding (gs:// URIs, V4 links)
@@ -176,7 +185,8 @@ src/
                      the public GET /venues and availability; the website's
                      and the app's POST /reservations and /me/reservations
                      (CustomerReservationsService), the customer link
-                     (customer-link.ts), the booking emails (ReservationMail)
+                     (customer-link.ts), the booking emails and in-app items
+                     (ReservationMail), the reminders (ReservationRemindersService)
   notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
@@ -201,7 +211,10 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      deletion; public-reads: the C6-4 public reads;
                      customer-reservations: web and app bookings, the
                      link, change and cancel, the races and the 24-hour
-                     boundary),
+                     boundary; customer-messages: the in-app list, the
+                     reminders sweep, the messages sweep's backoff and
+                     attempts cap; enquiries: both forms, the honeypot,
+                     the limits),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

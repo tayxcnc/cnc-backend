@@ -52,6 +52,24 @@ export function clockText(minutes: number): string {
 }
 
 /**
+ * A booking date as the website writes it (`lib/booking/engine.ts`
+ * `dateText`): "Sat 24 Oct 2026". The date is a `@db.Date` (UTC midnight),
+ * so it is formatted in UTC, never shifted a day. The booking emails and
+ * the in-app list both write dates through this.
+ */
+export function bookingDateText(businessDate: Date): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+    .format(businessDate)
+    .replace(/,/g, '');
+}
+
+/**
  * The instant a booking starts: its date and arrival time on a wall clock
  * in Jos (A11). `businessDate` is a `@db.Date` value (UTC midnight).
  */
@@ -93,6 +111,55 @@ export function insideChangeWindow(
   now: Date,
 ): boolean {
   return now.getTime() > changeableUntil(businessDate, startMinutes).getTime();
+}
+
+/**
+ * How long before a booking its reminder goes (Q32's default: "24 hours
+ * before"). Its own constant, not `CHANGE_WINDOW_MS`: the two answers
+ * (Q6, Q32) are the founder's separately and may part.
+ */
+export const REMINDER_LEAD_MS = 24 * 60 * 60 * 1000;
+
+/** The instant a booking's reminder is due: `REMINDER_LEAD_MS` before it starts. */
+export function reminderDueAt(businessDate: Date, startMinutes: number): Date {
+  return new Date(
+    bookingStart(businessDate, startMinutes).getTime() - REMINDER_LEAD_MS,
+  );
+}
+
+/**
+ * What a booking's `reminderSentAt` starts as when it is made, or when its
+ * date or time is changed, at `now`: `now` when it is already less than
+ * `REMINDER_LEAD_MS` away, so the reminders sweep passes it by (Q32: "none
+ * for bookings made less than 24 hours ahead"; a guest who has just
+ * chosen the time needs no reminder of it), else null, so the sweep sends
+ * one when it falls due. Exactly 24 hours ahead still gets one, as Q6
+ * still allows a change then.
+ */
+export function initialReminderStamp(
+  businessDate: Date,
+  startMinutes: number,
+  now: Date,
+): Date | null {
+  return now.getTime() > reminderDueAt(businessDate, startMinutes).getTime()
+    ? now
+    : null;
+}
+
+/**
+ * Whether the reminders sweep sends a booking's reminder at `now`: it is
+ * due, and the booking has not started. A sweep that did not run for a
+ * day sends nothing for a booking already begun.
+ */
+export function reminderDue(
+  businessDate: Date,
+  startMinutes: number,
+  now: Date,
+): boolean {
+  return (
+    now.getTime() >= reminderDueAt(businessDate, startMinutes).getTime() &&
+    now.getTime() < bookingStart(businessDate, startMinutes).getTime()
+  );
 }
 
 /** One day's opening hours (`OpeningHoursDay`). */

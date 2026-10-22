@@ -734,12 +734,31 @@ describe('customer auth (e2e)', () => {
       expect(failed.payload).not.toBeNull();
 
       sentMail(app).failWith = undefined;
+      // Backing off (C6-8): the sweep leaves it alone until `retryAfter`.
+      expect(failed.retryAfter).not.toBeNull();
       await sweepMessages().expect(200);
       expect(
         await prisma.outboundMessage.findUniqueOrThrow({
           where: { id: failed.id },
         }),
-      ).toMatchObject({ status: OutboundMessageStatus.SENT, attempts: 2 });
+      ).toMatchObject({ status: OutboundMessageStatus.FAILED, attempts: 1 });
+
+      // The backoff run out (the clock is real in this suite, so the row's
+      // wait is moved instead; customer-messages crosses it on a clock).
+      await prisma.outboundMessage.update({
+        where: { id: failed.id },
+        data: { retryAfter: new Date(Date.now() - 1000) },
+      });
+      await sweepMessages().expect(200);
+      expect(
+        await prisma.outboundMessage.findUniqueOrThrow({
+          where: { id: failed.id },
+        }),
+      ).toMatchObject({
+        status: OutboundMessageStatus.SENT,
+        attempts: 2,
+        retryAfter: null,
+      });
       await verifyCall(email, codeSentTo(email)).expect(200);
 
       // A code's email past the code's expiry is given up, never sent.

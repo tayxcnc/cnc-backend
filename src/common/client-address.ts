@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * The bucket every unidentifiable caller shares. See `clientAddressOf`.
  */
@@ -74,4 +76,15 @@ export function clientAddressOf(req: AddressedRequest): string {
   const directIp = typeof req.ip === 'string' ? req.ip : '';
 
   return directIp === '' ? UNKNOWN_ADDRESS : directIp;
+}
+
+/**
+ * A client address as a table keeps it: SHA-256, hex. Used where a row
+ * must be countable or comparable by address without keeping the address
+ * (an anonymous idempotency scope, an enquiry's `ipHash`). An IPv4 address
+ * can be recovered by hashing them all, so this is tidiness, not secrecy;
+ * one function keeps every table's hash of one address the same.
+ */
+export function hashClientAddress(address: string): string {
+  return createHash('sha256').update(address).digest('hex');
 }

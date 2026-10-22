@@ -904,6 +904,24 @@ They are here so the first card that builds it starts from the rule.
   `OutboundMessagesService`). The sender `cnc@tayxcnc.com` only sends
   (Q19), so a customer's reply would otherwise reach no inbox; the
   founder's 2026-10-22 note asked for it.
+- **A template may name its own Reply-To (`RenderedMail.replyTo`); only the
+  enquiry emails do, with the sender's address** (from C6-7). They go to
+  CNC's inbox, so the default would make Reply answer CNC itself; with the
+  sender's address CNC answers by pressing Reply (TAY's contact mail). A
+  large-group request without an email keeps the default.
+- **A failed send waits before its next attempt: 5 minutes after the
+  first, 30 after the second (`MESSAGE_RETRY_BACKOFF_MS`,
+  `OutboundMessage.retryAfter`)** (from C6-8). The sweep runs every five
+  minutes, so without a wait one short provider outage would spend all
+  three attempts in a quarter of an hour and give the message up; with it
+  the three span more than half an hour, well inside a message's day.
+  Every dispatch honours the wait, a replayed command's included. The wait
+  is cleared once the message is sent or its last attempt is spent. An
+  unconfigured transport sets no wait and spends no attempt, as before.
+- **The messages sweep and the reminders sweep are the queue's only
+  timers, and both are Cloud Scheduler jobs** (*Infrastructure*): nothing
+  in the service retries on its own clock, because Cloud Run scales to
+  zero and an in-process timer dies with the instance.
 
 ## The customer's account *(from C6)*
 
@@ -2335,6 +2353,108 @@ They are here so the first card that builds it starts from the rule.
   id. Online rows carry the channel (`WEB`/`APP`); Reception's rows are
   unchanged.
 
+## The customer's in-app list and booking reminders *(from C6)*
+
+- **`GET /me/notifications` and `POST /me/notifications/read` are the
+  account app's inbox; the items are written by the same events that send
+  email, in the event's own transaction** (plan §9.2, card C6-8;
+  `CustomerNotificationsService.record`). Today: the welcome when a
+  customer is created, and a booking made, changed, cancelled and
+  reminded. C7 adds orders through the same service. The item's
+  `dedupeKey` is the email's, inserted with `ON CONFLICT DO NOTHING`, so a
+  replay writes nothing and a repeat never aborts the command. A deleted
+  account (Q36) gets nothing.
+- **The words are the account app's demo's** (`lib/account/api.ts`
+  `listNotifications`): "Welcome to CNC", "Table reserved", "Reservation
+  cancelled", "See you soon", and the body "<table>, <room>, <date> at
+  <time>.". "Reservation changed" is new, and the reminder names the
+  booking's date and time where the demo, building items on read, said
+  "today or tomorrow". `customer-notification-texts.ts` holds them, pinned
+  by its spec. `link` is a path under the site's base (`/account#reservations`),
+  never a full URL, so a stored item does not go stale with a domain.
+- **Booking items are written by `ReservationMail`, beside the booking's
+  email, for a booking that belongs to a customer**: whatever channel made
+  it, a Reception booking linked by Q35 included. A guest's booking writes
+  no item: there is nobody to show it to.
+- **The list is a history, not a message: preferences do not gate it**
+  (D62). What a customer switched off by email still appears here, because
+  nothing here interrupts anyone.
+- **Unread is "created after `Customer.notificationsReadAt`"** (plan §4.2),
+  and both instants are the service's clock (A11): `record` writes
+  `createdAt` itself rather than taking the database's default, so a
+  difference between two clocks cannot make a new item read. `markRead`
+  never moves the instant back. The page is the standard
+  `{data,page,pageSize,total}` plus `unread` (all pages) and
+  `notificationsReadAt`; each item says `unread`. `no-store`, as every
+  `/me` answer.
+- **Reminders (Q32's default) are the reminders sweep's
+  (`ReservationRemindersService`, `POST /internal/sweeps/reminders`, every
+  15 minutes)**: a Confirmed booking is reminded once, 24 hours before it
+  starts (`REMINDER_LEAD_MS`, its own constant beside Q6's
+  `CHANGE_WINDOW_MS`, because the founder answers them apart), until it
+  starts; guests by email; a customer who switched Reservation Reminders
+  off (`prefBookingReminders`) gets the in-app item and no email.
+- **"None for bookings made less than 24 hours ahead" is decided when the
+  booking is made or moved, not by the sweep**: the booking command and
+  both change commands set `reminderSentAt` to now when the (new) start is
+  under 24 hours away, and to null otherwise (`initialReminderStamp`). One
+  rule then covers a booking made late, a booking moved closer (no
+  reminder of a time just chosen) and a reminded booking moved further out
+  (it gets a reminder for the new time; its dedupe key carries the
+  `version`). Exactly 24 hours ahead still gets one, as Q6 still allows a
+  change then.
+- **Each reminder is claimed by one conditional update (`reminderSentAt IS
+  NULL`, still Confirmed) in the transaction that writes its messages**,
+  and the email's dedupe key is the booking, the event and the version, so
+  two sweeps at once remind once (the e2e suite races two, three rounds)
+  and a booking cancelled first is not reminded. One booking's failure is
+  logged by id and left unclaimed for the next run.
+- **The reminder is the one sweep whose work is a feature, and still no
+  other behaviour depends on it** (*Auth*: no behaviour may depend on a
+  sweep having run): if the job does not run, reminders are late or
+  missed, a courtesy lost, while bookings, changes and the 24-hour rule
+  are unaffected. A booking whose start has passed is never reminded late.
+
+## Enquiries *(from C6)*
+
+- **`POST /enquiries` (the Contact page) and `POST /group-enquiries` (the
+  booking page's large-party callback) store an `Enquiry` and email it to
+  `CNC_CONTACT_EMAIL`; there is no staff list** (Q20's default; plan §5.1,
+  D50). The row is written and the email queued in one transaction, and
+  sent after the commit: the enquiry is the thing of value, so a provider
+  outage costs delivery time, never the person's message, and they are not
+  told of CNC's mail trouble (204 either way). With no inbox configured
+  (only possible locally; production refuses to boot) the row is kept and
+  the log names its id, never its content.
+- **Both answer 204 with no body, and a filled honeypot gets the same 204
+  with nothing stored, sent or logged** (`company`, the forms' hidden
+  field; TAY's rule). An error would tell a script which field to leave
+  alone, and a log line would carry whatever it sent. The field is
+  declared with `@Allow()` so the whitelist passes it to the service, and
+  any value but absent, null or blank text counts as filled.
+- **Two limits, apart, so defeating one does not defeat both**: at most 5
+  stored enquiries per address an hour across both forms, counted on the
+  rows (`ipHash`, the address hashed by `hashClientAddress`) under an
+  advisory lock on the address, so a burst cannot slip past (seen failing
+  without the lock); and 20 requests per address per form in fifteen
+  minutes in memory (`EnquiryThrottle`), which also counts refused bodies
+  and honeypot hits. Both are 429 "Too many attempts. Wait a few minutes
+  and try again.". Each accepted enquiry is an email into CNC's one inbox;
+  a person writes once or twice.
+- **The sentences are the website's where it has them**
+  (`lib/enquiries.ts`): "Please add your name, your email and a message."
+  (said once, whichever is missing), "Please add your name.", "Please add
+  a phone number we can call you back on, for example 0803 123 4567.".
+  The rest are new and marked so in `enquiry-messages.ts`. The callback's
+  phone must be Nigerian and is stored as `0` plus 10 digits
+  (`customerPhone`); its email is optional; its room is the slug, as
+  `POST /reservations` names it; its date is today or later in Jos.
+- **An enquiry's email may wait a week (`ENQUIRY_MAIL_TTL_MS`), not the
+  queue's default day**: with no staff list the email is how CNC reads it,
+  so a late one beats none.
+- **No audit row**: an enquiry is not a command in the staff app's record.
+  Q36's twelve-month retention of enquiries is C8-5's.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by
@@ -2474,6 +2594,28 @@ They are here so the first card that builds it starts from the rule.
   route, not before.** A job pointed at a route that does not exist yet
   fails on every run, and a scheduler log full of expected 404s hides the
   failure that matters.
+- **The sweep jobs, all `POST`, `Africa/Lagos`, `europe-west1`, header
+  `x-sweep-token` from `CNC_SWEEP_TOKEN` plus `Content-Length=0`, URI
+  `https://api-cnc-staging.tayxcnc.com/api/v1/internal/sweeps/<name>`**
+  (plan §5.5). Production has the same jobs with `cnc-prod-` names when
+  C9 provisions it.
+
+  | Job | Schedule | Route | Card | Why this often |
+  | :--- | :--- | :--- | :--- | :--- |
+  | `cnc-staging-sweep-tokens` | `0 3 * * *` | `tokens` | C3-9 (exists) | housekeeping; nothing reads expired rows |
+  | `cnc-staging-sweep-messages` | `*/5 * * * *` | `messages` | C6-8 | a sign-in code lives 10 minutes, so a queued one must go within minutes; the backoff (5, then 30) is counted in these runs |
+  | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
+
+  Create the two C6 jobs **after the C6 deploy is live** (the rule
+  above), each with `gcloud scheduler jobs create http <job> --location
+  europe-west1 --project tayxcnc-staging --schedule "<schedule>"
+  --time-zone "Africa/Lagos" --uri "<uri>" --http-method POST --headers
+  "x-sweep-token=<value>,Content-Length=0" --format="value(name)"`, the
+  token read from Secret Manager into a shell variable, never typed or
+  printed. Then force one run of each and read its one log line ("Sweep
+  messages sent …", "Sweep reminders reminded …"). A `POST` without
+  `Content-Length` is refused by Google's front end with 411 before it
+  reaches the guard (TAY's runbook).
 - **Production provisioning runs from Google Cloud Shell, not a development
   machine.** Production credentials never sit on a machine where an agent has
   a shell.

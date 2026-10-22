@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { CncAuthModule } from '../auth/cnc-auth.module';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
+import { CustomerNotificationsModule } from '../customer-notifications/customer-notifications.module';
 import { ImagesModule } from '../images/images.module';
 import { MailModule } from '../mail/mail.module';
 import { CustomerAuthController } from './customer-auth.controller';
@@ -25,7 +26,12 @@ import { OtpService } from './otp.service';
  * signed by `ImagesModule`'s `PhotoStore`.
  */
 @Module({
-  imports: [CncAuthModule, MailModule, ImagesModule],
+  imports: [
+    CncAuthModule,
+    MailModule,
+    ImagesModule,
+    CustomerNotificationsModule,
+  ],
   controllers: [CustomerAuthController, CustomerMeController],
   providers: [
     CustomerService,

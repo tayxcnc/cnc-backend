@@ -1,7 +1,7 @@
 import { parseIsoDate } from '../common/calendar-date';
-import { bookingDateText } from './reservation-mail';
 import {
   CHANGE_WINDOW_MS,
+  bookingDateText,
   bookingStart,
   changeableUntil,
   insideChangeWindow,

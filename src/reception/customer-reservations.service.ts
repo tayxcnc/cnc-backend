@@ -45,6 +45,7 @@ import {
   changeableUntil,
   clockMinutes,
   clockText,
+  initialReminderStamp,
   insideChangeWindow,
 } from './reservation-rules';
 import { ReservationsService, insertOrClash } from './reservations.service';
@@ -329,6 +330,17 @@ export class CustomerReservationsService {
               businessDate: nextDate,
               startMinutes: next.startMinutes,
               party: next.party,
+              // A new date or time gets its own reminder (Q32), unless it
+              // is already under 24 hours away.
+              ...(dateMoved || next.startMinutes !== before.startMinutes
+                ? {
+                    reminderSentAt: initialReminderStamp(
+                      nextDate,
+                      next.startMinutes,
+                      now,
+                    ),
+                  }
+                : {}),
             },
           });
 

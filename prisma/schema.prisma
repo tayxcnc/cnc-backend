@@ -1326,6 +1326,12 @@ model KitchenDayClosed {
 /// after midnight, WAT. `phone` is stored normalised. `depositKobo` and
 /// `depositUsedKobo` stay 0 until a route sets a deposit (D38). How a
 /// Reception booking links to a customer is Q35. Never deleted: cancelled.
+///
+/// From C6-8: `reminderSentAt` is when the 24-hour reminder (Q32) was
+/// handled: stamped by the reminders sweep, or set at once when the booking
+/// is made, or moved to a new date or time, under 24 hours ahead (no
+/// reminder then), and cleared when it is moved further out, so the new
+/// time gets its own. The sweep reminds only rows where it is null.
 model Reservation {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -1710,21 +1716,28 @@ model CustomerNotification {
 /// message is sent or given up. `expiresAt` is when the retry sweep gives up
 /// on the message: a sign-in code's mail is worthless after the code
 /// expires, and a confirmation sent days late is worse than none.
+///
+/// From C6-8: `retryAfter` is the backoff after a failed send: the sweep
+/// does not try the message again before it (null: no wait). A provider
+/// that refused one send a moment ago is likely to refuse the next, and
+/// three attempts spent in three consecutive sweeps would give up a message
+/// over one short outage.
 model OutboundMessage {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  channel   ContactChannel
-  to        String
-  template  String
-  dedupeKey String                @unique
-  status    OutboundMessageStatus @default(PENDING)
-  attempts  Int                   @default(0)
-  sentAt    DateTime?
-  lastError String?
-  payload   String?
-  expiresAt DateTime?
+  channel    ContactChannel
+  to         String
+  template   String
+  dedupeKey  String                @unique
+  status     OutboundMessageStatus @default(PENDING)
+  attempts   Int                   @default(0)
+  sentAt     DateTime?
+  lastError  String?
+  payload    String?
+  expiresAt  DateTime?
+  retryAfter DateTime?
 
   @@index([status, createdAt])
 }
@@ -1733,6 +1746,10 @@ model OutboundMessage {
 /// then emailed to CNC. `ipHash` is a SHA-256 of the caller's address, for
 /// rate limiting and abuse review without keeping the address itself.
 /// `guests` is the form's text ("4+ guests"), not a number.
+///
+/// From C6-7: the per-address cap counts these rows by `ipHash`, so the
+/// limit holds across instances and restarts (the `[ipHash, createdAt]`
+/// index). Q20's default: there is no staff list; `status` stays `NEW`.
 model Enquiry {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -1753,6 +1770,7 @@ model Enquiry {
   venue Venue? @relation(fields: [venueId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
+  @@index([ipHash, createdAt])
 }
 
 /// A stored response for an `Idempotency-Key` (A9).

@@ -19,6 +19,12 @@ export interface RenderedMail {
   /** The body, escaped, without the frame. */
   html: string;
   text: string;
+  /**
+   * Where a reply goes, when the template knows better than the default
+   * (`CNC_CONTACT_EMAIL`): an enquiry's sender, so CNC answers them by
+   * pressing Reply.
+   */
+  replyTo?: string;
 }
 
 /** Each template's parameters. */
@@ -38,6 +44,36 @@ export interface MailTemplateParams {
   'reservation.changed': ReservationMailParams;
   /** A booking cancelled, by the guest or by Reception (C6-6). */
   'reservation.cancelled': ReservationMailParams;
+  /** The reminder 24 hours before a booking (Q32, C6-8). */
+  'reservation.reminder': ReservationMailParams;
+  /** The website's contact form, to CNC's inbox (C6-7). */
+  'enquiry.contact': ContactEnquiryMailParams;
+  /** A large-party callback request, to CNC's inbox (C6-7). */
+  'enquiry.group': GroupEnquiryMailParams;
+}
+
+/** A contact-form enquiry as CNC's inbox reads it. */
+export interface ContactEnquiryMailParams {
+  name: string;
+  email: string;
+  subject: string;
+  message: string;
+}
+
+/** A large-party callback request as CNC's inbox reads it. */
+export interface GroupEnquiryMailParams {
+  name: string;
+  /** As stored: `0` plus 10 digits. */
+  phone: string;
+  email: string | null;
+  /** The room's customer title: "Dining", "Lounge". */
+  venue: string;
+  /** The date as the site writes it: "Sat 24 Oct 2026". */
+  date: string;
+  /** The form's text: "6 guests", "10+". */
+  guests: string;
+  /** "Anything we should know", or empty. */
+  message: string;
 }
 
 /**
@@ -110,6 +146,54 @@ function isReservationParams(value: unknown): value is ReservationMailParams {
   );
 }
 
+const nonEmptyStrings = (value: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => typeof value[key] === 'string' && value[key] !== '');
+
+function isContactEnquiryParams(
+  value: unknown,
+): value is ContactEnquiryMailParams {
+  return (
+    isRecord(value) &&
+    nonEmptyStrings(value, ['name', 'email', 'subject', 'message'])
+  );
+}
+
+function isGroupEnquiryParams(value: unknown): value is GroupEnquiryMailParams {
+  return (
+    isRecord(value) &&
+    nonEmptyStrings(value, ['name', 'phone', 'venue', 'date', 'guests']) &&
+    typeof value.message === 'string' &&
+    (value.email === null ||
+      (typeof value.email === 'string' && value.email !== ''))
+  );
+}
+
+/** One line, for a subject: caller text may carry line breaks. */
+const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
+
+/** Labelled lines as an escaped HTML table, as the booking emails show them. */
+function detailsHtml(rows: [string, string][]): string {
+  return (
+    '<table role="presentation" style="margin:8px 0 16px 0;">' +
+    rows
+      .map(
+        ([label, value]) =>
+          `<tr><td style="padding:2px 12px 2px 0;color:#6b6b6b;">` +
+          `${escapeHtml(label)}</td><td style="padding:2px 0;">` +
+          `<strong>${escapeHtml(value)}</strong></td></tr>`,
+      )
+      .join('') +
+    '</table>'
+  );
+}
+
+/**
+ * Text the sender typed, escaped, with its line breaks kept: the only
+ * formatting a plain message should carry (TAY's contact mail).
+ */
+const typedHtml = (text: string) =>
+  `<p style="white-space:pre-wrap;">${escapeHtml(text)}</p>`;
+
 const guestsText = (party: number) =>
   `${party} ${party === 1 ? 'guest' : 'guests'}`;
 
@@ -127,17 +211,13 @@ function bookingLines(p: ReservationMailParams, withParty: boolean): string[] {
 
 /** The same details as an HTML list, every value escaped. */
 function bookingHtml(p: ReservationMailParams, withParty: boolean): string {
-  const rows = bookingLines(p, withParty).map((line) => {
-    const [label, ...rest] = line.split(': ');
+  return detailsHtml(
+    bookingLines(p, withParty).map((line) => {
+      const [label, ...rest] = line.split(': ');
 
-    return (
-      `<tr><td style="padding:2px 12px 2px 0;color:#6b6b6b;">` +
-      `${escapeHtml(label)}</td><td style="padding:2px 0;">` +
-      `<strong>${escapeHtml(rest.join(': '))}</strong></td></tr>`
-    );
-  });
-
-  return `<table role="presentation" style="margin:8px 0 16px 0;">${rows.join('')}</table>`;
+      return [label, rest.join(': ')];
+    }),
+  );
 }
 
 /** The 24-hour rule (Q6), with where to change the booking and whom to call. */
@@ -164,6 +244,109 @@ function changeRule(p: ReservationMailParams): { html: string; text: string } {
 }
 
 const TEMPLATES: { [Name in MailTemplateName]: MailTemplate<Name> } = {
+  'reservation.reminder': {
+    isParams: isReservationParams,
+    render: (p) => {
+      // The website's own reminder words ("See you soon", "Your table is
+      // yours for your whole visit."), with the booking's date and time.
+      const lead =
+        `Your table in the ${p.venue} is booked for ${p.date} at ` +
+        `${p.time}. Your table is yours for your whole visit.`;
+      const call =
+        'If you can no longer come, please call CNC on ' +
+        `${p.phone}. Nothing is charged.`;
+
+      return {
+        subject: `See you soon at CNC: ${p.number}`,
+        html: [
+          `<p>Hello ${escapeHtml(p.guestName)},</p>`,
+          `<p>${escapeHtml(lead)}</p>`,
+          bookingHtml(p, true),
+          `<p>${escapeHtml(call)}</p>`,
+        ].join(''),
+        text: [
+          `Hello ${p.guestName},`,
+          '',
+          lead,
+          '',
+          ...bookingLines(p, true),
+          '',
+          call,
+        ].join('\n'),
+      };
+    },
+  },
+  'enquiry.contact': {
+    isParams: isContactEnquiryParams,
+    render: (p) => {
+      const rows: [string, string][] = [
+        ['Name', p.name],
+        ['Email', p.email],
+        ['Subject', oneLine(p.subject)],
+      ];
+
+      return {
+        subject: `CNC enquiry: ${oneLine(p.subject)}`,
+        html: [
+          '<p>A new enquiry came in through the CNC contact form.</p>',
+          detailsHtml(rows),
+          typedHtml(p.message),
+          '<p>Reply to this email to answer the sender directly.</p>',
+        ].join(''),
+        text: [
+          'A new enquiry came in through the CNC contact form.',
+          '',
+          ...rows.map(([label, value]) => `${label}: ${value}`),
+          '',
+          p.message,
+          '',
+          'Reply to this email to answer the sender directly.',
+        ].join('\n'),
+        replyTo: p.email,
+      };
+    },
+  },
+  'enquiry.group': {
+    isParams: isGroupEnquiryParams,
+    render: (p) => {
+      const rows: [string, string][] = [
+        ['Name', p.name],
+        ['Phone', p.phone],
+        ...(p.email === null
+          ? []
+          : ([['Email', p.email]] as [string, string][])),
+        ['Space', p.venue],
+        ['Date', p.date],
+        ['Guests', oneLine(p.guests)],
+      ];
+      const close =
+        p.email === null
+          ? 'Call the guest back on the number above to arrange the tables.'
+          : 'Call the guest back on the number above to arrange the ' +
+            'tables, or reply to this email.';
+
+      return {
+        subject:
+          `CNC large group: ${oneLine(p.guests)} in the ${p.venue} on ` +
+          p.date,
+        html: [
+          '<p>A large party asked CNC to call them back about a booking.</p>',
+          detailsHtml(rows),
+          ...(p.message === '' ? [] : [typedHtml(p.message)]),
+          `<p>${escapeHtml(close)}</p>`,
+        ].join(''),
+        text: [
+          'A large party asked CNC to call them back about a booking.',
+          '',
+          ...rows.map(([label, value]) => `${label}: ${value}`),
+          ...(p.message === '' ? [] : ['', p.message]),
+          '',
+          close,
+        ].join('\n'),
+        ...(p.email === null ? {} : { replyTo: p.email }),
+      };
+    },
+  },
   'reservation.confirmed': {
     isParams: isReservationParams,
     render: (p) => {

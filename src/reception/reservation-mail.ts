@@ -1,66 +1,61 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '../../generated/cnc-client';
 import { CncConfigService } from '../config/cnc.config';
+import { bookingNotification } from '../customer-notifications/customer-notification-texts';
+import { CustomerNotificationsService } from '../customer-notifications/customer-notifications.service';
 import type { MailTemplateName } from '../mail/mail-templates';
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
-import { clockText } from './reservation-rules';
+import { bookingDateText, clockText } from './reservation-rules';
 
 type Tx = Prisma.TransactionClient;
 
-/** Which booking email. */
-export type ReservationMailKind = 'confirmed' | 'changed' | 'cancelled';
+/** Which booking message. */
+export type ReservationMailKind =
+  'confirmed' | 'changed' | 'cancelled' | 'reminder';
 
 const TEMPLATE: Record<ReservationMailKind, MailTemplateName> = {
   confirmed: 'reservation.confirmed',
   changed: 'reservation.changed',
   cancelled: 'reservation.cancelled',
+  reminder: 'reservation.reminder',
 };
 
 /**
- * A booking date as the website writes it (`lib/booking/engine.ts`
- * `dateText`): "Sat 24 Oct 2026". The date is a `@db.Date` (UTC midnight),
- * so it is formatted in UTC, never shifted a day.
- */
-export function bookingDateText(businessDate: Date): string {
-  return new Intl.DateTimeFormat('en-GB', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  })
-    .format(businessDate)
-    .replace(/,/g, '');
-}
-
-/**
- * The guest's booking emails (plan §9.2): the confirmation for every
- * booking, whatever its channel, and the change and cancellation notices.
- * Confirmations always go to the email given (Q31's default); they are not
- * switched off by a preference.
+ * The guest's booking messages (plan §9.2): the confirmation for every
+ * booking, whatever its channel, the change and cancellation notices, and
+ * the reminder (Q32, written by `ReservationRemindersService`). Each is an
+ * email to the address on the booking and, when the booking belongs to a
+ * customer, an item in their in-app list (card C6-8: "written by the same
+ * events"). Confirmations always go to the email given (Q31's default);
+ * only the reminder's email answers to a preference, and the caller
+ * decides that (`email: false`).
  *
  * Queued in the command's transaction (`enqueue`, after the booking row is
- * written, so the email says what was committed) and sent after the commit
- * (`dispatch`). Each event queues at most one message: its dedupe key is
- * the booking and the event, and a change's carries the booking's new
- * `version`, so two changes are two emails and a replay is none.
+ * written, so the message says what was committed) and the email sent
+ * after the commit (`dispatch`). Each event writes at most one email and
+ * one item: the dedupe key is the booking and the event, and a change's
+ * and a reminder's carry the booking's `version`, so two changes are two
+ * messages and a replay is none. The in-app item shares the email's key.
  */
 @Injectable()
 export class ReservationMail {
   constructor(
     private readonly outbound: OutboundMessagesService,
+    private readonly notifications: CustomerNotificationsService,
     private readonly config: CncConfigService,
   ) {}
 
   /**
-   * Queue the email for `kind` about the booking as it now stands, and
-   * return its dedupe key for `dispatch`; null when the booking has no
-   * email (an anonymised one, Q36).
+   * Write the messages for `kind` about the booking as it now stands, and
+   * return the email's dedupe key for `dispatch`; null when no email was
+   * queued (the booking has no email, an anonymised one (Q36), or the
+   * caller said `email: false`).
    */
   async enqueue(
     tx: Tx,
     kind: ReservationMailKind,
     reservationId: string,
+    options: { email?: boolean } = {},
   ): Promise<string | null> {
     const row = await tx.reservation.findUniqueOrThrow({
       where: { id: reservationId },
@@ -68,6 +63,7 @@ export class ReservationMail {
         id: true,
         number: true,
         tableId: true,
+        customerId: true,
         name: true,
         email: true,
         businessDate: true,
@@ -76,9 +72,6 @@ export class ReservationMail {
         version: true,
       },
     });
-
-    if (row.email === '') return null;
-
     const table = await tx.diningTable.findUniqueOrThrow({
       where: { id: row.tableId },
       select: { name: true, venueId: true },
@@ -87,14 +80,33 @@ export class ReservationMail {
       where: { id: table.venueId },
       select: { customerTitle: true },
     });
+    // A change, and the reminder, carry the version: a booking moved after
+    // its reminder went gets a reminder for the new time too.
+    const dedupeKey =
+      kind === 'changed' || kind === 'reminder'
+        ? `reservation:${row.id}:${kind}:${row.version}`
+        : `reservation:${row.id}:${kind}`;
+
+    if (row.customerId !== null) {
+      await this.notifications.record(
+        tx,
+        row.customerId,
+        bookingNotification(kind, {
+          tableName: table.name,
+          venueTitle: venue.customerTitle,
+          businessDate: row.businessDate,
+          startMinutes: row.startMinutes,
+        }),
+        dedupeKey,
+      );
+    }
+
+    if (row.email === '' || options.email === false) return null;
+
     const business = await tx.business.findUnique({
       where: { singleton: true },
       select: { phone: true },
     });
-    const dedupeKey =
-      kind === 'changed'
-        ? `reservation:${row.id}:changed:${row.version}`
-        : `reservation:${row.id}:${kind}`;
 
     await this.outbound.enqueue(tx, {
       to: row.email,
