@@ -608,7 +608,7 @@ describe('Vendors and purchases (e2e)', () => {
   });
 
   describe('purchase.create', () => {
-    it('raises a review task for the first Manager, and keeps each line’s vendor', async () => {
+    it('a purchase retains the selected vendor for every line (domain.test.cjs), and raises a review task for the first Manager', async () => {
       const purchase = await raise('storekeeper', [
         riceLine(1, 7000000),
         {

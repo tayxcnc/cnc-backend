@@ -1277,6 +1277,57 @@ They are here so the first card that builds it starts from the rule.
   Cashier logs Bar waste from the till and sees the Bar's recent entries
   there, so it reads their history too.
 
+## Approvals *(from C5)*
+
+- **`GET /staff/approvals` is a read only; the decisions stay on the
+  purchase and waste routes** (plan §5.4: "purchase and waste approve or
+  reject (above)"). One command per decision keeps one place where the
+  limits, the own-record rule, the version and the ledger are applied; a
+  second approve route on this screen would be a second copy of them to
+  keep in step.
+- **Managers only (`@Roles()`), every location, and no `AuditRefAccess`
+  reader** (plan §6.1: Approvals is a managers' page). Managers already
+  read every record's history, so a reader would grant nothing.
+- **The list answers are `PurchasesService.approvalsPage` and
+  `WasteService.approvalsPage`, built on each service's own answers and
+  search** (`purchaseSearch`, `wasteSearch`), so a requisition or an entry
+  reads the same on the Approvals screen as on its own screen. Pending is
+  oldest first (a queue, in the order it was raised); History is newest
+  first. Pending requisitions are Pending and not archived
+  (`AWAITING_APPROVAL`, also the Purchasing screen's Awaiting Approval).
+  The page and page size apply to each list on its own, because the screen
+  shows them in two tables.
+- **Each Pending record carries `awaiting`: `awaits` (OWNER above the Owner
+  Approval Limit, otherwise MANAGER), the value it would be judged on, and
+  whether the reader's approval would pass now, with the exact sentence it
+  would be refused with** (the card's "what awaits whom"). The screen can
+  then say why Approve will fail before the manager presses it, in the
+  command's own words (A7).
+- **The prediction is `approvalRefusal` in `MoneyControlService`, a pure
+  function of `standing()` (the limits and the reader's ledger total for
+  the Lagos business date), in `withinLimit`'s then `notOwn`'s order.**
+  It is beside the rules it predicts so the two cannot drift; a unit test
+  runs the prediction and the command side by side, decision after
+  decision. `standing()` takes no lock, because a read decides nothing:
+  the command decides again under the ledger lock, so a prediction can be
+  one decision behind a race, never a permission.
+- **Each pending record is judged on its own against the reader's total so
+  far today**, not cumulatively down the list. Approving one changes what
+  the next is judged on, which the screen sees on its next read; a
+  cumulative forecast would assume an order of approvals the manager has
+  not chosen.
+- **A pending waste entry is valued afresh for `awaiting.valueKobo`
+  (`WasteService.decisionValueKobo`, the function its approval uses), while
+  the entry's `valueKobo` stays the stored one.** The approval revalues the
+  entry (see *Waste*), so the prediction must too, or a purchase recorded
+  since the entry was logged would make the screen predict on a stale value.
+- **New sentence: "Choose Pending or History." for an unknown view (400).**
+  The demo filtered on the client and refused nothing.
+- **The demo's "manager bell contains pending approvals and removes each
+  when it is resolved" is ported onto this read
+  (`test/approvals.e2e-spec.ts`); the bell item itself is C8-2's**
+  (plan §9.1), and the C5 gate does not need it.
+
 ## Tasks *(from C5)*
 
 - **`task.save` is two routes, `POST /staff/tasks` and
@@ -2182,6 +2233,17 @@ here.
   and adds those across commands (a booking against a walk-in, settles
   against issues on one balance), because a race that passes once can still
   lose one time in five.
+- **The C5 gate walk (`test/c5-gate.e2e-spec.ts`) follows the C4 walk's
+  form: one test per step, in order, on its own database with the real
+  seeds and a clock faked from the next noon in Jos** (from C5). It buys
+  its stock through a requisition and moves it through the Store, because
+  Q11 seeds no Kitchen stock and the gate is the founder's walk of the
+  real path; the noon start keeps every approval on one business date, so
+  the daily limit in step 6 cannot reset mid-walk. The C5 approval races
+  are in `test/approvals.e2e-spec.ts`: two Managers approving the same
+  requisition or entry, and an approval racing a rejection, each over
+  several rounds, asserting that the day's ledger counts only a winning
+  approval.
 - **Every C4 race test was seen failing with its guard removed** (from C4):
   the conditional decrement (the shortfall test), a read-then-write balance
   update in place of `qty = qty + delta` (all four stock races), the

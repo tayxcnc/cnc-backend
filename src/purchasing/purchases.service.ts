@@ -11,6 +11,7 @@ import {
   StockMovementType,
   TaskType,
 } from '../../generated/cnc-client';
+import type { ApprovalView } from '../approvals/approval-rules';
 import { AuditService, staffActor } from '../audit/audit.service';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import {
@@ -130,6 +131,25 @@ function auditLines(lines: readonly CheckedLine[]) {
   }));
 }
 
+/** A requisition awaiting a decision: Pending and not archived. */
+const AWAITING_APPROVAL = {
+  status: PurchaseStatus.PENDING,
+  archived: false,
+} satisfies Prisma.PurchaseWhereInput;
+
+/** The purchases search: the number, the note or a line's vendor, any case. */
+function purchaseSearch(q: string): Prisma.PurchaseWhereInput {
+  const contains = { contains: q, mode: Prisma.QueryMode.insensitive };
+
+  return {
+    OR: [
+      { number: contains },
+      { note: contains },
+      { lines: { some: { vendor: { name: contains } } } },
+    ],
+  };
+}
+
 /** The vendor id a plain line object carries, or undefined. */
 function lineVendorId(line: PurchaseLineRequest): string | undefined {
   const value = (line as unknown as Record<string, unknown>).vendorId;
@@ -169,10 +189,6 @@ export class PurchasesService {
   async list(query: PurchasesQuery): Promise<PurchasePageResponse> {
     const page = query.page ?? DEFAULT_PAGE;
     const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
-    const contains = (value: string) => ({
-      contains: value,
-      mode: Prisma.QueryMode.insensitive,
-    });
     const filters: Prisma.PurchaseWhereInput[] = [];
 
     if (query.view === 'ACTIVE') {
@@ -189,15 +205,7 @@ export class PurchasesService {
       });
     }
 
-    if (query.q) {
-      filters.push({
-        OR: [
-          { number: contains(query.q) },
-          { note: contains(query.q) },
-          { lines: { some: { vendor: { name: contains(query.q) } } } },
-        ],
-      });
-    }
+    if (query.q) filters.push(purchaseSearch(query.q));
 
     const where: Prisma.PurchaseWhereInput = { AND: filters };
     const rows = await this.prisma.purchase.findMany({
@@ -208,9 +216,7 @@ export class PurchasesService {
       select: PURCHASE_COLUMNS,
     });
     const total = await this.prisma.purchase.count({ where });
-    const awaitingApproval = await this.prisma.purchase.count({
-      where: { status: PurchaseStatus.PENDING, archived: false },
-    });
+    const awaitingApproval = await this.pendingCount();
     const approvedNotReceived = await this.prisma.purchase.count({
       where: { status: PurchaseStatus.APPROVED, archived: false },
     });
@@ -230,6 +236,49 @@ export class PurchasesService {
         receivedValueKobo: Number(received.total),
       },
     };
+  }
+
+  /**
+   * The Approvals screen's requisitions (C5-8): active Pending ones oldest
+   * first (the queue in the order it was raised), or decided ones newest
+   * first, with the purchases read's search. Managers only, through
+   * `ApprovalsService`.
+   */
+  async approvalsPage(
+    view: ApprovalView,
+    q: string | undefined,
+    page: number,
+    pageSize: number,
+  ): Promise<{ data: PurchaseResponse[]; total: number }> {
+    const pending = view === 'PENDING';
+    const filters: Prisma.PurchaseWhereInput[] = [
+      pending ? AWAITING_APPROVAL : { status: { not: PurchaseStatus.PENDING } },
+    ];
+
+    if (q) filters.push(purchaseSearch(q));
+
+    const where: Prisma.PurchaseWhereInput = { AND: filters };
+    const order = pending ? 'asc' : 'desc';
+    const rows = await this.prisma.purchase.findMany({
+      where,
+      orderBy: [{ createdAt: order }, { id: order }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: PURCHASE_COLUMNS,
+    });
+
+    return {
+      data: await this.answerMany(this.prisma, rows),
+      total: await this.prisma.purchase.count({ where }),
+    };
+  }
+
+  /**
+   * Requisitions awaiting a decision: Pending and not archived. The
+   * Purchasing screen's Awaiting Approval and the Approvals screen's count.
+   */
+  pendingCount(): Promise<number> {
+    return this.prisma.purchase.count({ where: AWAITING_APPROVAL });
   }
 
   /** `GET /staff/purchases/:id`. */

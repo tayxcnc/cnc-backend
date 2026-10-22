@@ -11,6 +11,7 @@ import {
   WasteStatus,
   type WasteReason,
 } from '../../generated/cnc-client';
+import type { ApprovalView } from '../approvals/approval-rules';
 import { AuditService, staffActor } from '../audit/audit.service';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import { ROLE_REFUSED_MESSAGE } from '../auth/staff-roles';
@@ -57,6 +58,25 @@ type Tx = Prisma.TransactionClient;
 
 /** What the answers are read through: the pool, or a command's transaction. */
 type Reader = Pick<Prisma.TransactionClient, 'stockItem' | 'staff'>;
+
+/** What an entry is valued through: the pool, or a command's transaction. */
+type ValueReader = Pick<
+  Prisma.TransactionClient,
+  'stockItem' | 'menuItem' | 'purchaseLine'
+>;
+
+/** The waste search: part of the number, the note or the item's name, any case. */
+function wasteSearch(q: string): Prisma.WasteEntryWhereInput {
+  const contains = { contains: q, mode: Prisma.QueryMode.insensitive };
+
+  return {
+    OR: [
+      { number: contains },
+      { note: contains },
+      { stockItem: { name: contains } },
+    ],
+  };
+}
 
 /** The columns a waste entry is answered from, without its relations. */
 const WASTE_COLUMNS = {
@@ -171,10 +191,6 @@ export class WasteService {
     const location = scoped ?? query.location;
     const page = query.page ?? DEFAULT_PAGE;
     const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
-    const contains = (value: string) => ({
-      contains: value,
-      mode: Prisma.QueryMode.insensitive,
-    });
     const visible: Prisma.WasteEntryWhereInput =
       location === undefined ? {} : { location };
     const filters: Prisma.WasteEntryWhereInput[] = [visible];
@@ -184,15 +200,7 @@ export class WasteService {
       filters.push({ status: { not: WasteStatus.PENDING } });
     }
 
-    if (query.q) {
-      filters.push({
-        OR: [
-          { number: contains(query.q) },
-          { note: contains(query.q) },
-          { stockItem: { name: contains(query.q) } },
-        ],
-      });
-    }
+    if (query.q) filters.push(wasteSearch(query.q));
 
     const where: Prisma.WasteEntryWhereInput = { AND: filters };
     const rows = await this.prisma.wasteEntry.findMany({
@@ -530,11 +538,7 @@ export class WasteService {
     entry: WasteRow,
     action: string,
   ): Promise<number> {
-    const item = await tx.stockItem.findUniqueOrThrow({
-      where: { id: entry.stockItemId },
-      select: ITEM_COLUMNS,
-    });
-    const valueKobo = await stockValueKobo(tx, item, entry.qty);
+    const valueKobo = await this.decisionValueKobo(tx, entry);
 
     await this.money.withinLimit(tx, actor, {
       amountKobo: valueKobo,
@@ -546,6 +550,68 @@ export class WasteService {
     this.money.notOwn(actor, entry.createdById, OWN_RECORD_KINDS.wasteEntry);
 
     return valueKobo;
+  }
+
+  /**
+   * What an approval of the entry would be judged on now: its quantity
+   * valued afresh by the coded formula (Q25), as `approvalRules` values it.
+   * The approvals read (C5-8) shows the same figure, so the screen's
+   * prediction and the command never value one entry two ways.
+   */
+  async decisionValueKobo(
+    client: ValueReader,
+    entry: Pick<WasteRow, 'stockItemId' | 'qty'>,
+  ): Promise<number> {
+    const item = await client.stockItem.findUniqueOrThrow({
+      where: { id: entry.stockItemId },
+      select: ITEM_COLUMNS,
+    });
+
+    return stockValueKobo(client, item, entry.qty);
+  }
+
+  /**
+   * The Approvals screen's waste (C5-8): Pending entries oldest first (the
+   * queue in the order it was logged), or decided ones newest first, at
+   * every location, with the waste read's search. Managers only, through
+   * `ApprovalsService`.
+   */
+  async approvalsPage(
+    view: ApprovalView,
+    q: string | undefined,
+    page: number,
+    pageSize: number,
+  ): Promise<{ data: WasteResponse[]; total: number }> {
+    const pending = view === 'PENDING';
+    const filters: Prisma.WasteEntryWhereInput[] = [
+      pending
+        ? { status: WasteStatus.PENDING }
+        : { status: { not: WasteStatus.PENDING } },
+    ];
+
+    if (q) filters.push(wasteSearch(q));
+
+    const where: Prisma.WasteEntryWhereInput = { AND: filters };
+    const order = pending ? 'asc' : 'desc';
+    const rows = await this.prisma.wasteEntry.findMany({
+      where,
+      orderBy: [{ createdAt: order }, { id: order }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: WASTE_COLUMNS,
+    });
+
+    return {
+      data: await this.answerMany(this.prisma, rows),
+      total: await this.prisma.wasteEntry.count({ where }),
+    };
+  }
+
+  /** Entries awaiting review at every location: the managers' figure. */
+  pendingCount(): Promise<number> {
+    return this.prisma.wasteEntry.count({
+      where: { status: WasteStatus.PENDING },
+    });
   }
 
   /** Move an entry's quantity at its location, taken (−1) or returned (+1). */

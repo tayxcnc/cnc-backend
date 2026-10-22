@@ -47,6 +47,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Stock requests: location, packs, issue, own record, reads, history | Stock requests |
 | Purchases, approvals and their limits, receiving, R1's automatic tasks, vendors, the lite list, the assigned-task bell item | Purchasing and vendors |
 | Waste: each role's location, stock on approval, Q25's coded value, approvals and corrections, the read and history | Waste |
+| `GET /staff/approvals`: a read only, what awaits whom, `approvalRefusal` and `standing()`, fresh waste values | Approvals |
 | `task.save`: the role gate, who may raise and save what, links, assignees, history, who sees which task | Tasks |
 | `asset.save` by tag, repairs, the asset following its repair, R3's resolved date, the follow-up task, the MT- reader, the assets lite list | Assets and repairs |
 | The QR scan and its token, repeats and overnight shifts, the per-person lock, corrections, the reads, the "Attendance review" export | Attendance |
@@ -108,7 +109,8 @@ src/
   auth/              staff sign-in, refresh, sign-out, change-password, admin reset;
                      CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
   money-control/     MoneyControlService: Owner-only rules, approval limits and
-                     the daily ledger, own record, Manager/Owner accounts, last Owner
+                     the daily ledger, own record, Manager/Owner accounts, last Owner;
+                     standing() and approvalRefusal() for the approvals read
   common/            money, dates, errors, pagination, request helpers, QR tokens
                      and their SVG renderer, the client-address throttler guard,
                      one-sentence field checks, the admin reason, item lists
@@ -131,6 +133,9 @@ src/
                      the PR- history reader; VendorsService (vendor.save)
   waste/             Waste: WasteService (create, approve, reject, edit, status),
                      the waste rules, the W- history reader
+  approvals/         Approvals: GET /staff/approvals (ApprovalsService), what
+                     each pending requisition or waste entry awaits
+                     (approval-rules.ts)
   tasks/             Tasks: TasksService (task.save, the tasks read), the task
                      rules, the T- history reader; the automatic tasks (raise,
                      close, who gets them) and the assigned-task bell item
@@ -166,7 +171,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      purchasing: the C5 gate's steps 1 to 3; waste: steps
                      5 and 6; tasks: task.save and who sees which;
                      assets-maintenance: assets and repairs; attendance:
-                     the scan, corrections, reads and step 7),
+                     the scan, corrections, reads and step 7;
+                     approvals: the approvals read and the C5 races;
+                     c5-gate: the C5 gate walk, steps 1 to 7),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

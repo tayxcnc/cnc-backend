@@ -621,6 +621,48 @@ describe('Attendance (e2e)', () => {
         .expect(404);
     });
 
+    it('attendance management is restricted to the manager and owner, and every staff role retains personal ID access (attendance.test.cjs)', async () => {
+      const people = (Object.keys(ROLE) as Actor[]).filter(
+        (actor) => actor !== 'retired',
+      );
+
+      for (const actor of people) {
+        const manager =
+          ROLE[actor] === StaffRole.MANAGER || ROLE[actor] === StaffRole.OWNER;
+        const me = (
+          await request(server())
+            .get('/api/v1/staff/me')
+            .set(as(actor))
+            .expect(200)
+        ).body as { pages: string[] };
+
+        expect(me.pages.includes('attendance')).toBe(manager);
+        expect(me.pages).toContain('myid');
+
+        // The server holds the same line the shell shows.
+        await request(server())
+          .get('/api/v1/staff/attendance/people')
+          .set(as(actor))
+          .expect(manager ? 200 : 403);
+        await request(server())
+          .get('/api/v1/staff/me/card')
+          .set(as(actor))
+          .expect(200);
+        await request(server())
+          .get('/api/v1/staff/me/attendance')
+          .set(as(actor))
+          .expect(200);
+      }
+
+      const reception = (
+        await request(server())
+          .get('/api/v1/staff/me')
+          .set(as('reception'))
+          .expect(200)
+      ).body as { pages: string[] };
+      expect(reception.pages).toContain('reception');
+    });
+
     it('exports the month as the Attendance review', async () => {
       const review = (
         await request(server())

@@ -23,6 +23,8 @@ import { WasteService } from './waste.service';
   imports: [CncAuthModule, AuditModule, MoneyControlModule, StockModule],
   controllers: [WasteController],
   providers: [WasteService],
+  // The approvals read (C5-8) lists entries and values them through it.
+  exports: [WasteService],
 })
 export class WasteModule implements OnModuleInit {
   constructor(

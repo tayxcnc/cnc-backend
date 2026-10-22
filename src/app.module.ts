@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ApprovalsModule } from './approvals/approvals.module';
 import { AssetsModule } from './assets/assets.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { AuditViewerModule } from './audit/audit-viewer.module';
@@ -57,6 +58,7 @@ import { WasteModule } from './waste/waste.module';
     StockModule,
     PurchasingModule,
     WasteModule,
+    ApprovalsModule,
     TasksModule,
     AssetsModule,
     AttendanceModule,

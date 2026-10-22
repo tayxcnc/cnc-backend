@@ -25,6 +25,8 @@ import { VendorsService } from './vendors.service';
   imports: [CncAuthModule, AuditModule, MoneyControlModule, StockModule],
   controllers: [PurchasesController, VendorsController],
   providers: [PurchasesService, VendorsService],
+  // The approvals read (C5-8) lists requisitions through the same answers.
+  exports: [PurchasesService],
 })
 export class PurchasingModule implements OnModuleInit {
   constructor(
