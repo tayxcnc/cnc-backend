@@ -2825,6 +2825,23 @@ here.
   requisition or entry, and an approval racing a rejection, each over
   several rounds, asserting that the day's ledger counts only a winning
   approval.
+- **The C6 gate walk (`test/c6-gate.e2e-spec.ts`) follows the same form,
+  and walks only the backend's half of each step** (from C6). The pages
+  under `/cnc`, the real inbox and the Resend delivery are the founder's
+  walk on staging; here "the email arrives" means the recording transport
+  was handed it and its `OutboundMessage` row is `SENT`, because no test may
+  reach a real mail provider. The walk's own `CNC_CONTACT_EMAIL` is set at
+  the top of the file, as the enquiries suite does, so step 7 does not
+  depend on a developer's `.env`. Step 2's website booking is a guest
+  booking under the signed-in customer's email, so the walk also proves the
+  A15 link the site's done screen promises; step 4 frees the table the way
+  Reception does on the night (check in, then release), not by cancelling,
+  because releasing is the path that ends a seating and completes the
+  booking (plan §7.5). Step 5 books a second table from the app and moves
+  the clock to 23 hours before it, refreshing the session there as the app
+  would, so the refusal is judged on the server's clock (A11). The
+  sentence is asserted as a literal string as well as the constant, so a
+  change to the constant that broke the app's wording fails the gate.
 - **Every C4 race test was seen failing with its guard removed** (from C4):
   the conditional decrement (the shortfall test), a read-then-write balance
   update in place of `qty = qty + delta` (all four stock races), the

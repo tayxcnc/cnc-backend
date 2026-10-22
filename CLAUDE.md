@@ -214,7 +214,8 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      boundary; customer-messages: the in-app list, the
                      reminders sweep, the messages sweep's backoff and
                      attempts cap; enquiries: both forms, the honeypot,
-                     the limits),
+                     the limits; c6-gate: the C6 gate walk, the backend
+                     half of steps 1 to 8),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

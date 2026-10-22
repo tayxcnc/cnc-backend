@@ -226,6 +226,12 @@ describe('idempotency (e2e)', () => {
       path: `/api/v1/${PROBE_PATH}`,
       method: 'POST',
     });
+    // The first public one (C6-5): the site's booking, which a browser on
+    // the site calls with no session, so it is pinned by name.
+    expect(routes).toContainEqual({
+      path: '/api/v1/reservations',
+      method: 'POST',
+    });
 
     for (const route of routes) {
       const response = await request(app.getHttpServer())
