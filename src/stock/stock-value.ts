@@ -1,4 +1,8 @@
-import { type Prisma, StockKind } from '../../generated/cnc-client';
+import {
+  type Prisma,
+  PurchaseStatus,
+  StockKind,
+} from '../../generated/cnc-client';
 
 /** The item fields a valuation needs. */
 export interface ValuedStockItem {
@@ -8,7 +12,16 @@ export interface ValuedStockItem {
   menuItemId: string | null;
 }
 
-type Reader = Pick<Prisma.TransactionClient, 'menuItem'>;
+type Reader = Pick<Prisma.TransactionClient, 'menuItem' | 'purchaseLine'>;
+
+/**
+ * The purchases whose lines do not set a pack cost: the demo's `wasteValue`
+ * skips Rejected and Cancelled requisitions, whatever else they say.
+ */
+const COSTLESS_PURCHASES: readonly PurchaseStatus[] = [
+  PurchaseStatus.REJECTED,
+  PurchaseStatus.CANCELLED,
+];
 
 /**
  * What a quantity of stock is worth, in kobo: the demo's `wasteValue`
@@ -47,7 +60,7 @@ export async function stockValueKobo(
     return (menuItem?.priceKobo ?? 0) * size;
   }
 
-  const packCostKobo = latestPackCostKobo(item.id);
+  const packCostKobo = await latestPackCostKobo(tx, item.id);
 
   return packCostKobo === null
     ? 0
@@ -55,17 +68,34 @@ export async function stockValueKobo(
 }
 
 /**
- * The latest purchase cost of one pack of a Kitchen item: in the demo, the
- * last line for the item on any purchase that was not rejected or
- * cancelled.
+ * The latest purchase cost of one pack of an item: in the demo, the last
+ * line for the item on any purchase that was not rejected or cancelled,
+ * the purchases taken in the order they were raised (C5-1). Null when no
+ * such line exists, which values the stock at zero, as in the demo.
  *
- * **Null until purchasing exists (C5).** Purchases and their lines are C5's
- * schema (plan §15, C5-1), so in C4 no Kitchen item has a known cost and,
- * exactly as in the demo with no purchases, its value counts as zero. C5
- * replaces this body with the read; every caller already handles the null.
+ * A purchase holds one line per item (unique), so "the last line" is the
+ * line on the most recently raised purchase; an edit replaces a purchase's
+ * lines but not its place. One query: the relation filter and order are a
+ * join, not a nested read, so it is safe inside a transaction.
+ *
+ * Q25 asks whether "latest" should instead mean the most recently received
+ * line; until it is answered, this is the coded rule.
  */
-function latestPackCostKobo(stockItemId: string): number | null {
-  void stockItemId;
+export async function latestPackCostKobo(
+  tx: Pick<Prisma.TransactionClient, 'purchaseLine'>,
+  stockItemId: string,
+): Promise<number | null> {
+  const line = await tx.purchaseLine.findFirst({
+    where: {
+      stockItemId,
+      purchase: { status: { notIn: [...COSTLESS_PURCHASES] } },
+    },
+    orderBy: [
+      { purchase: { createdAt: 'desc' } },
+      { purchase: { id: 'desc' } },
+    ],
+    select: { costKobo: true },
+  });
 
-  return null;
+  return line === null ? null : line.costKobo;
 }

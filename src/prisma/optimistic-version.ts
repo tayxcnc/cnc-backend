@@ -31,6 +31,14 @@ export const VERSIONED_TABLES = [
   'KitchenEntry',
   'Reservation',
   'TableSession',
+  'StockRequest',
+  'Vendor',
+  'Purchase',
+  'WasteEntry',
+  'Task',
+  'Asset',
+  'MaintenanceRecord',
+  'AttendanceRecord',
 ] as const satisfies readonly Prisma.ModelName[];
 
 export type VersionedTable = (typeof VERSIONED_TABLES)[number];

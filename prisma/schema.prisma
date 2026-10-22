@@ -261,6 +261,81 @@ enum TableSessionStatus {
   LOCKED
 }
 
+/// A Kitchen or Bar request for stock from the Store (plan §4.6). The
+/// staff app's Pending, Partially Issued, Issued and Rejected.
+enum StockRequestStatus {
+  PENDING
+  PARTIALLY_ISSUED
+  ISSUED
+  REJECTED
+}
+
+/// A purchase requisition's state (plan §4.6). The documented "Partially
+/// Received" is left out: no command sets it, and receiving is all at once
+/// (D39).
+enum PurchaseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  FULFILLED
+}
+
+/// Why stock was written off: the staff app's six reasons.
+enum WasteReason {
+  SPOILED
+  BURNT
+  SPILLED
+  BROKEN
+  EXPIRED
+  OTHER
+}
+
+/// A waste entry's review state. Stock moves only on approval (plan §7.8).
+enum WasteStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// What a task is about (plan §4.7): a link to a purchase or a repair, or
+/// neither.
+enum TaskType {
+  GENERAL
+  MAINTENANCE
+  PURCHASE
+}
+
+/// The staff app's Open, In Progress and Done.
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+/// An asset's condition, set by its repairs (plan §4.7): Under Repair while
+/// one is Pending or In Progress, Active when Fixed, Inactive when Not Fixed.
+enum AssetStatus {
+  ACTIVE
+  UNDER_REPAIR
+  INACTIVE
+}
+
+/// A repair's state (plan §4.7).
+enum MaintenanceStatus {
+  PENDING
+  IN_PROGRESS
+  FIXED
+  NOT_FIXED
+}
+
+/// How an attendance record was made. The staff app writes "Reception QR"
+/// only; a correction keeps the record's source and records itself as an
+/// `AttendanceCorrection`.
+enum AttendanceSource {
+  RECEPTION_QR
+}
+
 // ============================== REFERENCE DATA (§4.1) ======================
 
 /// The one settings row: VAT, service, fees, approval limits, the printer,
@@ -547,6 +622,18 @@ model Staff {
   tableSessionsClosed TableSession[]       @relation("TableSessionClosedBy")
   stockMovements      StockMovement[]
 
+  stockRequests         StockRequest[]         @relation("StockRequestCreatedBy")
+  purchasesCreated      Purchase[]             @relation("PurchaseCreatedBy")
+  purchasesDecided      Purchase[]             @relation("PurchaseDecidedBy")
+  wasteCreated          WasteEntry[]           @relation("WasteCreatedBy")
+  wasteDecided          WasteEntry[]           @relation("WasteDecidedBy")
+  tasksAssigned         Task[]                 @relation("TaskAssignedTo")
+  tasksRaised           Task[]                 @relation("TaskRaisedBy")
+  taskHistory           TaskHistory[]
+  maintenanceHistory    MaintenanceHistory[]
+  attendanceRecords     AttendanceRecord[]
+  attendanceCorrections AttendanceCorrection[]
+
   @@index([role, isActive])
 }
 
@@ -718,6 +805,9 @@ model StockItem {
   balances        StockBalance[]
   movements       StockMovement[]
   kitchenMappings KitchenMapping[]
+  requests        StockRequest[]
+  purchaseLines   PurchaseLine[]
+  wasteEntries    WasteEntry[]
 
   @@index([kind])
 }
@@ -810,6 +900,188 @@ model KitchenMapping {
   stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
 
   @@unique([menuItemId, stockItemId])
+  @@index([stockItemId])
+}
+
+// ============================== STOCK (§4.6, requests, purchasing, waste) ==
+
+/// A Kitchen or Bar request for stock from the Store (plan §4.6, §7.6;
+/// `request.create`, `request.issue`, `request.reject`).
+///
+/// `number` is `SR-000001`. A request is for whole packs, as the Store
+/// counts them: `qtyPacks` asked for, `issuedPacks` sent so far. An issue
+/// moves −packs at the Store and +packs × the item's factor at `location`,
+/// through `StockLedgerService`, with the request number as the movements'
+/// ref. The location is the Kitchen or the Bar, never the Store, and the
+/// item must be one the location holds (a Kitchen item for the Kitchen, a
+/// Bar item for the Bar): the first is a CHECK, the second the service's
+/// rule, because it spans two tables.
+///
+/// The status follows the packs, held by a CHECK: Pending with nothing
+/// sent, Partially Issued with some, Issued with all; Rejected carries its
+/// reason (and may follow a partial issue, as in the demo). `rejectReason`
+/// is set exactly when Rejected. The demo appended the reason to the note;
+/// the server keeps the two apart.
+///
+/// `createdById` is who asked, for the own-record rule (`notOwn`, by id,
+/// A10). Restrict both: a request is history. Never deleted.
+model StockRequest {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number       String             @unique
+  location     StockLocation
+  stockItemId  String
+  qtyPacks     Int
+  issuedPacks  Int                @default(0)
+  status       StockRequestStatus @default(PENDING)
+  note         String             @default("")
+  rejectReason String?
+  createdById  String
+
+  version Int @default(0)
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  createdBy Staff     @relation("StockRequestCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([location, createdAt])
+  @@index([status])
+  @@index([stockItemId])
+}
+
+/// A supplier (plan §4.6; `vendor.save`): a contact, never a login.
+/// Deactivated (`isActive`), never deleted, so every purchase and repair
+/// that names one still resolves. A CHECK holds the name and phone
+/// non-blank ("Enter the vendor name and phone.").
+model Vendor {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name     String
+  service  String  @default("")
+  phone    String
+  email    String  @default("")
+  contact  String  @default("")
+  address  String  @default("")
+  notes    String  @default("")
+  isActive Boolean @default(true)
+
+  version Int @default(0)
+
+  purchases     Purchase[]
+  purchaseLines PurchaseLine[]
+  maintenance   MaintenanceRecord[]
+
+  @@index([isActive, name])
+}
+
+/// A purchase requisition (plan §4.6, §7.7): `PR-000001`.
+///
+/// `vendorId` is the header's vendor, the first line's; each line names its
+/// own. Receiving is all at once (D39), so there is no partial state.
+/// `archived` hides a requisition from the active list; archiving one with
+/// nothing received also cancels it. `decidedById` is the manager who
+/// approved or rejected it, and `createdById` the Storekeeper who raised
+/// it, for the own-record rule. Restrict the vendor and both people: a
+/// purchase is history. Never deleted.
+model Purchase {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number      String         @unique
+  vendorId    String
+  status      PurchaseStatus @default(PENDING)
+  note        String         @default("")
+  archived    Boolean        @default(false)
+  createdById String
+  decidedById String?
+
+  version Int @default(0)
+
+  vendor    Vendor @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  createdBy Staff  @relation("PurchaseCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  decidedBy Staff? @relation("PurchaseDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  lines PurchaseLine[]
+  tasks Task[]
+
+  @@index([status, archived])
+  @@index([vendorId])
+  @@index([createdAt])
+}
+
+/// One item on a purchase (plan §4.6): whole packs at a cost per pack.
+///
+/// One line per item per purchase (unique), as the demo's duplicate rule
+/// has it. `position` is the line's place in the list the screen sent, so
+/// the requisition reads back in its own order. `receivedPacks` is what
+/// reached the Store: 0 until receiving, then the whole quantity (a CHECK
+/// holds it between the two). A CHECK holds the packs and the cost above
+/// zero ("Choose a stock item and positive unit cost.").
+///
+/// The latest line for an item on a purchase that was not rejected or
+/// cancelled is the item's pack cost for valuing stock and waste
+/// (`latestPackCostKobo`, the demo's `wasteValue`, until Q25). Cascade from
+/// the purchase, whose lines these are; restrict the item and the vendor.
+model PurchaseLine {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchaseId    String
+  position      Int
+  stockItemId   String
+  vendorId      String
+  qtyPacks      Int
+  costKobo      Int
+  receivedPacks Int    @default(0)
+
+  purchase  Purchase  @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  vendor    Vendor    @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  @@unique([purchaseId, stockItemId])
+  @@index([stockItemId])
+  @@index([vendorId])
+}
+
+/// Stock written off at one location (plan §4.6, §7.8): `W-000001`.
+///
+/// Logged by the location's staff and moved only on approval. `qty` is
+/// whole and above zero: packs at the Store, units elsewhere. `valueKobo`
+/// is stored when the entry is made and again when it is edited, by the
+/// coded formula until Q25 is answered (`stockValueKobo`), so a later price
+/// change never rewrites what a write-off was worth when it was decided.
+/// `createdById` is who logged it (own-record rule), `decidedById` who
+/// approved or rejected it. Restrict the item and the logger. Never
+/// deleted.
+model WasteEntry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number      String        @unique
+  location    StockLocation
+  stockItemId String
+  qty         Int
+  reason      WasteReason
+  note        String        @default("")
+  status      WasteStatus   @default(PENDING)
+  valueKobo   Int
+  createdById String
+  decidedById String?
+
+  version Int @default(0)
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  createdBy Staff     @relation("WasteCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  decidedBy Staff?    @relation("WasteDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([location, status])
+  @@index([status, createdAt])
   @@index([stockItemId])
 }
 
@@ -1114,6 +1386,203 @@ model TableSession {
 
   @@index([tableId, endedAt])
   @@index([endedAt, status])
+}
+
+// ============================== TASKS, ASSETS, ATTENDANCE (§4.7) ===========
+//
+// Kept by Q12 to Q15's defaults (attendance and the QR ID, assets and
+// reactive repairs, purchase requisitions, the manager approvals).
+
+/// A task (plan §4.7, §7.7, §7.9; `task.save`): `T-000001`.
+///
+/// `raisedById` is who raised it (the actor, or the command's actor for an
+/// automatic task) and `assignedToId` who must do it, by id (A10); never a
+/// Waiter or Bartender, which is the service's rule. `automatic` marks the
+/// tasks commands raise by themselves: "Review purchase…", "Receive goods
+/// for…", "Follow up repair…".
+///
+/// A task links to at most one record, and only to the kind its type names:
+/// a CHECK holds `purchaseId` to Purchase tasks and `maintenanceId` to
+/// Maintenance tasks, so a task's links and its type cannot disagree.
+/// Restrict every relation: a task is history, and so are its people and
+/// records. Never deleted.
+model Task {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number        String     @unique
+  title         String
+  type          TaskType
+  assignedToId  String
+  raisedById    String
+  status        TaskStatus @default(OPEN)
+  purchaseId    String?
+  maintenanceId String?
+  automatic     Boolean    @default(false)
+
+  version Int @default(0)
+
+  assignedTo  Staff              @relation("TaskAssignedTo", fields: [assignedToId], references: [id], onDelete: Restrict)
+  raisedBy    Staff              @relation("TaskRaisedBy", fields: [raisedById], references: [id], onDelete: Restrict)
+  purchase    Purchase?          @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  maintenance MaintenanceRecord? @relation(fields: [maintenanceId], references: [id], onDelete: Restrict)
+
+  history TaskHistory[]
+
+  @@index([assignedToId, status])
+  @@index([raisedById, status])
+  @@index([purchaseId])
+  @@index([maintenanceId])
+}
+
+/// One status a task was given, by whom and when (plan §4.7): the demo's
+/// task `history`. `automatic` marks an entry a command wrote by itself
+/// (the demo's "<name> (automatic)"); `staffId` is still the person whose
+/// command it was, and null only if no one's was. Rows are only ever
+/// added, so there is no `updatedAt`. Cascade from the task.
+model TaskHistory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  taskId    String
+  status    TaskStatus
+  staffId   String?
+  automatic Boolean    @default(false)
+
+  task  Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, createdAt])
+}
+
+/// Something CNC owns that can break (plan §4.7; `asset.save`, managers):
+/// a fridge, a POS terminal. `tag` is the label on the thing itself, unique,
+/// and the route's key (`PUT /staff/assets/:tag`). `quantity` is above zero
+/// (a CHECK: "Enter a tag, name and quantity."). The status follows its
+/// repairs. Never deleted: an asset is made Inactive.
+model Asset {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tag      String      @unique
+  name     String
+  category String      @default("")
+  location String      @default("")
+  quantity Int
+  status   AssetStatus @default(ACTIVE)
+
+  version Int @default(0)
+
+  maintenance MaintenanceRecord[]
+
+  @@index([status])
+}
+
+/// A repair (plan §4.7, §7.9; `maintenance.save`, Reception): `MT-000001`.
+/// Reactive only (Q13): no preventive schedule.
+///
+/// `reportedOn` is the business date it was first saved. **`resolvedOn` is
+/// set once, on the first move to Fixed or Not Fixed, and never reset**
+/// (plan §17, R3: the demo reset it to today on every save); a CHECK holds
+/// it present for a Fixed or Not Fixed repair and never before the report.
+/// `costKobo` is zero or more. Restrict the asset and the vendor: a repair
+/// is history. Never deleted.
+model MaintenanceRecord {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number      String            @unique
+  assetId     String
+  vendorId    String
+  description String
+  costKobo    Int               @default(0)
+  reportedOn  DateTime          @db.Date
+  resolvedOn  DateTime?         @db.Date
+  status      MaintenanceStatus @default(PENDING)
+
+  version Int @default(0)
+
+  asset  Asset  @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  history MaintenanceHistory[]
+  tasks   Task[]
+
+  @@index([assetId])
+  @@index([status])
+  @@index([reportedOn])
+}
+
+/// One status a repair was given, by whom and when (plan §4.7): the demo's
+/// maintenance `history`. Rows are only ever added. Cascade from the
+/// record; restrict the person.
+model MaintenanceHistory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  recordId String
+  status   MaintenanceStatus
+  staffId  String
+
+  record MaintenanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  staff  Staff             @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([recordId, createdAt])
+}
+
+/// One shift: a person's arrival and departure, from Reception's QR scan
+/// (plan §4.7, §7.9; Q12: timestamps only, as TAY's).
+///
+/// `businessDate` is the arrival's Lagos date; a shift that runs past
+/// midnight stays on the day it began and closes on the next scan.
+/// **One open record per person**: a partial unique index on `staffId`
+/// where `timeOut IS NULL`, written by hand as `AttendanceRecord_staffId_key`,
+/// so two scans racing for one person cannot both open a shift (the scan
+/// also takes an advisory lock, as TAY's does). A CHECK holds `timeOut` at
+/// or after `timeIn`. Restrict the person. Never deleted.
+model AttendanceRecord {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staffId      String
+  businessDate DateTime         @db.Date
+  timeIn       DateTime
+  timeOut      DateTime?
+  source       AttendanceSource @default(RECEPTION_QR)
+
+  version Int @default(0)
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  corrections AttendanceCorrection[]
+
+  @@index([staffId, timeIn])
+  @@index([businessDate])
+}
+
+/// A manager's correction of one shift (plan §4.7; `attendance.correct`,
+/// M + reason): the times it replaced, why, and who changed them. Returned
+/// with each record for the History modal, which no longer reads the audit
+/// log's before and after. Rows are only ever added. Cascade from the
+/// record; restrict the manager.
+model AttendanceCorrection {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  recordId  String
+  beforeIn  DateTime
+  beforeOut DateTime?
+  reason    String
+  staffId   String
+
+  record AttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  staff  Staff            @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([recordId, createdAt])
 }
 
 // ============================== MONEY CONTROLS (§4.3, the ledger only) =====
