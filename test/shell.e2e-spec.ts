@@ -155,6 +155,7 @@ describe('staff shell (e2e)', () => {
         'staff',
         'staffCategories',
         'stockItems',
+        'vendors',
         'venues',
       ]);
       expect(body.settings.vatBps).toEqual(expect.any(Number));

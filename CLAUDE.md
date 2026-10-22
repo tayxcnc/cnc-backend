@@ -45,6 +45,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
 | The C5 tables' CHECKs, one open shift per person, task links, pack cost | Stock requests, purchasing, waste, tasks, assets and attendance: the schema |
 | Stock requests: location, packs, issue, own record, reads, history | Stock requests |
+| Purchases, approvals and their limits, receiving, R1's automatic tasks, vendors, the lite list, the assigned-task bell item | Purchasing and vendors |
 | Bills, lines, totals, dockets, reprints, order history readers | Orders and dockets |
 | Payments, settle and its race, Bar stock on settle and reverse, discounts, cancel, reopen | Payments, settlement and bill corrections |
 | Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
@@ -121,6 +122,11 @@ src/
                      and movements), balances and movements reads, issue, count,
                      Correct Balance, stock items, kitchen comparison rules;
                      stock requests (StockRequestsService, the SR- history reader)
+  purchasing/        Purchasing and Vendors: PurchasesService (create, edit,
+                     approve, reject, status, archive, receive), purchase rules,
+                     the PR- history reader; VendorsService (vendor.save)
+  tasks/             the automatic tasks (raise, close, who gets them) and the
+                     assigned-task bell item; C5-5 adds task.save and the reads
   orders/            Point of Sale: bills and lines (claimOrder, readOrder,
                      orderTotals), kitchen dockets (DocketsService, the one
                      docket writer), the bill and docket history readers;
@@ -142,7 +148,8 @@ prisma/
   menu-seed.ts       joins the copied menu sources; refuses a disagreement
   seed-data/         copies of cnc-frontend's menu, id map and floor plans; Q7 values
 test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
-                     acceptance races; c5-schema: the C5 migration's CHECKs),
+                     acceptance races; c5-schema: the C5 migration's CHECKs;
+                     purchasing: the C5 gate's steps 1 to 3),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

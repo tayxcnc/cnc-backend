@@ -16,6 +16,7 @@ import { MenuModule } from './menu/menu.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrdersModule } from './orders/orders.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
+import { PurchasingModule } from './purchasing/purchasing.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
 import { ReceptionModule } from './reception/reception.module';
 import { SettingsModule } from './settings/settings.module';
@@ -50,6 +51,7 @@ import { StockModule } from './stock/stock.module';
     SettingsModule,
     MenuModule,
     StockModule,
+    PurchasingModule,
     OrdersModule,
     KitchenModule,
     CashModule,

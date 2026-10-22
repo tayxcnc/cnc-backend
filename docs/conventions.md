@@ -1090,6 +1090,115 @@ They are here so the first card that builds it starts from the rule.
   version claim needs one not-found sentence, in the form of "Stock item
   not found.").
 
+## Purchasing and vendors *(from C5)*
+
+- **Every purchase command is in `PurchasesService`
+  (`src/purchasing/purchases.service.ts`) and, after the create, claims the
+  purchase's `version` first; a purchase id that names nothing is 404
+  "Purchase not found." (new), and a purchase in the wrong state is 409 with
+  the command's own demo sentence** ("Only active pending requisitions can
+  be reviewed.", "Receive only approved requisitions.", "Received or
+  archived purchases cannot return to approval.", "Select an active
+  purchase record.", "Purchase not found or already archived."). The demo
+  answered a missing purchase with each command's state sentence; one
+  not-found sentence is what the version claim needs, as C5-2 decided for
+  requests. Two managers approving at once, or two receipts of one
+  delivery, end as one success and one stale 409; both race tests fail
+  with the claim removed.
+- **An approval (`purchase.approve`, and `purchase.status` to Approved from
+  any other status) runs `MoneyControlService.withinLimit` with
+  `LIMITED_DECISIONS.purchase`, counted toward the day, then `notOwn` with
+  `OWN_RECORD_KINDS.purchase`, in the demo's order; the purchase's total is
+  packs × cost over its lines (`purchaseTotalKobo`)** (plan §6.2 "approve:
+  L, D, N"). The limit sentence before the own-record one is the demo's
+  order, so a manager approving their own ₦140,000 purchase is told about
+  the limit. A rejection spends nothing: a manager may reject their own,
+  and nothing is counted. `purchase.edit` holds both the old and the new
+  total to the Owner Approval Limit without counting either: an edit
+  decides nothing.
+- **The automatic tasks are raised and closed only through
+  `src/tasks/automatic-tasks.ts` (`raiseAutomaticTask`, `closeOpenTasks`,
+  `managerForTask`, `storekeeperForTask`), in the command's transaction**
+  (plan §7.7, §7.9). A task raised in a transaction of its own would
+  survive a refused command, and two copies of "who gets it" would disagree.
+  C5-6's repairs use the same helpers.
+- **A review task goes to the first active Manager (else the first active
+  Owner, else the actor); a receive task to the first active Storekeeper
+  (else whoever gets a review); "first" is the order the accounts were
+  made in** (the demo's `managerName` and `storeName`, which took the first
+  in its staff list). By id (A10), never by name. A suite that asserts who
+  got a task runs on its own database (`test/purchasing.e2e-spec.ts`), since
+  on the shared one the first Manager is another suite's.
+- **A purchase's automatic tasks follow its status (`taskForStatus`): when
+  the status changes, its open automatic tasks close and the new status's
+  task opens; Pending waits on a review, Approved on receiving, every other
+  status on nobody** (plan §17, R1). The demo opened the receive task only
+  from `purchase.approve`, so a manager approving by status correction left
+  the Storekeeper with nothing to do; R1 corrects that, and the same rule
+  gives a purchase returned to Pending its review again and closes the
+  stale receive task. Only `automatic` tasks move with the status: a task a
+  person linked to the purchase stays open until it is received or
+  archived, as in the demo.
+- **Receiving and archiving close every open task on the purchase,
+  automatic or not** (the demo's `purchase.receive`; R1 for the archive).
+  The work a task tracked is over either way.
+- **`closeOpenTasks` moves each closed task's `version` in its one
+  conditional update and writes an automatic `TaskHistory` row by the person
+  whose command closed it.** A person saving the task from a screen read
+  before the close is then refused as stale instead of reopening it unseen.
+- **Receiving is all at once (D39): each line's remaining packs enter the
+  Store as `PURCHASE_RECEIPT`, and a correction of a received purchase moves
+  the Store by each item's new quantity less what was received
+  (`correctionMoves`) as `PURCHASE_CORRECTION`, both through
+  `StockLedgerService.move` under the purchase number.** The new lines of a
+  received purchase count as received in full, so the Store holds exactly
+  the corrected packs; a correction below what the Store still holds is
+  refused by the ledger's "Insufficient store stock for <item>.".
+- **`purchase.create` and `vendor.save` (a new vendor) take an
+  Idempotency-Key; every other purchase and vendor command does not** (the
+  *Idempotency* rule for creates): a retried create would raise a second
+  requisition or add a vendor twice, and every other command names a
+  version the first attempt moved.
+- **A requisition line's vendor is its own `vendorId`, or on a new
+  requisition the request's `vendorId`; the requisition's vendor is its
+  first line's** (the demo's `l.vendorId||c.vendorId`; the schema's
+  header rule). The demo set the header from the request first; the screen
+  sends a vendor on every line, so the two agree on everything a screen
+  sends, and the stored header is always a vendor a line names. An edit
+  names a vendor on every line, as the demo's edit requires.
+- **Line checks follow the demo's order per command: `purchase.create`
+  checks each line's vendor and then its item and cost, `purchase.edit` the
+  item and cost and then the vendor; the list's own sentences (empty,
+  duplicates, quantities) come first, from `@ValidLines`.** The cost is
+  checked in the service (`isLineCost`), beside the item, because the
+  demo's one sentence names both ("Choose a stock item and positive unit
+  cost."). One exception: a blank item id is refused by `@ValidLines` with
+  the item sentence before any vendor is looked at.
+- **`vendor.save` replaces the whole profile, and changes `isActive` only
+  when it is sent** (R2's rule for staff accounts, applied to vendors). The
+  demo made a vendor Active again whenever the form left the status out; a
+  phone fix must not quietly put a deactivated supplier back on every
+  purchase form. A vendor's audit ref is its id: a vendor has no human
+  number, and no non-manager reads a vendor's history, so no reader is
+  registered.
+- **Every screen names vendors from the lite list on `GET /staff/reference`
+  (`vendors: [{ id, name, service, isActive }]`); phone, email and address
+  are on `GET /staff/vendors` only (the Storekeeper and managers).** Reception
+  picks a vendor for a repair (C5-6) and the purchase forms pick active
+  ones; neither needs a supplier's contact details, which the Vendors page
+  keeps to the roles plan §6.1 gives it.
+- **`PurchasingModule` registers the `AuditRefAccess` reader for `PR-`
+  numbers: the Storekeeper, for every purchase that exists**
+  (`src/purchasing/purchase-audit-reader.ts`, plan §4.8). The Storekeeper's
+  list shows every requisition, so their history access matches it.
+- **The bell shows the reader's assigned tasks that are not Done ("Assigned
+  Task · Open", the task's title, page `tasks`), after every other item, to
+  a role whose pages include Tasks** (the demo's `staffNotifications`; the C5
+  gate's step 2). The page rule keeps every bell item openable. The demo
+  hides a manager's own review tasks while the approvals alert is on,
+  because the Purchase Approval item stands in for them; that item is C8-2's,
+  so until it exists the review task shows as an assigned task.
+
 ## Orders and dockets *(from C4)*
 
 - **Every order command takes its bill through `OrdersService.claimOrder`

@@ -149,6 +149,12 @@ export class ShellService {
           isActive: true,
         },
       }),
+      // The lite list (C5-3): what a form picks a vendor from and a record
+      // names one by. Contact details stay on the Vendors screen's read.
+      vendors: await tx.vendor.findMany({
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        select: { id: true, name: true, service: true, isActive: true },
+      }),
     }));
 
     const { tables, kitchenMappings, ...rest } = read;

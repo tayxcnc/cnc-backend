@@ -163,11 +163,29 @@ export class ReferenceKitchenMappingResponse {
 }
 
 /**
+ * A vendor as every screen may name one (C5-3): no phone, email or address,
+ * which only the Vendors screen's read (`GET /staff/vendors`) carries.
+ */
+export class ReferenceVendorResponse {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty({ example: 'Plateau Fresh Foods' })
+  name!: string;
+
+  @ApiProperty({ example: 'Food supplies' })
+  service!: string;
+
+  @ApiProperty()
+  isActive!: boolean;
+}
+
+/**
  * `GET /staff/reference`: what every screen looks things up in (plan §5.3),
  * read once when the shell loads.
  *
- * Vendors and assets join this response with the cards that build their
- * tables (C5).
+ * Vendors joined this response with C5-3; assets join it with the card
+ * that builds their routes (C5-6).
  */
 export class ReferenceResponse {
   @ApiProperty({ type: SettingsResponse })
@@ -213,4 +231,13 @@ export class ReferenceResponse {
     isArray: true,
   })
   staff!: ReferenceStaffResponse[];
+
+  @ApiProperty({
+    description:
+      'Every vendor, active or not, by name: the lite list a purchase or ' +
+      'repair form picks from (active ones only) and a record is named by.',
+    type: ReferenceVendorResponse,
+    isArray: true,
+  })
+  vendors!: ReferenceVendorResponse[];
 }
