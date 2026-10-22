@@ -168,6 +168,7 @@ export class ReservationsController {
       work: (tx) => this.reservations.create(tx, actor, request, ipAddress),
     });
 
+    await this.reservations.sendConfirmation(result.body.id);
     response.status(result.status);
 
     return result.body;

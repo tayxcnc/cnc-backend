@@ -32,6 +32,36 @@ export interface MailTemplateParams {
    * the new address masked as the sign-in screen masks it.
    */
   'customer.email-changed': { newEmailMasked: string };
+  /** A booking made, from any channel (plan §9.2, C6-5). */
+  'reservation.confirmed': ReservationMailParams;
+  /** A booking's date, time, table or party changed (C6-6). */
+  'reservation.changed': ReservationMailParams;
+  /** A booking cancelled, by the guest or by Reception (C6-6). */
+  'reservation.cancelled': ReservationMailParams;
+}
+
+/**
+ * What a booking email says, all of it display text the queue can re-send
+ * days later without reading the booking again.
+ */
+export interface ReservationMailParams {
+  /** `RSV-000001`. */
+  number: string;
+  /** The guest's first name, for the greeting. */
+  guestName: string;
+  /** The room's customer title: "Dining", "Lounge". */
+  venue: string;
+  /** The table's name: "Booth 1". */
+  table: string;
+  /** The date as the site writes it: "Sat 24 Oct 2026". */
+  date: string;
+  /** The arrival time, `HH:mm`. */
+  time: string;
+  party: number;
+  /** CNC's phone, from the business details, for calls inside 24 hours. */
+  phone: string;
+  /** The account page, where a signed-in guest changes the booking; null without a web URL. */
+  accountUrl: string | null;
 }
 
 export type MailTemplateName = keyof MailTemplateParams;
@@ -67,7 +97,148 @@ function isCodeParams(
   );
 }
 
+function isReservationParams(value: unknown): value is ReservationMailParams {
+  return (
+    isRecord(value) &&
+    ['number', 'guestName', 'venue', 'table', 'date', 'time', 'phone'].every(
+      (key) => typeof value[key] === 'string' && value[key] !== '',
+    ) &&
+    typeof value.party === 'number' &&
+    Number.isInteger(value.party) &&
+    value.party > 0 &&
+    (value.accountUrl === null || typeof value.accountUrl === 'string')
+  );
+}
+
+const guestsText = (party: number) =>
+  `${party} ${party === 1 ? 'guest' : 'guests'}`;
+
+/** The booking's details, as lines of plain text. */
+function bookingLines(p: ReservationMailParams, withParty: boolean): string[] {
+  return [
+    `Booking: ${p.number}`,
+    `Space: ${p.venue}`,
+    `Table: ${p.table}`,
+    `Date: ${p.date}`,
+    `Arrival: ${p.time}`,
+    ...(withParty ? [`Party: ${guestsText(p.party)}`] : []),
+  ];
+}
+
+/** The same details as an HTML list, every value escaped. */
+function bookingHtml(p: ReservationMailParams, withParty: boolean): string {
+  const rows = bookingLines(p, withParty).map((line) => {
+    const [label, ...rest] = line.split(': ');
+
+    return (
+      `<tr><td style="padding:2px 12px 2px 0;color:#6b6b6b;">` +
+      `${escapeHtml(label)}</td><td style="padding:2px 0;">` +
+      `<strong>${escapeHtml(rest.join(': '))}</strong></td></tr>`
+    );
+  });
+
+  return `<table role="presentation" style="margin:8px 0 16px 0;">${rows.join('')}</table>`;
+}
+
+/** The 24-hour rule (Q6), with where to change the booking and whom to call. */
+function changeRule(p: ReservationMailParams): { html: string; text: string } {
+  const where =
+    p.accountUrl === null
+      ? 'in your CNC account'
+      : `in your CNC account (${p.accountUrl})`;
+  const text =
+    `You can change or cancel this booking ${where} up to 24 hours ` +
+    `before it starts. After that, please call CNC on ${p.phone}.`;
+  const link =
+    p.accountUrl === null
+      ? 'in your CNC account'
+      : `in <a href="${escapeHtml(p.accountUrl)}">your CNC account</a>`;
+
+  return {
+    html:
+      `<p>You can change or cancel this booking ${link} up to 24 hours ` +
+      `before it starts. After that, please call CNC on ` +
+      `${escapeHtml(p.phone)}.</p>`,
+    text,
+  };
+}
+
 const TEMPLATES: { [Name in MailTemplateName]: MailTemplate<Name> } = {
+  'reservation.confirmed': {
+    isParams: isReservationParams,
+    render: (p) => {
+      const rule = changeRule(p);
+
+      return {
+        subject: `Your table at CNC is booked: ${p.number}`,
+        html: [
+          `<p>Hello ${escapeHtml(p.guestName)},</p>`,
+          '<p>Your table is reserved. Your table is yours for your whole ' +
+            'visit.</p>',
+          bookingHtml(p, true),
+          rule.html,
+        ].join(''),
+        text: [
+          `Hello ${p.guestName},`,
+          '',
+          'Your table is reserved. Your table is yours for your whole visit.',
+          '',
+          ...bookingLines(p, true),
+          '',
+          rule.text,
+        ].join('\n'),
+      };
+    },
+  },
+  'reservation.changed': {
+    isParams: isReservationParams,
+    render: (p) => {
+      const rule = changeRule(p);
+
+      return {
+        subject: `Your CNC booking ${p.number} has changed`,
+        html: [
+          `<p>Hello ${escapeHtml(p.guestName)},</p>`,
+          '<p>Your reservation has been changed. These are the new ' +
+            'details:</p>',
+          bookingHtml(p, true),
+          rule.html,
+        ].join(''),
+        text: [
+          `Hello ${p.guestName},`,
+          '',
+          'Your reservation has been changed. These are the new details:',
+          '',
+          ...bookingLines(p, true),
+          '',
+          rule.text,
+        ].join('\n'),
+      };
+    },
+  },
+  'reservation.cancelled': {
+    isParams: isReservationParams,
+    render: (p) => ({
+      subject: `Your CNC booking ${p.number} is cancelled`,
+      html: [
+        `<p>Hello ${escapeHtml(p.guestName)},</p>`,
+        '<p>Your reservation has been cancelled. The table is free for ' +
+          'other guests. Nothing is charged.</p>',
+        bookingHtml(p, false),
+        `<p>If this is a mistake, please call CNC on ${escapeHtml(p.phone)}.</p>`,
+      ].join(''),
+      text: [
+        `Hello ${p.guestName},`,
+        '',
+        'Your reservation has been cancelled. The table is free for other ' +
+          'guests. Nothing is charged.',
+        '',
+        ...bookingLines(p, false),
+        '',
+        `If this is a mistake, please call CNC on ${p.phone}.`,
+      ].join('\n'),
+    }),
+  },
   'customer.email-change-code': {
     isParams: isCodeParams,
     render: ({ code, minutes }) => ({

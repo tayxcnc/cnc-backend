@@ -15,6 +15,7 @@ import {
 import { CncTokenService } from './cnc-token.service';
 import { CncCustomerGuard } from './guards/cnc-customer.guard';
 import { CncStaffGuard } from './guards/cnc-staff.guard';
+import { OptionalCustomerGuard } from './guards/optional-customer.guard';
 import { StaffAuthController } from './staff-auth.controller';
 import { StaffAuthService } from './staff-auth.service';
 import { StaffPasswordResetController } from './staff-password-reset.controller';
@@ -83,9 +84,15 @@ import {
     CncTokenService,
     CncStaffGuard,
     CncCustomerGuard,
+    OptionalCustomerGuard,
     StaffAuthService,
     ClientAddressThrottlerGuard,
   ],
-  exports: [CncTokenService, CncStaffGuard, CncCustomerGuard],
+  exports: [
+    CncTokenService,
+    CncStaffGuard,
+    CncCustomerGuard,
+    OptionalCustomerGuard,
+  ],
 })
 export class CncAuthModule {}

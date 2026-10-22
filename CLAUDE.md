@@ -60,6 +60,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
 | Business dates in requests (`calendarDate`) | Errors |
 | Bookings, arrival rules and Q30, the table lock, seatings, the floor, the Free Table Reminder, Q35 | Reception: bookings, table sessions and the floor |
+| `POST /reservations` (guest or customer), the customer link both ways, `/me/reservations`, the 24-hour rule (Q6), booking emails, the booking throttle | Bookings from the website and the app |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -172,7 +173,10 @@ src/
   reception/         Reception: bookings (ReservationsService.book, the one
                      booking command), table sessions, the floor read, the
                      Free Table Reminder; arrival rules in reservation-rules.ts;
-                     the public GET /venues and availability
+                     the public GET /venues and availability; the website's
+                     and the app's POST /reservations and /me/reservations
+                     (CustomerReservationsService), the customer link
+                     (customer-link.ts), the booking emails (ReservationMail)
   notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
@@ -194,7 +198,10 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      customer-auth: the email-code sign-in, its caps,
                      the realms, the outbound queue and TAY's cookies;
                      customer-account: /me, the email change, the photo,
-                     deletion; public-reads: the C6-4 public reads),
+                     deletion; public-reads: the C6-4 public reads;
+                     customer-reservations: web and app bookings, the
+                     link, change and cancel, the races and the 24-hour
+                     boundary),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

@@ -65,6 +65,36 @@ export function bookingStart(businessDate: Date, startMinutes: number): Date {
   );
 }
 
+/**
+ * How long before a booking starts a customer may still change or cancel
+ * it online (Q6: "until 24 hours before the booking (≥ 24 h)"). After that,
+ * they call CNC; staff can still change or cancel it.
+ */
+export const CHANGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** The last instant a customer may change or cancel the booking online. */
+export function changeableUntil(
+  businessDate: Date,
+  startMinutes: number,
+): Date {
+  return new Date(
+    bookingStart(businessDate, startMinutes).getTime() - CHANGE_WINDOW_MS,
+  );
+}
+
+/**
+ * Whether the booking is less than 24 hours away at `now` (Q6), so the
+ * customer's change or cancel is refused. Exactly 24 hours ahead is still
+ * allowed ("≥ 24 h"); a booking whose time has passed is inside too.
+ */
+export function insideChangeWindow(
+  businessDate: Date,
+  startMinutes: number,
+  now: Date,
+): boolean {
+  return now.getTime() > changeableUntil(businessDate, startMinutes).getTime();
+}
+
 /** One day's opening hours (`OpeningHoursDay`). */
 export interface DayHours {
   isClosed: boolean;

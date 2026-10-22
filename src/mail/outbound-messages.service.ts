@@ -186,6 +186,28 @@ export class OutboundMessagesService {
   }
 
   /**
+   * Send the message queued under `dedupeKey`, if any, now. For a command
+   * run through `IdempotencyService`, whose work cannot hand the message id
+   * out past a replay: a replay finds the message already sent and sends
+   * nothing. Never throws.
+   */
+  async dispatchByKey(dedupeKey: string): Promise<void> {
+    try {
+      const row = await this.prisma.outboundMessage.findUnique({
+        where: { dedupeKey },
+        select: { id: true },
+      });
+
+      if (row !== null) await this.dispatch(row.id);
+    } catch (error) {
+      this.logger.error(
+        `Outbound message ${dedupeKey} could not be found to dispatch: ` +
+          `${error instanceof Error ? error.name : 'unknown error'}.`,
+      );
+    }
+  }
+
+  /**
    * The messages sweep: give up on what has expired, then retry what is
    * waiting or failed, oldest first, `MESSAGE_SWEEP_BATCH` at a time.
    */

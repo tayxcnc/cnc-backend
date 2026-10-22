@@ -2156,8 +2156,8 @@ They are here so the first card that builds it starts from the rule.
   `ReservationsService.book` (`src/reception/reservations.service.ts`);
   the booking's `source` decides which arrival rules bind it and in whose
   words a clash is answered** (plan §7.5: "Website, app and Reception all
-  run one command"). Reception's route calls it now and the website's and
-  the app's (C6-5) will; two booking paths would be two sets of checks that
+  run one command"). Reception's route calls it, and so do the website's
+  and the app's (`POST /reservations`, C6-5); two booking paths would be two sets of checks that
   drift, and a race between a web booking and a Reception booking for one
   table must meet the same lock and the same index.
 - **The arrival rules are `arrivalProblem` (`src/reception/reservation-rules.ts`),
@@ -2239,6 +2239,101 @@ They are here so the first card that builds it starts from the rule.
   reminder time, which every suite shares, and asserts on the whole floor
   and the whole bell. Bookings already past their time and guests seated
   hours ago are written directly, since the routes refuse to make them now.
+
+## Bookings from the website and the app *(from C6)*
+
+- **`POST /reservations` is the website's and the app's booking, and it
+  runs `ReservationsService.book`, the command Reception's route runs**
+  (`CustomerReservationsService.book`, plan §7.5). So the table lock, the
+  checks and the partial unique index decide a race between any two
+  channels; `test/customer-reservations.e2e-spec.ts` races five website
+  bookings for one table and date (one 201) and a website booking against
+  Reception's (one wins, each refused in its own words).
+- **The route is public or customer (`OptionalCustomerGuard`,
+  `@MaybeCustomer()`).** No `Authorization` header is a guest: source
+  `WEB`. A customer token makes the booking source `APP` and the
+  customer's own. A header that fails is 401 and a staff token 403, never
+  a silent guest booking, so an app whose token expired refreshes and
+  retries instead of making a booking that is not in the account. The
+  source is decided by the server from the session, not sent by the
+  client; the website and the app have the same rules (Q30), so the label
+  only says where a booking came from.
+- **The table is named as the public floor plan names it: `venue` (slug)
+  and `table` (code)**, never a row id (*The public reads*). A room or
+  table that does not exist is the command's "Choose a position with
+  enough capacity." (400), its answer to "no such table".
+- **The guest's details are checked with the website form's sentences**
+  (`TableBooking.tsx`): "Please add a name for the reservation.", "Please
+  add a Nigerian phone number, for example 0803 123 4567.", "Please add a
+  valid email address so we can send your confirmation.". The phone must
+  be Nigerian, as the form requires (Reception may still take a foreign
+  number), and is stored as `0` plus 10 digits through `customerPhone`, so
+  `234…` without the plus, which the form accepts, is accepted too.
+- **To a website or app guest every hold on a table is "Someone has just
+  taken this place for that time. Go back to the floor plan and choose
+  another."** (`holdMessages`): another booking, a lock and guests seated
+  alike. The floor plan showed the table free, so it is the same race, and
+  why a table is locked is staff knowledge. Reception keeps the demo's
+  three sentences.
+- **`POST /reservations` takes an Idempotency-Key (A9), scoped to the
+  customer or, for a guest, to the hashed address**; a guest's retry comes
+  from the same address. It is limited to 30 bookings per address in 15
+  minutes (`BookingThrottle`, 429 "Too many attempts…"): it needs no
+  sign-in, holds a table for a whole date and sends an email, so without
+  a number one script could empty the floor or mail any address.
+- **Linking a booking to a customer is one module, `customer-link.ts`,
+  both ways, on an exact verified match only, never creating an account**
+  (Q35, A15). A booking made without a session (Reception's, a website
+  guest's) links to the customer holding its verified email, else its
+  verified phone. A customer who proves an email with a code (the first or
+  any sign-in, an email change) collects the unlinked bookings under it,
+  which is what the website's done screen promises ("Sign in with the
+  phone number or email you gave"). A linked booking is never moved. Both
+  directions take the email's advisory lock (`lockCustomerEmail`), so a
+  booking and a first sign-in for one address at once still end linked.
+  The link does not move a booking's `version`: no screen edits it.
+- **`GET /me/reservations`, `PATCH /me/reservations/:id` and `POST
+  /me/reservations/:id/cancel` touch only the customer's own bookings
+  (`customerId`); another customer's booking, or none, is 404 "We could
+  not find that reservation."** (the account app's sentence), checked
+  before the version is claimed, so a stranger's request cannot learn
+  that a booking exists or move its version. Seen failing with the
+  `customerId` condition removed.
+- **The 24-hour rule (Q6) is enforced on the server for change and
+  cancel: allowed while the booking starts at least 24 hours from now,
+  refused after with 409 and the app's words** ("Your reservation is less
+  than 24 hours away. Nothing is charged, but please call CNC if you can
+  no longer come."). Exactly 24 hours is allowed ("≥ 24 h"; `insideChangeWindow`,
+  unit-tested at the millisecond); the e2e suite moves the faked clock a
+  minute either side. It judges the booking as it stands, not the new
+  time: a booking may be moved closer than 24 hours, after which it can
+  no longer be changed online, as the demo's `updateReservation` allowed.
+  Staff are not bound by it. Each booking in the list carries
+  `changeableUntil` and `changeable` from the server's clock (A11), so the
+  app disables its buttons without trusting the phone's clock.
+- **A customer's change keeps the table and changes only the date, the
+  time and the party** (the app's form; for another table it says cancel
+  and book again), and checks what it touches with the online rules: the
+  large-party note, then "<Table> seats up to <n>. For a larger party,
+  book a bigger table.", the arrival on the grid ("Choose an arrival time
+  that is still open."; a closed day keeps "CNC is closed on that date."),
+  and on a new date the table's holds ("<Table> is already taken at that
+  time. Try another time."), the index answering a race in the same words.
+  Change and cancel name the booking's `version` (A8).
+- **Every booking emails its guest: the confirmation on any channel's
+  create, and a notice on a cancel (the customer's or Reception's) and on
+  a change of the table, date, time or party** (`ReservationMail`, plan
+  §9.2). Confirmations always go to the email given (Q31's default). Each
+  is queued in the command's transaction and sent after the commit; the
+  dedupe key is the booking and the event, a change's carrying the new
+  `version`, so a replayed create sends nothing more
+  (`OutboundMessagesService.dispatchByKey`). A booking with no email (an
+  anonymised one) is sent nothing.
+- **Audit: a customer's create, change and cancel are `CUSTOMER` rows;
+  a website guest's create is a `SYSTEM` row named "Website guest
+  <name>"**, the `AuditLog_actor_check` allowing no customer without an
+  id. Online rows carry the channel (`WEB`/`APP`); Reception's rows are
+  unchanged.
 
 ## CORS
 

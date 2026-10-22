@@ -12,6 +12,8 @@ import type { UploadedImageFile } from '../images/uploaded-image';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { drawNumber } from '../prisma/sequences';
 import { uniqueViolationTargets } from '../prisma/unique-violation';
+import { linkBookingsToVerifiedEmail } from '../reception/customer-link';
+import { lockCustomerEmail } from './customer-email-lock';
 import type { CustomerProfileResponse } from './dto/customer-profile.response';
 import type { UpdateMeRequest } from './dto/update-me.request';
 import {
@@ -80,7 +82,7 @@ export class CustomerService {
    * row instead of meeting the unique index as a 500.
    */
   async lockEmail(tx: Tx, email: string): Promise<void> {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`cnc:customer-email:${email}`}))`;
+    await lockCustomerEmail(tx, email);
   }
 
   /**
@@ -137,6 +139,8 @@ export class CustomerService {
         });
       }
 
+      await linkBookingsToVerifiedEmail(tx, existing.id, email);
+
       return { id: existing.id, isNew: existing.name.trim() === '' };
     }
 
@@ -150,6 +154,10 @@ export class CustomerService {
       },
       select: { id: true },
     });
+
+    // A15: the guest's bookings under this email join the account only
+    // now that the email is proved (C6-5).
+    await linkBookingsToVerifiedEmail(tx, created.id, email);
 
     return { id: created.id, isNew: true };
   }

@@ -28,3 +28,14 @@ export const CurrentCustomer = createParamDecorator(
     return principal;
   },
 );
+
+/**
+ * The signed-in customer behind `OptionalCustomerGuard`, or null for a
+ * guest with no token.
+ */
+export const MaybeCustomer = createParamDecorator(
+  (_data: unknown, context: ExecutionContext): CustomerPrincipal | null =>
+    context.switchToHttp().getRequest<CustomerRequest>()[
+      CUSTOMER_PRINCIPAL_KEY
+    ] ?? null,
+);

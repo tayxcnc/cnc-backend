@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { OtpPurpose } from '../../generated/cnc-client';
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
+import { linkBookingsToVerifiedEmail } from '../reception/customer-link';
 import { CustomerService } from './customer.service';
 import type { CodeSentResponse } from './dto/customer-auth.dto';
 import type { CustomerProfileResponse } from './dto/customer-profile.response';
@@ -107,6 +108,10 @@ export class CustomerEmailService {
           where: { id: customerId },
           data: { email, emailVerifiedAt: new Date() },
         });
+
+        // The new address is proved: its guest bookings join the account
+        // (A15, C6-5), under the email's lock taken above.
+        await linkBookingsToVerifiedEmail(tx, customerId, email);
 
         if (current.email === null) return null;
 
