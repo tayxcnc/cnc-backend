@@ -50,6 +50,110 @@ export interface MailTemplateParams {
   'enquiry.contact': ContactEnquiryMailParams;
   /** A large-party callback request, to CNC's inbox (C6-7). */
   'enquiry.group': GroupEnquiryMailParams;
+  /**
+   * A signed Paystack payment that did not match its checkout, to CNC's
+   * inbox (plan §7.4 step 3, C7-2): no order was made, and a person must
+   * look before the customer is refunded or served.
+   */
+  'checkout.needs-attention': CheckoutAttentionMailParams;
+  /**
+   * A paid web order's receipt (plan §7.4 step 5, Q31: always emailed to
+   * the address given at checkout; C7-6).
+   */
+  'order.receipt': OrderReceiptMailParams;
+  /**
+   * A web order on its way or ready for pickup (Q31: when the customer's
+   * Order Updates allow), or cancelled (always; C7-6).
+   */
+  'order.status': OrderStatusMailParams;
+  /** Money given back on a web order, by card, cash or transfer (C7-6). */
+  'order.refund': OrderRefundMailParams;
+}
+
+/** One line of a receipt, as the website's done screen shows it. */
+export interface OrderReceiptLine {
+  qty: number;
+  name: string;
+  /** `''` for a dish without a choice. */
+  option: string;
+  /** The line's amount, formatted: "₦13,000.00". */
+  amount: string;
+}
+
+/**
+ * A web order's receipt, all of it display text, laid out as the website's
+ * done screen ("Thank you, Ada", "Your order is in.", the details, the
+ * lines and the sums).
+ */
+export interface OrderReceiptMailParams {
+  /** The order's `CNCR-` number, as the done screen and the account show it. */
+  number: string;
+  /** The first name, for the greeting. */
+  guestName: string;
+  /** "Delivering to" or "Pickup". */
+  whereLabel: string;
+  /** The delivery address, or "Pickup at CNC, …". */
+  where: string;
+  /** "As soon as possible, about 90 minutes", "Today at 19:30". */
+  timing: string;
+  /** "Visa ending 4081"; `''` when Paystack did not say. */
+  card: string;
+  lines: OrderReceiptLine[];
+  subtotal: string;
+  /** "VAT (7.5%)". */
+  vatLabel: string;
+  vat: string;
+  /** "Delivery, Within Jos" or "Pickup". */
+  deliveryLabel: string;
+  /** "₦5,000.00" or "Free". */
+  delivery: string;
+  total: string;
+  /** The order in the customer's account; null for a guest or without a web URL. */
+  trackUrl: string | null;
+  /** CNC's phone, for questions. */
+  phone: string;
+}
+
+/** Which status message. */
+export type OrderStatusMailKind = 'ON_THE_WAY' | 'READY' | 'CANCELLED';
+
+/** A web order's status message, display text only. */
+export interface OrderStatusMailParams {
+  number: string;
+  guestName: string;
+  kind: OrderStatusMailKind;
+  /** The delivery address on its way; CNC's address when ready; `''` otherwise. */
+  place: string;
+  phone: string;
+  trackUrl: string | null;
+}
+
+/** How a refund reached the customer. */
+export type OrderRefundMailMethod = 'CARD' | 'CASH' | 'TRANSFER';
+
+/** Money given back on a web order, display text only. */
+export interface OrderRefundMailParams {
+  number: string;
+  guestName: string;
+  /** The amount given back, formatted: "₦3,225.00". */
+  amount: string;
+  method: OrderRefundMailMethod;
+  /** "Visa ending 4081" for a card refund; `''` when unknown or not a card. */
+  card: string;
+  phone: string;
+}
+
+/** A held checkout as CNC's inbox reads it: display text only. */
+export interface CheckoutAttentionMailParams {
+  /** `cnc-order-<uuid>`, what Paystack's dashboard shows. */
+  reference: string;
+  /** The checkout's total, formatted: "₦26,500.00". */
+  total: string;
+  /** Why it was held, in words. */
+  reason: string;
+  /** The customer's name and phone, to call them. */
+  name: string;
+  phone: string;
 }
 
 /** A contact-form enquiry as CNC's inbox reads it. */
@@ -168,6 +272,98 @@ function isGroupEnquiryParams(value: unknown): value is GroupEnquiryMailParams {
   );
 }
 
+const nullableString = (value: unknown) =>
+  value === null || (typeof value === 'string' && value !== '');
+
+function isReceiptLine(value: unknown): value is OrderReceiptLine {
+  return (
+    isRecord(value) &&
+    typeof value.qty === 'number' &&
+    Number.isInteger(value.qty) &&
+    value.qty > 0 &&
+    nonEmptyStrings(value, ['name', 'amount']) &&
+    typeof value.option === 'string'
+  );
+}
+
+function isReceiptParams(value: unknown): value is OrderReceiptMailParams {
+  return (
+    isRecord(value) &&
+    nonEmptyStrings(value, [
+      'number',
+      'guestName',
+      'whereLabel',
+      'where',
+      'timing',
+      'subtotal',
+      'vatLabel',
+      'vat',
+      'deliveryLabel',
+      'delivery',
+      'total',
+      'phone',
+    ]) &&
+    typeof value.card === 'string' &&
+    Array.isArray(value.lines) &&
+    value.lines.length > 0 &&
+    value.lines.every(isReceiptLine) &&
+    nullableString(value.trackUrl)
+  );
+}
+
+const ORDER_STATUS_MAIL_KINDS: readonly string[] = [
+  'ON_THE_WAY',
+  'READY',
+  'CANCELLED',
+];
+
+function isOrderStatusParams(value: unknown): value is OrderStatusMailParams {
+  return (
+    isRecord(value) &&
+    nonEmptyStrings(value, ['number', 'guestName', 'phone']) &&
+    typeof value.kind === 'string' &&
+    ORDER_STATUS_MAIL_KINDS.includes(value.kind) &&
+    typeof value.place === 'string' &&
+    nullableString(value.trackUrl)
+  );
+}
+
+const ORDER_REFUND_METHODS: readonly string[] = ['CARD', 'CASH', 'TRANSFER'];
+
+function isOrderRefundParams(value: unknown): value is OrderRefundMailParams {
+  return (
+    isRecord(value) &&
+    nonEmptyStrings(value, ['number', 'guestName', 'amount', 'phone']) &&
+    typeof value.method === 'string' &&
+    ORDER_REFUND_METHODS.includes(value.method) &&
+    typeof value.card === 'string'
+  );
+}
+
+/** "2 × Jollof Rice (Beef)": a receipt line's words, as the done screen lists it. */
+function receiptLineText(line: OrderReceiptLine): string {
+  return `${line.qty} × ${line.name}${line.option === '' ? '' : ` (${line.option})`}`;
+}
+
+/** Where to follow the order and whom to call, as text and as HTML. */
+function orderFooter(
+  trackUrl: string | null,
+  phone: string,
+): { html: string[]; text: string[] } {
+  const call = `Questions about your order? Call CNC on ${phone}.`;
+
+  return trackUrl === null
+    ? { html: [`<p>${escapeHtml(call)}</p>`], text: [call] }
+    : {
+        html: [
+          `<p><a href="${escapeHtml(trackUrl)}">Track this order in your ` +
+            'account</a>.</p>',
+          `<p>${escapeHtml(call)}</p>`,
+        ],
+        text: [`Track this order in your account: ${trackUrl}`, '', call],
+      };
+}
+
 /** One line, for a subject: caller text may carry line breaks. */
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
 
@@ -244,6 +440,128 @@ function changeRule(p: ReservationMailParams): { html: string; text: string } {
 }
 
 const TEMPLATES: { [Name in MailTemplateName]: MailTemplate<Name> } = {
+  'order.receipt': {
+    isParams: isReceiptParams,
+    render: (p) => {
+      // The website's done screen, in its words: "Thank you, Ada", "Your
+      // order is in.", the details, the lines and "Total paid".
+      const details: [string, string][] = [
+        ['Order', p.number],
+        [p.whereLabel, p.where],
+        ['When', p.timing],
+        ...(p.card === ''
+          ? []
+          : ([['Paid with', p.card]] as [string, string][])),
+      ];
+      const sums: [string, string][] = [
+        ['Subtotal', p.subtotal],
+        [p.vatLabel, p.vat],
+        [p.deliveryLabel, p.delivery],
+        ['Total paid', p.total],
+      ];
+      const footer = orderFooter(p.trackUrl, p.phone);
+
+      return {
+        subject: `Your CNC order is in: ${p.number}`,
+        html: [
+          `<p>Thank you, ${escapeHtml(p.guestName)}.</p>`,
+          '<p><strong>Your order is in.</strong></p>',
+          detailsHtml(details),
+          detailsHtml(
+            p.lines.map((line) => [receiptLineText(line), line.amount]),
+          ),
+          detailsHtml(sums),
+          ...footer.html,
+        ].join(''),
+        text: [
+          `Thank you, ${p.guestName}.`,
+          '',
+          'Your order is in.',
+          '',
+          ...details.map(([label, value]) => `${label}: ${value}`),
+          '',
+          ...p.lines.map((line) => `${receiptLineText(line)}: ${line.amount}`),
+          '',
+          ...sums.map(([label, value]) => `${label}: ${value}`),
+          '',
+          ...footer.text,
+        ].join('\n'),
+      };
+    },
+  },
+  'order.status': {
+    isParams: isOrderStatusParams,
+    render: (p) => {
+      const words = {
+        ON_THE_WAY: {
+          subject: `Your CNC order ${p.number} is on its way`,
+          lead:
+            p.place === ''
+              ? 'Your order is on its way.'
+              : `Your order is on its way to ${p.place}.`,
+        },
+        READY: {
+          subject: `Your CNC order ${p.number} is ready for pickup`,
+          lead:
+            p.place === ''
+              ? 'Your order is ready for pickup at CNC.'
+              : `Your order is ready for pickup at CNC, ${p.place}.`,
+        },
+        CANCELLED: {
+          subject: `Your CNC order ${p.number} is cancelled`,
+          lead:
+            'Your order has been cancelled. CNC will give back what you ' +
+            'paid and email you when it has.',
+        },
+      }[p.kind];
+      const footer = orderFooter(p.trackUrl, p.phone);
+
+      return {
+        subject: words.subject,
+        html: [
+          `<p>Hello ${escapeHtml(p.guestName)},</p>`,
+          `<p>${escapeHtml(words.lead)}</p>`,
+          detailsHtml([['Order', p.number]]),
+          ...footer.html,
+        ].join(''),
+        text: [
+          `Hello ${p.guestName},`,
+          '',
+          words.lead,
+          '',
+          `Order: ${p.number}`,
+          '',
+          ...footer.text,
+        ].join('\n'),
+      };
+    },
+  },
+  'order.refund': {
+    isParams: isOrderRefundParams,
+    render: (p) => {
+      const lead = {
+        CARD:
+          `CNC has refunded ${p.amount} to your card` +
+          `${p.card === '' ? '' : ` (${p.card})`} for order ${p.number}. ` +
+          'It can take some days for your bank to show it.',
+        CASH: `CNC has given you back ${p.amount} in cash for order ${p.number}.`,
+        TRANSFER:
+          `CNC has sent you back ${p.amount} by bank transfer for order ` +
+          `${p.number}.`,
+      }[p.method];
+      const call = `Questions about this refund? Call CNC on ${p.phone}.`;
+
+      return {
+        subject: `Refund for your CNC order ${p.number}`,
+        html: [
+          `<p>Hello ${escapeHtml(p.guestName)},</p>`,
+          `<p>${escapeHtml(lead)}</p>`,
+          `<p>${escapeHtml(call)}</p>`,
+        ].join(''),
+        text: [`Hello ${p.guestName},`, '', lead, '', call].join('\n'),
+      };
+    },
+  },
   'reservation.reminder': {
     isParams: isReservationParams,
     render: (p) => {
@@ -421,6 +739,40 @@ const TEMPLATES: { [Name in MailTemplateName]: MailTemplate<Name> } = {
         `If this is a mistake, please call CNC on ${p.phone}.`,
       ].join('\n'),
     }),
+  },
+  'checkout.needs-attention': {
+    isParams: (value): value is CheckoutAttentionMailParams =>
+      isRecord(value) &&
+      nonEmptyStrings(value, ['reference', 'total', 'reason', 'name']) &&
+      typeof value.phone === 'string',
+    render: (p) => {
+      const rows: [string, string][] = [
+        ['Reference', p.reference],
+        ['Checkout total', p.total],
+        ['Why', p.reason],
+        ['Customer', p.name],
+        ['Phone', p.phone],
+      ];
+
+      return {
+        subject: `Online payment needs attention: ${p.reference}`,
+        html: [
+          '<p>A Paystack payment arrived that does not match its online ' +
+            'checkout, so no order was made. Check the payment in the ' +
+            'Paystack dashboard and call the customer before anything is ' +
+            'cooked or refunded.</p>',
+          detailsHtml(rows),
+        ].join(''),
+        text: [
+          'A Paystack payment arrived that does not match its online ' +
+            'checkout, so no order was made. Check the payment in the ' +
+            'Paystack dashboard and call the customer before anything is ' +
+            'cooked or refunded.',
+          '',
+          ...rows.map(([label, value]) => `${label}: ${value}`),
+        ].join('\n'),
+      };
+    },
   },
   'customer.email-change-code': {
     isParams: isCodeParams,

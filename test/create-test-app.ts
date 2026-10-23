@@ -11,8 +11,10 @@ import { requestIdMiddleware } from '../src/common/request-id.middleware';
 import { CncConfigService } from '../src/config/cnc.config';
 import { MAIL_TRANSPORT } from '../src/mail/mail-transport';
 import { RecordingMailTransport } from '../src/mail/recording-mail-transport';
+import { PAYSTACK_CLIENT } from '../src/payments/paystack-client';
 import { MediaStorage } from '../src/storage/media-storage';
 import { FakeMediaStorage } from './fake-media-storage';
+import { FakePaystackClient } from './fake-paystack-client';
 
 /** The recording mail transport of an app `createTestApp` built. */
 export function sentMail(app: INestApplication<App>): RecordingMailTransport {
@@ -33,8 +35,9 @@ export function sentMail(app: INestApplication<App>): RecordingMailTransport {
  * `FakeMediaStorage`; read it back with
  * `app.get(MediaStorage, { strict: false })`) and, from C6, mail
  * (`MAIL_TRANSPORT`, a `RecordingMailTransport` that logs nothing, whatever
- * `CNC_ENV` says; read the messages with `sentMail(app)`). Paystack joins
- * them with its card.
+ * `CNC_ENV` says; read the messages with `sentMail(app)`) and, from C7,
+ * Paystack (`PAYSTACK_CLIENT`, a `FakePaystackClient` that calls nobody;
+ * read and steer it with `fakePaystack(app)`).
  *
  * `controllers` adds test-only routes beside the real ones, for a suite that
  * proves a piece of shared infrastructure (optimistic versions, idempotency)
@@ -52,6 +55,8 @@ export async function createTestApp(
     .useValue(new FakeMediaStorage())
     .overrideProvider(MAIL_TRANSPORT)
     .useValue(new RecordingMailTransport(false))
+    .overrideProvider(PAYSTACK_CLIENT)
+    .useValue(new FakePaystackClient())
     .compile();
 
   // `rawBody` matches bootstrap(): the Paystack webhook (C7) authenticates by

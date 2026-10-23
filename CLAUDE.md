@@ -64,6 +64,10 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Business dates in requests (`calendarDate`) | Errors |
 | Bookings, arrival rules and Q30, the table lock, seatings, the floor, the Free Table Reminder, Q35 | Reception: bookings, table sessions and the floor |
 | `POST /reservations` (guest or customer), the customer link both ways, `/me/reservations`, the 24-hour rule (Q6), booking emails, the booking throttle | Bookings from the website and the app |
+| `POST /ordering/quote`, `POST /checkouts`, `GET /checkouts/:reference`, the Paystack client and its fakes, the webhook, verify and the amount check, `NEEDS_ATTENTION`, `AddressThrottle` | Online checkout and Paystack |
+| The web order a payment writes, its numbers, docket, Bar sale and customer, the confirmation read's recheck, the checkouts and payments sweeps, the fake's `pay` | Paid web orders and the payment sweeps |
+| Staff Online Orders: stages, corrections, edits (Bar too), zone fees (Q27), cancel (Q8), the balance, card refunds (Q26), resolving unconfirmed refunds and held checkouts, adjustments, limits | Staff Online Orders |
+| The receipt (Q31), stage and refund emails and in-app items (`OnlineOrderMail`), `GET /me/orders`, the online bell items and `ref` | Order messages, my orders and the online bell items |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -132,10 +136,29 @@ src/
                      OtpService (codes and their caps), CustomerEmailService,
                      CustomerDeletionService, profile-rules.ts
   ordering/          the public ordering reads (GET /ordering/config, /slots) and
-                     the ordering times (ordering-times.ts); C7 adds checkout
+                     the ordering times (ordering-times.ts); the quote and the
+                     checkout (CheckoutsService, cart-pricing.ts,
+                     checkout-timing.ts, POST /checkouts, GET /checkouts/:ref)
+  payments/          CNC's Paystack account: the PaystackClient interface
+                     (initialize, verify, refund) and its HTTP and local
+                     bindings (PaystackClientModule), POST /payments/webhook, the
+                     PaymentEvent ledger, the dispatcher, CheckoutPaymentsService
+                     (verify, the amount check, PAID or NEEDS_ATTENTION, the
+                     recheck), the checkouts and payments sweeps
+                     (PaymentSweepsService)
+  online-orders/     the web order a confirmed payment writes
+                     (OnlineOrderPlacementService: order, lines, food docket,
+                     ONLINE payment, OnlineOrder, Bar WEB_SALE), its rules;
+                     the staff Online Orders commands and reads
+                     (OnlineOrdersService, /staff/online-orders), the card
+                     refunds through Paystack (OnlineRefundsService); the
+                     customer's order emails and in-app items
+                     (OnlineOrderMail), GET /me/orders
+                     (CustomerOrdersService), the bell items' words
   mail/              the outbound queue (OutboundMessagesService, its retry
                      backoff), templates, the CNC mail frame, MessageSeal, the
-                     Resend and recording transports
+                     Resend and recording transports; mail-contact.ts (the
+                     greeting's first name and CNC's phone, shared)
   customer-notifications/  the customer's in-app list (GET /me/notifications,
                      POST /me/notifications/read), CustomerNotificationsService
                      (the one writer), the items' words
@@ -187,7 +210,9 @@ src/
                      (CustomerReservationsService), the customer link
                      (customer-link.ts), the booking emails and in-app items
                      (ReservationMail), the reminders (ReservationRemindersService)
-  notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
+  notifications/     GET /staff/notifications, the staff bell: the online
+                     items (C7-7), the Free Table Reminder, assigned tasks
+                     (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
@@ -215,10 +240,21 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      reminders sweep, the messages sweep's backoff and
                      attempts cap; enquiries: both forms, the honeypot,
                      the limits; c6-gate: the C6 gate walk, the backend
-                     half of steps 1 to 8),
+                     half of steps 1 to 8; checkouts: the quote, the
+                     checkout, the confirmation read and the signed fake
+                     webhooks; online-orders: the order a payment writes,
+                     the races, the checkouts and payments sweeps;
+                     online-orders-staff: the staff commands, the
+                     refunds through the fake Paystack, the limits;
+                     online-order-messages: the receipt, stage and
+                     refund emails, /me/orders, the online bell items;
+                     c7-gate: the C7 gate walk, the backend half of
+                     steps 1 to 6 with the fake Paystack),
+                     paystack-webhooks.ts,
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
-                     fake-media-storage.ts, shared-rows-lock.ts, test-images.ts
+                     fake-media-storage.ts, fake-paystack-client.ts,
+                     shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts
 ```
 

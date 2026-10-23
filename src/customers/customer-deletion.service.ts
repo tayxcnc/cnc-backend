@@ -1,6 +1,8 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import {
+  CheckoutStatus,
   ContactChannel,
+  OrderChannel,
   ReservationSource,
   SubjectType,
 } from '../../generated/cnc-client';
@@ -9,6 +11,7 @@ import { watToday } from '../common/wat';
 import { PhotoStore } from '../images/photo-store.service';
 import { idempotencyScope } from '../idempotency/idempotency-scope';
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
+import { ACTIVE_ONLINE_STATUSES } from '../online-orders/online-order-rules';
 import { UNSETTLED_ORDER_STATUSES } from '../orders/order-rules';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { HOLDING_STATUSES } from '../reception/reservation-rules';
@@ -95,8 +98,28 @@ export class CustomerDeletionService {
       const open = await tx.order.count({
         where: { customerId, status: { in: UNSETTLED_ORDER_STATUSES } },
       });
+      // A checkout still waiting for its payment, or a payment held for a
+      // person (C7): money may yet arrive, or has, for an order nobody
+      // could then reach the customer about.
+      const paying = await tx.checkout.count({
+        where: {
+          customerId,
+          status: {
+            in: [CheckoutStatus.PENDING, CheckoutStatus.NEEDS_ATTENTION],
+          },
+        },
+      });
 
-      if (upcoming > 0 || open > 0) {
+      // A paid web order still being prepared or on its way (C7-3): the
+      // kitchen and the rider still need the name, phone and address.
+      const fulfilling = await tx.onlineOrder.count({
+        where: {
+          customerId,
+          fulfilmentStatus: { in: ACTIVE_ONLINE_STATUSES },
+        },
+      });
+
+      if (upcoming > 0 || open > 0 || paying > 0 || fulfilling > 0) {
         throw new ConflictException(DELETE_WITH_UPCOMING_MESSAGE);
       }
 
@@ -138,6 +161,57 @@ export class CustomerDeletionService {
         data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
       });
 
+      const checkouts = await tx.checkout.findMany({
+        where: { customerId },
+        select: { id: true },
+      });
+
+      // Its checkouts keep their money and lines and lose the person: the
+      // name, phone, email, address lines and note (the zone stays, as the
+      // fee was charged for it).
+      await tx.checkout.updateMany({
+        where: { customerId },
+        data: {
+          contactName: DELETED_CUSTOMER_NAME,
+          contactPhone: '',
+          contactEmail: '',
+          addressStreet: null,
+          addressArea: null,
+          addressTown: null,
+          addressLandmark: null,
+          note: '',
+        },
+      });
+
+      // Read before they lose the person: their receipts, stage and refund
+      // messages (`online:<id>:`, C7-6) are forgotten below.
+      const onlineOrders = await tx.onlineOrder.findMany({
+        where: { customerId },
+        select: { id: true },
+      });
+
+      // Its web orders keep their money, lines and mode and lose the
+      // person, as its checkouts do; the bill's delivery note goes too.
+      await tx.onlineOrder.updateMany({
+        where: { customerId },
+        data: {
+          contactName: DELETED_CUSTOMER_NAME,
+          contactPhone: '',
+          contactEmail: '',
+          addressStreet: null,
+          addressArea: null,
+          addressTown: null,
+          addressLandmark: null,
+          addressText: '',
+          note: '',
+          version: { increment: 1 },
+        },
+      });
+      await tx.order.updateMany({
+        where: { customerId, channel: OrderChannel.WEB, notes: { not: '' } },
+        data: { notes: '', version: { increment: 1 } },
+      });
+
       await tx.customerNotification.deleteMany({ where: { customerId } });
 
       // Every message to the account's address, and every message about its
@@ -150,7 +224,11 @@ export class CustomerDeletionService {
         {
           to: current.email,
           keys: codes.flatMap(({ id }) => [`otp:${id}`, `email-changed:${id}`]),
-          keyPrefixes: bookings.map(({ id }) => `reservation:${id}:`),
+          keyPrefixes: [
+            ...bookings.map(({ id }) => `reservation:${id}:`),
+            ...checkouts.map(({ id }) => `checkout:${id}:`),
+            ...onlineOrders.map(({ id }) => `online:${id}:`),
+          ],
         },
         ACCOUNT_DELETED_REASON,
       );

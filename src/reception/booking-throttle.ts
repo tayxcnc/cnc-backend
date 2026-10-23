@@ -1,9 +1,7 @@
-import { applyDecorators, HttpException, HttpStatus } from '@nestjs/common';
-import { SkipThrottle, Throttle } from '@nestjs/throttler';
+import { HttpException, HttpStatus } from '@nestjs/common';
 import { type Prisma, ReservationSource } from '../../generated/cnc-client';
 import {
-  AUTH_ATTEMPT_WINDOW_MS,
-  THROTTLERS,
+  AddressThrottle,
   TOO_MANY_ATTEMPTS_MESSAGE,
 } from '../auth/auth-throttle';
 
@@ -19,18 +17,7 @@ export const BOOKING_ADDRESS_LIMIT = 30;
 
 /** `POST /reservations`: the address only. */
 export function BookingThrottle(): MethodDecorator {
-  return applyDecorators(
-    Throttle({
-      [THROTTLERS.address]: {
-        limit: BOOKING_ADDRESS_LIMIT,
-        ttl: AUTH_ATTEMPT_WINDOW_MS,
-      },
-    }),
-    SkipThrottle({
-      [THROTTLERS.account]: true,
-      [THROTTLERS.accountAnywhere]: true,
-    }),
-  );
+  return AddressThrottle(BOOKING_ADDRESS_LIMIT);
 }
 
 /** The window the stored booking caps count over: a day. */

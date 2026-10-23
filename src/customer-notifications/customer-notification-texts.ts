@@ -28,6 +28,82 @@ export const WELCOME_NOTIFICATION: NotificationText = {
   link: null,
 };
 
+/** Where the account app shows one order: its tracker. */
+export function orderLink(number: string): string {
+  return `/account#order/${number}`;
+}
+
+/** A web order event the in-app list records (C7-6). */
+export type OrderNotificationEvent =
+  | 'RECEIVED'
+  | 'PREPARING'
+  | 'ON_THE_WAY'
+  | 'READY'
+  | 'DELIVERED'
+  | 'COLLECTED'
+  | 'CANCELLED';
+
+/**
+ * The demo's order body: the first two dishes' names, "and more" past
+ * two, and a full stop ("Jollof Rice, Chapman and more.").
+ */
+export function orderLinesText(names: readonly string[]): string {
+  return `${names.slice(0, 2).join(', ')}${names.length > 2 ? ' and more' : ''}.`;
+}
+
+/**
+ * A web order's notification (C7-6). The demo's titles where it had them
+ * ("Order CNCR-000124 received", "… delivered", "… collected") and its
+ * body (`orderLinesText`); the stages in between and the cancellation are
+ * new, in the same shape, because the demo built the item on read and
+ * never showed them.
+ */
+export function orderNotification(
+  event: OrderNotificationEvent,
+  number: string,
+  lineNames: readonly string[],
+): NotificationText {
+  const title = {
+    RECEIVED: `Order ${number} received`,
+    PREPARING: `Order ${number} is being prepared`,
+    ON_THE_WAY: `Order ${number} is on its way`,
+    READY: `Order ${number} is ready for pickup`,
+    DELIVERED: `Order ${number} delivered`,
+    COLLECTED: `Order ${number} collected`,
+    CANCELLED: `Order ${number} cancelled`,
+  }[event];
+
+  return {
+    kind: CustomerNotificationKind.ORDER,
+    title,
+    body: orderLinesText(lineNames),
+    link: orderLink(number),
+  };
+}
+
+/**
+ * Money given back on a web order (C7-6, new): "Refund for order
+ * CNCR-000124", with the amount and how it came back.
+ */
+export function refundNotification(
+  number: string,
+  amount: string,
+  method: 'CARD' | 'CASH' | 'TRANSFER',
+): NotificationText {
+  const how = {
+    CARD: 'to your card',
+    CASH: 'in cash',
+    TRANSFER: 'by bank transfer',
+  }[method];
+
+  return {
+    kind: CustomerNotificationKind.ORDER,
+    title: `Refund for order ${number}`,
+    body: `${amount} given back ${how}.`,
+    link: orderLink(number),
+  };
+}
+
 /** A booking event the in-app list records. */
 export type BookingNotificationEvent =
   'confirmed' | 'changed' | 'cancelled' | 'reminder';

@@ -207,6 +207,19 @@ export class CncConfigService {
       );
     }
 
+    // A live Paystack key belongs to production alone (C7). Staging takes
+    // test-mode money only; a live key there would charge real cards from
+    // a service whose gate walks pay with test cards.
+    if (
+      this.cncEnv !== 'production' &&
+      this.own('PAYSTACK_SECRET_KEY')?.trim().startsWith('sk_live_') === true
+    ) {
+      problems.push(
+        'CNC_PAYSTACK_SECRET_KEY is a live key outside production: ' +
+          'staging must run on CNC’s test key.',
+      );
+    }
+
     // Counted, never printed. A path (`https://tayxcnc.com/cnc` pasted from
     // CNC_WEB_URL) or a trailing slash can never equal a browser's Origin
     // header, so such an entry silently refuses its frontend.
@@ -518,6 +531,20 @@ export class CncConfigService {
    */
   get paystackSecretKey(): string {
     return this.ownOrThrow('PAYSTACK_SECRET_KEY');
+  }
+
+  /**
+   * CNC's Paystack secret key, or undefined when unset, blank or still a
+   * placeholder (C7). What the checkout and the webhook read.
+   *
+   * A placeholder is not a key: staging carries `PLACEHOLDER_NOT_SET`
+   * until the founder stores CNC's test key (Q18), and that string is
+   * public in `.env.example`. Used as the webhook's signing secret it would
+   * let anyone who read the example sign a payment confirmation, so while
+   * it is the value both routes refuse with 503 instead. Never logged.
+   */
+  get paystackKey(): string | undefined {
+    return this.ownUnlessPlaceholder('PAYSTACK_SECRET_KEY');
   }
 
   /**

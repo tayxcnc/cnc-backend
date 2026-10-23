@@ -4,6 +4,9 @@ import {
   RESERVATIONS_LINK,
   WELCOME_NOTIFICATION,
   bookingNotification,
+  orderLinesText,
+  orderNotification,
+  refundNotification,
 } from './customer-notification-texts';
 
 const DETAILS = {
@@ -39,6 +42,49 @@ describe('customer notification texts', () => {
       title: 'Reservation cancelled',
       body,
     });
+  });
+
+  it('names an order’s stages, the demo’s titles where it had them (C7-6)', () => {
+    expect(
+      orderNotification('RECEIVED', 'CNCR-000124', [
+        'Jollof Rice',
+        'Chapman',
+        'Suya',
+      ]),
+    ).toEqual({
+      kind: CustomerNotificationKind.ORDER,
+      title: 'Order CNCR-000124 received',
+      body: 'Jollof Rice, Chapman and more.',
+      link: '/account#order/CNCR-000124',
+    });
+    expect(
+      orderNotification('DELIVERED', 'CNCR-000124', ['Jollof Rice']),
+    ).toMatchObject({
+      title: 'Order CNCR-000124 delivered',
+      body: 'Jollof Rice.',
+    });
+    expect(orderNotification('COLLECTED', 'CNCR-1', ['A', 'B']).title).toBe(
+      'Order CNCR-1 collected',
+    );
+    expect(orderNotification('ON_THE_WAY', 'CNCR-1', ['A']).title).toBe(
+      'Order CNCR-1 is on its way',
+    );
+    expect(orderNotification('CANCELLED', 'CNCR-1', ['A']).title).toBe(
+      'Order CNCR-1 cancelled',
+    );
+    expect(orderLinesText(['A', 'B'])).toBe('A, B.');
+  });
+
+  it('records a refund with the amount and how it came back', () => {
+    expect(refundNotification('CNCR-1', '₦3,225.00', 'CARD')).toEqual({
+      kind: CustomerNotificationKind.ORDER,
+      title: 'Refund for order CNCR-1',
+      body: '₦3,225.00 given back to your card.',
+      link: '/account#order/CNCR-1',
+    });
+    expect(refundNotification('CNCR-1', '₦1.00', 'TRANSFER').body).toBe(
+      '₦1.00 given back by bank transfer.',
+    );
   });
 
   it('reminds with "See you soon" and the booking’s own date and time', () => {

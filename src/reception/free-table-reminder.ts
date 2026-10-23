@@ -43,6 +43,11 @@ export interface StaffBellItem {
   detail: string;
   page: string;
   category: string;
+  /**
+   * The record the page opens on, when it takes one: the New Web Docket's
+   * `KOT-` ref, which Kitchen fills in (plan §9.1, C7-7).
+   */
+  ref?: string;
 }
 
 /**

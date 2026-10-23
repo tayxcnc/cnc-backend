@@ -205,6 +205,56 @@ enum Fulfilment {
   PICKUP
 }
 
+/// A web checkout's life (plan §4.4, C7): waiting for Paystack, paid,
+/// abandoned past its expiry, refused by Paystack before the customer saw
+/// a payment page, or held for a person because a signed payment did not
+/// match it (§7.4 step 3), and a held one a manager has since dealt with
+/// in Paystack's dashboard (`RESOLVED`, final).
+enum CheckoutStatus {
+  PENDING
+  PAID
+  EXPIRED
+  FAILED
+  NEEDS_ATTENTION
+  RESOLVED
+}
+
+/// When a web order is wanted: as soon as possible, or at a chosen slot.
+enum CheckoutTiming {
+  ASAP
+  SCHEDULED
+}
+
+/// Where a checkout was placed: the website (a guest), or the signed-in
+/// customer app.
+enum CheckoutSource {
+  WEB
+  APP
+}
+
+/// How a paid web order leaves CNC (plan §4.4): the staff app's "Pickup",
+/// "Within Jos" and "Outside Jos". Delivery within Jos is the checkout's
+/// `JOS` zone, outside Jos its `PLATEAU` zone.
+enum OnlineOrderMode {
+  PICKUP
+  WITHIN_JOS
+  OUTSIDE_JOS
+}
+
+/// A paid web order's progress (plan §4.4, D31). The staff and customer
+/// labels are both mapped from this one value: Received (Paid), Preparing,
+/// On the way (Out for Delivery), Ready (for pickup), Delivered or
+/// Collected (Completed), Cancelled.
+enum OnlineFulfilmentStatus {
+  RECEIVED
+  PREPARING
+  ON_THE_WAY
+  READY
+  DELIVERED
+  COLLECTED
+  CANCELLED
+}
+
 /// Where stock is held: the store counts packs, the kitchen and the bar
 /// count units (plan §7.6).
 enum StockLocation {
@@ -236,6 +286,22 @@ enum StockMovementType {
   WASTE_CORRECTION_DEDUCTION
   WASTE_APPROVAL_CORRECTION
   WEB_SALE
+  /// Drinks a manager took off a paid web order, or its cancellation,
+  /// returned to the Bar (C7-4, D30).
+  WEB_SALE_RETURN
+}
+
+/// A card refund sent through Paystack's refund API (C7-4, Q26):
+/// recorded (`PENDING`), claimed by the one request that calls Paystack
+/// (`SENDING`), accepted by Paystack (`SENT`), refused by it (`REFUSED`,
+/// the refund's payment then reversed), or sent with no answer
+/// (`UNCONFIRMED`: Paystack may have it; a person checks the dashboard).
+enum OnlineRefundStatus {
+  PENDING
+  SENDING
+  SENT
+  REFUSED
+  UNCONFIRMED
 }
 
 /// A booking's lifecycle (D22). Availability is derived from it, never
@@ -621,6 +687,8 @@ model Staff {
   tableSessionsOpened TableSession[]       @relation("TableSessionOpenedBy")
   tableSessionsClosed TableSession[]       @relation("TableSessionClosedBy")
   stockMovements      StockMovement[]
+  onlineAdjustments   OnlineAdjustment[]
+  onlineRefunds       OnlineRefund[]
 
   stockRequests         StockRequest[]         @relation("StockRequestCreatedBy")
   purchasesCreated      Purchase[]             @relation("PurchaseCreatedBy")
@@ -688,6 +756,8 @@ model Customer {
   auditEntries  AuditLog[]
   orders        Order[]
   reservations  Reservation[]
+  checkouts     Checkout[]
+  onlineOrders  OnlineOrder[]
 }
 
 /// A one-time sign-in or email-change code (A15). The code is 6 digits and
@@ -1146,6 +1216,10 @@ model Order {
   dockets        Docket[]
   payments       Payment[]
   kitchenEntries KitchenEntry[]
+  /// The web checkout that paid for this order, for a web order (C7).
+  checkout       Checkout?
+  /// The fulfilment record of a web order (C7-3).
+  onlineOrder    OnlineOrder?
 
   @@index([businessDate, department])
   @@index([status, department])
@@ -1247,6 +1321,11 @@ model Payment {
 
   order Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
   staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  /// The online adjustments this payment settled (C7-4, `online.balance`).
+  settledAdjustments OnlineAdjustment[]
+  /// The card refund this payment records, for an `ONLINE` refund (C7-4).
+  onlineRefund       OnlineRefund?
 
   @@index([orderId])
   @@index([businessDate, method])
@@ -1737,9 +1816,9 @@ model CustomerNotification {
 /// three attempts spent in three consecutive sweeps would give up a message
 /// over one short outage.
 model OutboundMessage {
-  id         String   @id @default(cuid())
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   channel    ContactChannel
   to         String
@@ -1785,6 +1864,248 @@ model Enquiry {
 
   @@index([status, createdAt])
   @@index([ipHash, createdAt])
+}
+
+// ============================== ONLINE ORDERS (§4.4) =======================
+
+/// A web or app checkout (plan §4.4, §7.4; card C7-1): the cart priced by
+/// the server, the delivery or pickup details and the timing, fixed before
+/// Paystack is called. The order number is drawn only when the payment is
+/// confirmed (C7-3, `orderId`), so an abandoned checkout burns no `CNCR`.
+///
+/// `reference` is `cnc-order-<uuid>`, chosen here and sent to Paystack, so
+/// a webhook is matched to its row by it. `lines` is the priced snapshot:
+/// `[{ menuItemId, dishId, name, option, qty, unitPriceKobo, department }]`
+/// (`dishId` is the menu slug the cart named). The money columns are the
+/// quote (Q33: CNC absorbs Paystack's charge, so the total is subtotal +
+/// VAT + delivery), and a CHECK holds that sum. `vatBps` and the zone's fee
+/// are snapshotted from Settings.
+///
+/// The address is the structured one (`src/common/delivery-address.ts`),
+/// null for pickup. `contactPhone` is `0` plus 10 digits and
+/// `contactEmail` lower case; the receipt goes to it (Q31). `timingText`
+/// is the confirmation page's words for the timing; `scheduledFor` is the
+/// chosen slot as an instant, null for as soon as possible.
+///
+/// `accessCode` and `authorizationUrl` are what Paystack's initialize
+/// answered, written once after the checkout's own transaction commits.
+/// `paidAt`, `cardBrand` and `cardLast4` come from Paystack's verified
+/// transaction (never a card number, plan §8.5). `attentionReason` says
+/// why a signed payment was held (`NEEDS_ATTENTION`), for staff only.
+/// `ipHash` is the caller's hashed address (abuse review), never the
+/// address itself.
+///
+/// A customer deleting their account anonymises their checkouts (Q36).
+/// Never deleted: a checkout is the record of money asked for.
+model Checkout {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reference  String         @unique
+  customerId String?
+  source     CheckoutSource
+  status     CheckoutStatus @default(PENDING)
+  expiresAt  DateTime
+
+  lines               Json
+  subtotalKobo        Int
+  vatKobo             Int
+  deliveryKobo        Int
+  totalKobo           Int
+  vatBps              Int
+  /// Both zones' delivery fees as Settings held them at checkout (C7-4):
+  /// a manager's zone change prices the new zone from these (Q27: "recompute
+  /// from the fees snapshotted on the order").
+  deliveryJosKobo     Int
+  deliveryOutsideKobo Int
+
+  fulfilment      Fulfilment
+  zone            AddressZone?
+  addressStreet   String?
+  addressArea     String?
+  addressTown     String?
+  addressLandmark String?
+
+  contactName  String
+  contactPhone String
+  contactEmail String
+  note         String  @default("")
+  saveDetails  Boolean @default(false)
+
+  timing       CheckoutTiming
+  timingText   String
+  scheduledFor DateTime?
+
+  accessCode       String?
+  authorizationUrl String?
+  paidAt           DateTime?
+  cardBrand        String?
+  cardLast4        String?
+  attentionReason  String?
+  attentionAt      DateTime?
+  /// When a manager resolved the held checkout (`RESOLVED`); who and why
+  /// are in its audit row.
+  resolvedAt       DateTime?
+  /// When the confirmation read last asked Paystack about it: at most one
+  /// recheck per checkout every few seconds.
+  recheckedAt      DateTime?
+
+  ipHash  String
+  orderId String? @unique
+
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  order       Order?       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  onlineOrder OnlineOrder?
+
+  @@index([status, expiresAt])
+  @@index([customerId])
+  @@index([ipHash, createdAt])
+}
+
+/// A paid web order's fulfilment record (plan §4.4, §7.4 step 4; card
+/// C7-3): `WEB-000001`, written with its `Order` (channel `WEB`, settled),
+/// the `ONLINE` payment, the food docket and the Bar movements in the one
+/// transaction that marks its checkout `PAID`. The number is drawn only
+/// then, so an abandoned checkout burns none.
+///
+/// The contact, address, note, fee and timing are snapshots of the
+/// checkout, which Online Orders' commands (C7-4) may change; the checkout
+/// keeps what the customer paid for. `addressText` is the address as one
+/// line for the screens and the docket, `""` for pickup. `feeKobo` is the
+/// delivery fee, a separate line from the bill (Q21). `paystackReference`
+/// is the checkout's reference, unique. A customer deleting their account
+/// (Q36) blanks the contact, address and note. Never deleted.
+model OnlineOrder {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number     String  @unique
+  orderId    String  @unique
+  checkoutId String  @unique
+  customerId String?
+
+  contactName  String
+  contactPhone String
+  contactEmail String
+
+  mode                OnlineOrderMode
+  addressStreet       String?
+  addressArea         String?
+  addressTown         String?
+  addressLandmark     String?
+  addressText         String          @default("")
+  note                String          @default("")
+  feeKobo             Int
+  /// The checkout's snapshot of both zones' fees (C7-4, Q27), from which
+  /// `online.zone` prices a new zone.
+  deliveryJosKobo     Int
+  deliveryOutsideKobo Int
+  timingText          String
+  scheduledFor        DateTime?
+
+  fulfilmentStatus  OnlineFulfilmentStatus @default(RECEIVED)
+  paystackReference String                 @unique
+
+  version Int @default(0)
+
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  checkout Checkout  @relation(fields: [checkoutId], references: [id], onDelete: Restrict)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  adjustments OnlineAdjustment[]
+  refunds     OnlineRefund[]
+
+  @@index([fulfilmentStatus, createdAt])
+  @@index([customerId])
+}
+
+/// What a manager's change did to the money of a paid web order (plan
+/// §4.4, card C7-4): `online.edit`, `online.cancel` or `online.zone`
+/// moved what the order is worth by `amountKobo` (+ extra money due, −
+/// a refund owed). Open while `settledAt` is null; `online.balance`
+/// settles every open one with its payment (`settledPaymentId`), and a
+/// later change that brings the balance back to zero settles them with
+/// no payment. An order cannot complete while one is open. A refund
+/// Paystack refuses opens its adjustments again. Restrict everywhere: an
+/// adjustment is money history.
+model OnlineAdjustment {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  onlineOrderId    String
+  /// The command that made it: `online.edit`, `online.cancel`, `online.zone`.
+  action           String
+  amountKobo       Int
+  reason           String
+  staffId          String
+  settledAt        DateTime?
+  settledPaymentId String?
+
+  onlineOrder    OnlineOrder @relation(fields: [onlineOrderId], references: [id], onDelete: Restrict)
+  staff          Staff       @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  settledPayment Payment?    @relation(fields: [settledPaymentId], references: [id], onDelete: Restrict)
+
+  @@index([onlineOrderId, settledAt])
+  @@index([settledPaymentId])
+}
+
+/// A card refund through Paystack's refund API (card C7-4, Q26's default:
+/// "through Paystack; Manager within limits, Owner above; CNC absorbs the
+/// fee"). The refund's money is its `Payment` (`ONLINE`, negative,
+/// `paymentId`), written with it by `online.balance`; this row is what
+/// Paystack was asked and answered. Paystack is called after that
+/// transaction commits, by the one request that moves `PENDING` to
+/// `SENDING`. `providerRefundId` is Paystack's refund id once it accepted;
+/// `providerMessage` its words on a refusal, for staff. Restrict: a refund
+/// is money history.
+model OnlineRefund {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  onlineOrderId        String
+  paymentId            String             @unique
+  /// The Paystack transaction refunded: the checkout's reference.
+  transactionReference String
+  /// The money returned, in kobo (positive).
+  amountKobo           Int
+  status               OnlineRefundStatus @default(PENDING)
+  providerRefundId     String?            @unique
+  providerStatus       String?
+  providerMessage      String?
+  staffId              String
+  sentAt               DateTime?
+
+  onlineOrder OnlineOrder @relation(fields: [onlineOrderId], references: [id], onDelete: Restrict)
+  payment     Payment     @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  staff       Staff       @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([onlineOrderId])
+  @@index([status, createdAt])
+}
+
+/// TAY's webhook ledger (plan §4.4, §8.2): one row per Paystack delivery,
+/// keyed by `deliveryId`, the SHA-256 of the raw body, so a redelivery of
+/// the same bytes is recognised by the unique index and changes nothing.
+/// No payload is stored: a charge's body carries the card authorization.
+///
+/// `processedAt` is null until the work the delivery triggers has
+/// finished; an old row still null is a delivery acknowledged and not
+/// handled, which the payments sweep re-dispatches (C7-5).
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  deliveryId  String    @unique
+  event       String
+  reference   String?
+  processedAt DateTime?
+
+  @@index([processedAt, createdAt])
+  @@index([reference])
 }
 
 /// A stored response for an `Idempotency-Key` (A9).

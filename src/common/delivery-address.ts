@@ -1,4 +1,4 @@
-import { AddressZone } from '../../generated/cnc-client';
+import { AddressZone, type Prisma } from '../../generated/cnc-client';
 
 /**
  * A delivery address: the zone and the four lines the website's checkout
@@ -110,4 +110,71 @@ export function toDeliveryAddress(value: unknown): DeliveryAddress {
     town: line(value, 'town'),
     landmark: line(value, 'landmark'),
   };
+}
+
+/** Stored address lines, any of which a deleted account has cleared (Q36). */
+export interface StoredAddressLines {
+  addressStreet: string | null;
+  addressArea: string | null;
+  addressTown: string | null;
+  addressLandmark: string | null;
+}
+
+/**
+ * A delivery address as one line, as the website's done screen writes it
+ * (`addressText`): the street, area and town, then "Landmark: …", empty
+ * parts left out. The confirmation page (C7-1) and the online order's
+ * display text (C7-3) both write it here, so the customer and the rider
+ * read one address the same way.
+ */
+export function deliveryAddressText(address: StoredAddressLines): string {
+  return [
+    address.addressStreet,
+    address.addressArea,
+    address.addressTown,
+    address.addressLandmark && `Landmark: ${address.addressLandmark}`,
+  ]
+    .filter((part): part is string => typeof part === 'string' && part !== '')
+    .join(', ');
+}
+
+/**
+ * The zones as the website names them (`lib/order/checkout.ts`, `ZONES`),
+ * byte for byte: the receipt's delivery line reads "Delivery, Within Jos"
+ * as the done screen does (C7-6).
+ */
+export const ZONE_LABELS: Readonly<Record<AddressZone, string>> = {
+  [AddressZone.JOS]: 'Within Jos',
+  [AddressZone.PLATEAU]: 'Elsewhere in Plateau State',
+};
+
+/**
+ * A pickup's address line, as the website's done screen writes it: "Pickup
+ * at CNC, " and CNC's address from the business details with ", Nigeria",
+ * as the site appends it; "Pickup at CNC" with none. The confirmation read
+ * (C7-1), the customer's orders and the receipt (C7-6) all write it here.
+ */
+export function pickupAddressText(businessAddressLine: string | null): string {
+  return businessAddressLine === null || businessAddressLine === ''
+    ? 'Pickup at CNC'
+    : `Pickup at CNC, ${businessAddressLine}, Nigeria`;
+}
+
+/** CNC's address line from the business details; `''` when none is saved. */
+export async function businessAddressLine(
+  reader: Pick<Prisma.TransactionClient, 'business'>,
+): Promise<string> {
+  const business = await reader.business.findUnique({
+    where: { singleton: true },
+    select: { addressLine: true },
+  });
+
+  return business?.addressLine ?? '';
+}
+
+/** `pickupAddressText` with CNC's address read from the business details. */
+export async function readPickupAddressText(
+  reader: Pick<Prisma.TransactionClient, 'business'>,
+): Promise<string> {
+  return pickupAddressText(await businessAddressLine(reader));
 }

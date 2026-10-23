@@ -42,6 +42,12 @@ export interface LineRules {
    * entry). The command then decides whether empty is right.
    */
   allowEmpty?: boolean;
+  /**
+   * What makes two lines the same line, when it is more than the item id:
+   * a dish and its option on an online order's edit (C7-4), as the demo's
+   * `positiveLines` keys them (`itemId|option`). The item id by default.
+   */
+  lineKey?: (line: Record<string, unknown>) => string;
 }
 
 /** The demo's `positiveLines` over `{ stockItemId, qty }` lines. */
@@ -67,7 +73,13 @@ export function lineProblem(value: unknown, rules: LineRules): string | null {
   const isObject = (line: unknown): line is Record<string, unknown> =>
     typeof line === 'object' && line !== null && !Array.isArray(line);
 
-  const ids = lines.map((line) => (isObject(line) ? line[rules.idKey] : ''));
+  const ids = lines.map((line) =>
+    !isObject(line)
+      ? ''
+      : rules.lineKey
+        ? rules.lineKey(line)
+        : line[rules.idKey],
+  );
   if (new Set(ids).size !== ids.length) return LINES_DUPLICATE_MESSAGE;
 
   for (const line of lines) {

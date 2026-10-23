@@ -3,6 +3,7 @@ import {
   ApiBearerAuth,
   ApiOperation,
   ApiProperty,
+  ApiPropertyOptional,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -28,6 +29,13 @@ export class StaffNotificationResponse {
   })
   page!: string;
   @ApiProperty({ example: 'Reception' }) category!: string;
+  @ApiPropertyOptional({
+    example: 'KOT-CNCR-000124',
+    description:
+      'The record the page opens on, when it takes one: the New Web ' +
+      'Docket’s ref, which Kitchen fills in. Absent otherwise.',
+  })
+  ref?: string;
 }
 
 /** `GET /staff/notifications`. */
@@ -55,9 +63,11 @@ export class StaffNotificationsController {
     operationId: 'staffNotifications',
     summary: 'The staff bell',
     description:
-      'The reader’s pending items, computed now. Today it carries the Free ' +
-      'Table Reminder (Reception and managers); card C8-2 adds the rest of ' +
-      'plan §9.1.',
+      'The reader’s pending items, computed now. Today it carries the ' +
+      'active online orders (Cashier), the New Web Docket (Kitchen and ' +
+      'managers), Checkout Needs Attention (managers), the Free Table ' +
+      'Reminder (Reception and managers) and the reader’s assigned tasks; ' +
+      'card C8-2 adds the rest of plan §9.1.',
   })
   @ApiResponse({ status: 200, type: StaffNotificationPageResponse })
   @ApiResponse({

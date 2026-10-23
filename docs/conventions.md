@@ -2570,6 +2570,491 @@ They are here so the first card that builds it starts from the rule.
 - **No audit row**: an enquiry is not a command in the staff app's record.
   Q36's twelve-month retention of enquiries is C8-5's.
 
+## Online checkout and Paystack *(from C7)*
+
+- **CNC's own Paystack account only: `CNC_PAYSTACK_SECRET_KEY`, read as
+  `CncConfigService.paystackKey`, which treats unset, blank and
+  `PLACEHOLDER_NOT_SET` as no key; while there is none, `POST /checkouts`
+  and the webhook answer 503** (plan §8.1). The placeholder is public in
+  `.env.example`: used as the webhook's signing secret it would let anyone
+  sign a payment confirmation. **A deployed service outside production
+  refuses to boot on an `sk_live_` key**, as production refuses anything
+  else: staging's gate walks pay with test cards, and a live key there
+  would charge real ones.
+- **Every Paystack call goes through the `PaystackClient` interface
+  (`PAYSTACK_CLIENT`, `src/payments/paystack-client.ts`), chosen by
+  `CNC_ENV` (`paystackClientFor`): a local run gets `LocalPaystackClient`,
+  which calls nobody; staging and production `HttpPaystackClient`; every
+  e2e app `FakePaystackClient` (`fakePaystack(app)`).** No test and no
+  local walk may open a transaction on CNC's merchant account, whatever
+  key a `.env` holds (the mail transport's rule, for money). A local walk
+  pays by signing a fake `charge.success` with its local key
+  (`signPaystackBody`); the local client's verify answers it paid.
+- **The HTTP client is TAY's: plain `fetch`, 10 s timeout, no retries,
+  kobo never multiplied, never a body in a log line; unlike TAY's it
+  narrows every answer at runtime (`readTransaction`) instead of casting.**
+  A retry after a timeout cannot tell "never arrived" from "succeeded and
+  the answer was lost" (verify can); a charge's body carries the card
+  authorization; and a field Paystack sent in another shape must reach the
+  amount check as absent, never as a guess.
+- **The price is fixed by the server before Paystack is called: every
+  line priced from the menu as it stands (`priceCart`), VAT on the
+  subtotal rounded to the kobo, the zone's fee from Settings, total =
+  subtotal + VAT + delivery (Q33: nothing for Paystack's charge), through
+  the bill's own `orderTotals`** (`src/ordering/cart-pricing.ts`). A price
+  from the browser is a price the customer chose. One function prices the
+  quote and the checkout, so they never disagree. A dish that is not
+  Available for Sale and Show Online is refused (the menu hides it, Q37);
+  a choice must be one of the dish's options; two lines of one dish and
+  option are one line, as on a bill.
+- **A drink the Bar holds fewer of than the cart asks is a warning
+  (`warnings`), never a refusal** (plan §7.4). The money comes first and
+  stock never blocks a paid order; Q11 seeds no Bar stock, so on staging
+  every drink warns until opening balances are entered.
+- **The checkout judges its timing with `ordering-times.ts`, the
+  functions `GET /ordering/slots` offers from (`judgeTiming`)**, so a
+  time offered is a time accepted: as soon as possible only while
+  `asapOpen`, a slot only today or tomorrow in Jos and only one of that
+  day's `orderSlots`. The words stored (`timingText`) are the website's,
+  with the lead read from Settings.
+- **`POST /checkouts` runs in two steps: the idempotent transaction writes
+  the `PENDING` checkout and draws no number; after it commits,
+  `startPayment` calls Paystack's initialize and stores the access code and
+  page on the row once (`accessCode IS NULL`).** A network call must not
+  hold a transaction (the pool is 3), and the stored response of an
+  Idempotency-Key cannot hold what happened after the commit, so a retry
+  with the same key reads the page from the row. Paystack unreachable is
+  503 and the checkout waits for the same key; Paystack refusing is 502 and
+  the checkout is `FAILED`, so the page starts a new one with a new key.
+  *From the C7 review:* **a refusal is judged by verify first
+  (`afterRefusedStart`): a reference Paystack already holds (a same-key
+  retry after an initialize whose answer was lost, or a racing request)
+  leaves the checkout `PENDING` with a 503, or answers the page another
+  request stored; only Paystack's definite "not found" closes it
+  `FAILED`.** Paystack refuses a duplicate reference, so the retry the 503
+  promises would otherwise close a checkout Paystack opened. The page
+  cannot be recovered from verify, so such a checkout waits for the
+  checkouts sweep (decided here; the plan does not cover a lost
+  initialize answer).
+  The order number is drawn only when the payment is confirmed (C7-3), so
+  an abandoned checkout burns no `CNCR`.
+- **A checkout lives 30 minutes (`CHECKOUT_TTL_MS`) before the checkouts
+  sweep (C7-5) asks Paystack about it.** Long enough for a bank's one-time
+  code and a second card; short enough that a timing chosen at checkout
+  still means something.
+- **`GET /checkouts/:reference` answers to the reference alone, and never
+  carries the phone, email, note or account**, `no-store`. The reference
+  is `cnc-order-<uuid>` (122 random bits, held to that shape by a CHECK),
+  so knowing it is the capability the confirmation page needs; the name,
+  address and timing are what that page shows. *From the C7 review:*
+  **300 reads a minute per address (`CHECKOUT_READ_ADDRESS_LIMIT`)**,
+  because a read may call Paystack's verify on CNC's merchant key, and a
+  script cycling references must stop somewhere; a page polling every few
+  seconds is far below it.
+- **The webhook is `POST /payments/webhook` (plan §5.1, §8.6), TAY's
+  receiver: HMAC-SHA512 over the raw body under CNC's key with
+  `timingSafeEqual`, the `PaymentEvent` ledger keyed by the body's SHA-256
+  (a replay of the same bytes changes nothing), the work after the answer
+  with an in-flight drain (`WebhookDispatcherService.settled()` in
+  tests), and a 120-a-minute ceiling per address.** Paystack retries a
+  slow or non-2xx delivery, so the work cannot sit inside the request, and
+  a 429 is a retry too, so the limit is a ceiling, not a budget.
+  *From the C7 review:* **the request waits up to five seconds for its own
+  handling (`dispatchWithin`, `WEBHOOK_INLINE_WAIT_MS`) and answers then
+  whatever happens; slower work carries on after the answer.** Cloud Run's
+  default request-based CPU allocation (staging deploys with
+  `--min-instances 0` and no `--no-cpu-throttling`) starves work done
+  outside a request, so a payment handled wholly after the answer could
+  wait for the next request or the payments sweep. A verify and a settle
+  normally take well under a second; the cap still keeps the answer far
+  inside Paystack's retry time. Always-allocated CPU would also do it but
+  costs money every hour an instance is up, which is the founder's call,
+  not a code change.
+- **Every `charge.success` is checked against Paystack's verify, always:
+  success, the checkout's own reference, exactly its total, `NGN`; and the
+  event's own amount and currency must agree too (`paymentMismatch`).** A
+  mismatch holds the checkout `NEEDS_ATTENTION` with the reason, creates
+  nothing else, and emails CNC's inbox (`checkout.needs-attention`, dedupe
+  `checkout:<id>:attention`). TAY's webhook trusts the event; a signed
+  event is still not proof of the amount a customer paid. Paystack's
+  verify unreachable throws, so the delivery stays unprocessed for the
+  payments sweep rather than being marked done.
+- **A confirmed payment settles the checkout only from its settleable
+  states (`PENDING`, `EXPIRED`, `FAILED`); `PAID` and `NEEDS_ATTENTION`
+  are final for the webhook.** A late payment on an expired checkout is
+  still money taken. *From C7-3 this replaces "one conditional update":*
+  the settle locks the checkout's row (`SELECT … FOR UPDATE`), re-reads
+  its status under the lock, writes the order, and then sets `PAID` and
+  `orderId` in one update, because `Checkout_order_check` holds `PAID`
+  and an order together and Postgres cannot defer a CHECK. Two reports of
+  one payment (the webhook, the confirmation read, a sweep, two
+  instances) then settle it once: the loser waits on the lock and finds
+  it paid.
+- **The card is stored as its brand and last four only (`cardBrand`
+  "Visa", `cardLast4`), and the confirmation says "Visa ending 4081"**
+  (plan §8.5). Nothing else of the authorization is kept.
+- **A customer deleting their account (Q36) is refused while a checkout of
+  theirs is `PENDING` or `NEEDS_ATTENTION`, and their other checkouts lose
+  the name, phone, email, address lines and note** (a CHECK lets a phone
+  be empty for this). Money may yet arrive on a waiting one, for an order
+  nobody could then reach them about. *From the C7 review:* **an `EXPIRED`
+  or `FAILED` checkout does not refuse the deletion, and a payment that
+  later lands on a checkout whose contact the deletion wiped is held
+  `NEEDS_ATTENTION` (`ANONYMISED_CHECKOUT_REASON`), never placed.** Both
+  can still be paid (a transfer still settling, a page left open), and an
+  order with no name, phone, email or address could be cooked but never
+  delivered or refunded by word; refusing deletion for every abandoned
+  checkout instead would block it for good, since those states are
+  final.
+- **A public route counted per address only uses `AddressThrottle(limit,
+  ttl)` (`src/auth/auth-throttle.ts`)**: the bookings, the enquiries, the
+  checkout (30 in fifteen minutes) and the webhook. One decorator names
+  the three counts once, so a new route cannot forget to skip one.
+
+## Paid web orders and the payment sweeps *(from C7-3, C7-5)*
+
+- **A paid web order is written by `OnlineOrderPlacementService.place`
+  (`src/online-orders/`), only inside the settle transaction of
+  `CheckoutPaymentsService`, with its audit row (`online.paid`, actor
+  `SYSTEM` "Online checkout", reason "Paid online", ref the order
+  number)** (plan §7.4 step 4). The order, its lines, the food docket, the
+  `ONLINE` payment, the `OnlineOrder` and the Bar movements commit with the
+  checkout's `PAID` or not at all; a paid checkout with no order would be
+  money nobody cooks for.
+- **The numbers (`CNCR-`, `WEB-`, `PAY-`) are drawn inside that
+  transaction and nowhere earlier**, so an abandoned or expired checkout
+  burns none (the C7 gate's step 5, checked against
+  `order_restaurant_no_seq` in `test/online-orders.e2e-spec.ts`).
+- **A web order is one `CNCR-` order, channel `WEB`, `SETTLED`, its lines
+  carrying their own department (D29, D30), the checkout's VAT rate and no
+  service charge; its `label` is the `WEB-` number and its `guest` the
+  contact name.** The till's history tags `channel === 'WEB'` "Online"
+  (`staff/components/cnc/pos.tsx`), and the reversal already refuses a
+  non-POS bill.
+- **The payment is the checkout's whole total (delivery included), the
+  bill's `orderTotals` excludes the fee, and the fee is the online order's
+  own `feeKobo`** (Q21: a separate line; Q33: nothing added for Paystack).
+  The demo's `paid === totals(bill).total + fee` completion rule (C7-4)
+  reads them that way.
+- **The docket is revision 1 of the Restaurant lines only, written through
+  `DocketsService.write` with the fulfilment, the scheduled time and the
+  customer's note ("Note for the kitchen or rider"); a cart of drinks
+  alone gets no docket and revision 0.** Drinks never go to the kitchen
+  (§7.4), so the crosscheck never says "Mapping required" for them.
+- **The drinks leave the Bar as `WEB_SALE` movements through
+  `StockLedgerService.move` with `allowNegative`, one per paired stock
+  item by the sum of its lines, in stock id order (`webSalePlan`); a drink
+  with no paired stock item moves nothing and is logged as an error, never
+  refused.** The money is taken (§7.4), so stock cannot block a paid order;
+  the till refuses the same gap at settle because it can still say no.
+- **Business dates and `settledAt` of a web order are the moment the
+  payment is confirmed (Lagos), not Paystack's `paid_at`, which is kept on
+  the checkout.** A payment confirmed after midnight would otherwise put a
+  docket on a kitchen day already closed. *From the C7 review:* **the
+  docket of a scheduled order is dated the Lagos day of its slot, never
+  before the day paid (`webDocketDate`), for the first docket and every
+  revision; the order, its payment and its sales stay on the day paid.**
+  A docket for tomorrow's lunch dated today leaves the Kitchen bell when
+  today's kitchen day closes, and tomorrow the cook's entry would count as
+  a manager's correction; the money was taken today.
+- **The order's customer is the signed-in one who placed it while live;
+  else a verified customer by the checkout's email or phone, as a guest
+  booking links (Q35); else, with "Save my details", the customer found or
+  made by the email through `CustomerService.findOrCreateFromCheckout`,
+  unverified, with no session (A15).** An existing account's details are
+  never overwritten by a guest's form, and an unproved phone is saved only
+  when no customer holds it. Signing in later with a code verifies that
+  row, so the order is already in the account.
+- **`GET /checkouts/:reference` rechecks a checkout whose payment page was
+  opened and is still settleable (`CheckoutPaymentsService.recheck`), and
+  never fails for it.** The customer lands there from Paystack, often
+  before the webhook; whichever comes first writes the order. A recheck
+  answers `unpaid` and changes nothing when verify does not say `success`
+  (or Paystack does not know the reference); a reported payment
+  (`confirm`, the webhook and the payments sweep) that verify does not
+  confirm is held instead. *From the C7 review:* **at most one recheck per
+  checkout every five seconds (`recheckedAt`, claimed by one conditional
+  update, `RECHECK_INTERVAL_MS`), and an `EXPIRED` or `FAILED` one only
+  for a day after its expiry (`RECHECK_AFTER_EXPIRY_MS`).** Each recheck
+  is a verify on CNC's merchant key; a polling page or a looping script
+  must not spend the rate limit the webhook's verifies need, and those two
+  states are permanent, so without the window the read would ask
+  forever.
+- **`FakePaystackClient` verifies a transaction `abandoned` until the
+  test `pay`s it; `postSignedWebhook` (`test/paystack-webhooks.ts`) pays
+  before a `charge.success`.** Paystack sends that event only for a paid
+  transaction, and a fake that answered every initialized reference as paid
+  would let the confirmation read and the sweeps settle checkouts nobody
+  paid. *From the C7 review:* **the fake (and `LocalPaystackClient`)
+  refuses verify for a reference never initialized with a 400, as Paystack
+  does, and `loseNextInitializeAnswer` opens a transaction and then loses
+  the answer**, so the "not found" and the lost-answer paths are tested
+  against the shapes Paystack sends.
+- **The checkouts sweep (`POST /internal/sweeps/checkouts`,
+  `PaymentSweepsService.sweepCheckouts`) rechecks `PENDING` checkouts past
+  `expiresAt`, 50 a run, oldest first: paid ones get their order, wrongly
+  paid ones are held, unpaid ones become `EXPIRED` by a conditional update
+  on `PENDING`, and Paystack unreachable leaves them for the next run.** A
+  checkout is never expired without asking Paystack, because a lost
+  webhook must not turn money taken into an expired checkout. *From the
+  C7 review:* **"unpaid" is a verify that answers anything but `success`,
+  or Paystack's definite "not found" (a 4xx other than 401, 403 and 429,
+  `paystackNeverSawIt`); a 5xx, a 429, a refused key or a malformed answer
+  counts as unreachable.** `HttpPaystackClient` throws the same
+  `PaystackRefusedError` for all of them, and an outage read as "never
+  paid" would expire money taken, after which nothing rechecks it.
+- **The payments sweep (`POST /internal/sweeps/payments`,
+  `sweepPayments`) re-dispatches `PaymentEvent` rows unprocessed for five
+  minutes (`UNPROCESSED_EVENT_AGE_MS`), 50 a run, by event and reference,
+  through `WebhookDispatcherService.dispatch`.** No body is stored, so a
+  `charge.success` is judged by verify alone, still as a reported payment.
+  Five minutes, so a dispatch still in flight after its answer finishes
+  first.
+- **A deleted account (Q36) is refused while one of its online orders is
+  `RECEIVED`, `PREPARING`, `ON_THE_WAY` or `READY`
+  (`ACTIVE_ONLINE_STATUSES`); its other online orders lose the contact,
+  address lines, display address and note, and its web bills their
+  notes.** The kitchen and the rider still need a live order's details.
+  The docket keeps its note: a docket revision is never changed.
+- **`Checkout_order_check`: a checkout is `PAID` exactly when it has an
+  order. `OnlineOrder` CHECKs: a fee never negative, pickup with no
+  address, the contact as the checkout's, the number `WEB-` and 6+
+  digits.**
+
+## Staff Online Orders *(from C7-4)*
+
+- **Every online command (`online.status`, `correctStatus`, `edit`,
+  `cancel`, `zone`, `balance`) claims the `OnlineOrder`'s `version` first
+  and then locks its bill (`FOR UPDATE`), in `OnlineOrdersService.claim`;
+  its audit row's `ref` is the bill's `CNCR-` number** (the demo's
+  `ref = w.orderRef`). One claim serialises every command on one order, so
+  two devices settling one balance end as one payment and one stale 409
+  (the e2e race asks Paystack once); the `CNCR-` ref puts the history
+  under a reader `OrdersModule` already registers for the Cashier.
+- **A paid web order is worth its bill's `orderTotals` total plus its
+  `feeKobo`, nothing once cancelled (`onlineTargetKobo`, the demo's
+  `target`); paid is the bill's non-reversed payments, refunds negative;
+  the balance is worth less paid.** One function, so the list, the
+  detail, the completion rule and `online.balance` agree to the kobo. The
+  fee stays its own line outside the bill (Q21).
+- **An order completes (Delivered or Collected) only at a balance of 0:
+  "Record the outstanding payment or refund before completing this
+  order."** The demo's rule. An edit, cancel or zone change that moves
+  the order's worth leaves an `OnlineAdjustment` (+ due, − refund owed);
+  `online.balance` settles every open one with its payment, and a change
+  that brings the balance back to 0 settles them with no payment, so
+  "open adjustments" and "balance ≠ 0" never disagree (plan §4.4: an
+  order cannot complete while one is open).
+- **The demo's one "Completed" is stored as `DELIVERED` for a delivery and
+  `COLLECTED` for a pickup, and a status of the other mode is refused**
+  ("Status does not match the delivery method." for a correction; the
+  next-stage sentence for the Cashier). D31: the customer's labels need
+  both words, and one stored value per stage keeps the two label maps
+  honest.
+- **Q8's default is enforced: `online.edit` and `online.cancel` refuse a
+  completed or cancelled order with the demo's "Select an active online
+  order."; there is no customer cancel.** The demo let a manager change a
+  completed order; Q8's default stops at Completed. `correctStatus` can
+  still reopen a completed order to an earlier stage, as the demo's test
+  does, and then it can be edited.
+- **`online.edit` takes Restaurant and Bar lines (D30), refused with "Choose
+  a Restaurant or Bar menu item." (the demo's sentence with the Bar
+  added); a dish already on the order keeps the name and price it was
+  paid at, a new one takes today's; a dish off sale may stay only if the
+  order holds it.** Plan §4.1: a price change applies to new lines only.
+  The duplicate check keys a line by dish and option (`LineRules.lineKey`),
+  as the demo's `positiveLines` does. *From the C7 review:* **"already on
+  the order" is the line, dish and option: another option of a dish the
+  order holds is a new line at today's price, and a dish off sale may
+  stay only in an option the order holds.** The demo matched the paid
+  price by dish alone; plan §4.1 ("a price change applies to new lines
+  only") and the bill's own line key (`replaceLines`, the `OrderLine`
+  unique key) make it a new line, and the plan wins over the demo.
+- **Only the fields an edit sends change: a blank name or phone keeps the
+  one held (the demo's `c.name?.trim() || w.name`), and the note changes
+  only when sent.** The demo blanked the note and the address when the
+  form left them out; the address belongs to `online.zone` (Delivery
+  Details), whose structured address the checkout's sentences judge.
+- **An edit moves the drinks' Bar stock by the difference and a cancel
+  returns them all (`barDifference`), through `StockLedgerService.move`
+  with `allowNegative`: more served is `WEB_SALE`, fewer is the new
+  `WEB_SALE_RETURN`.** D30. The paid order took its drinks without
+  refusing (§7.4), so a correction of it must not be refused for stock
+  either; a separate return type keeps the Bar's history readable. *From
+  the C7 review:* **a return is never more than the order's own
+  `WEB_SALE` less `WEB_SALE_RETURN` movements took from that stock item
+  (by ref = the `CNCR-` number; `heldToTaken`), and a cancel returns
+  exactly what they took.** The difference is worked out from today's
+  pairing of drinks to stock items; a drink paired only after it was sold
+  would otherwise be "returned" to a Bar it never left. A drink paired at
+  the sale and re-paired since is still returned in full by a cancel; an
+  edit of it while it has no pairing moves nothing and is logged, as at
+  the sale.
+- **An edit writes a new docket revision (Restaurant lines only) when the
+  food or the note changed; a cancel writes an empty cancellation
+  revision when the kitchen had food; a zone change between delivery and
+  pickup reprints the food with the new fulfilment.** The kitchen's paper
+  must match the order; a drinks-only change gives the kitchen nothing
+  to print.
+- **A cancelled web bill is `CANCELLED` with `settledAt` cleared and keeps
+  its lines; the money owed back is the balance, returned by
+  `online.balance`.** `Order_settled_check` ties `settledAt` to `SETTLED`.
+  The lines are the record of what was cancelled; the demo emptied them.
+- **Q27: a zone change prices the new mode from the fees the order
+  snapshotted at checkout (`Checkout` and `OnlineOrder`
+  `deliveryJosKobo`/`deliveryOutsideKobo`), never from Settings now, and
+  only before dispatch (Received or Preparing).** "Recompute from the
+  fees snapshotted on the order": the order snapshotted only its own
+  zone's fee before C7-4, so both are now copied at checkout. A fee the
+  Owner changes later never reaches a paid order.
+- **Edit, cancel and zone are checked by `withinLimit` on the difference
+  they make (`LIMITED_DECISIONS.onlineChange`) and counted toward the
+  day; `online.balance` is checked on the balance it records
+  (`paymentCorrection`) and counted too.** The demo counts both (plan
+  §6.2: edit, cancel, balance: L, D; zone per Q27's "under the limits").
+  So a refund decided by an edit and paid by a balance counts twice
+  toward one manager's day, as in the demo; the Owner is never counted.
+- **`online.balance` records the whole balance in one payment, as the
+  demo does: extra money due is `CASH` or `TRANSFER` only (Q34); a refund
+  is `CASH`, `TRANSFER` or `PAYSTACK` (Q26), and a card refund is never
+  more than the card's `ONLINE` money not yet refunded.** Q34's default
+  has no payment link and the demo's Card is not offered (Q34 names Cash
+  or Transfer). Paystack refunds a transaction only up to its amount, and
+  cash taken later cannot go back to a card. *From the C7 review:* **a
+  `PAYSTACK` refund owed beyond the card's money sends the card's part and
+  leaves the rest owed (`recordedBalanceKobo`), for a Cash or Transfer
+  `online.balance`; the adjustments are settled only by the payment that
+  brings the balance to 0, and the limits judge what each payment
+  records.** Q26 sends refunds through Paystack as far as Paystack can
+  take them, and "Record the rest as Cash or Transfer." (still the 409
+  once nothing is left on the card) must be something staff can do.
+  **The checks run in the demo's order: the order (404 or stale), "No
+  payment adjustment is outstanding.", the card's own sentences (new),
+  the limits, then "Transfers require a sender/recipient and
+  reference."** The screen shows the sentence the API sends, so the order
+  is the demo's.
+- **A card refund is recorded in the idempotent transaction (a negative
+  `ONLINE` payment and a `PENDING` `OnlineRefund`, the limits and ledger
+  included) and sent to Paystack after it commits, by the one request
+  that moves it `PENDING` → `SENDING` (`OnlineRefundsService.send`).**
+  A network call must not hold a transaction (the pool is 3), and the
+  conditional claim makes a retry of the same key replay the record
+  without sending twice.
+- **Paystack refused is `REFUSED` (502): the refund's payment is reversed
+  and its adjustments open again, so the refund is owed once more and a
+  manager records it as Cash or Transfer. No answer is `UNCONFIRMED`
+  (503): the payment stays recorded and nothing resends it.** A refusal
+  means no money moved; a lost answer may mean Paystack queued it, and a
+  second send could pay the customer twice. A 5xx or a malformed success
+  from Paystack's refund API counts as no answer, never as a refusal. The
+  ledger row of a refused refund stays (append-only). *From the C7
+  review:* **a manager resolves an `UNCONFIRMED` refund, or one left
+  `SENDING` for over two minutes (`REFUND_SENDING_STUCK_MS`), by what
+  Paystack's dashboard shows: `POST /staff/online-orders/:id/refunds/
+  :refundId/resolve` (M+r, the order's `version`, audited
+  `online.resolveRefund`). `SENT` with the dashboard's refund id is
+  accepted as Paystack's answer would be (the customer is told); `NOT_SENT`
+  is undone as a refusal is, so the refund is owed again.** Without it an
+  unanswered refund left the balance at 0 and no way to record the money
+  if Paystack never had it. Two minutes is far past the client's
+  10-second timeout, so a send still waiting is never resolved under it.
+- **CNC absorbs Paystack's fee on a refund (Q26): the refund is exactly
+  the money owed, nothing added or taken off.** Q26's default.
+- **A card refund needs CNC's Paystack key: with none, `PAYSTACK` is 503
+  "Card refunds are not available just now. Record the refund as Cash or
+  Transfer." before anything is recorded.** Without a key the HTTP client
+  cannot send it, and a refund recorded and never sent would read as
+  unconfirmed money.
+- **The Paystack client lives in `PaystackClientModule`, which
+  `PaymentsModule` re-exports and `OnlineOrdersModule` imports.**
+  `PaymentsModule` imports `OnlineOrdersModule` for the web order a
+  payment writes, so the refunds could not import `PaymentsModule` back.
+- **Online Orders' list tab travels as `ACTIVE` or `HISTORY`** (plan
+  §5.4 writes `tab=active|history`; *Contract conventions*: enums travel
+  `UPPER_SNAKE`). Active is `ACTIVE_ONLINE_STATUSES`, which account
+  deletion (Q36) shares from `online-order-rules.ts`.
+
+## Order messages, my orders and the online bell items *(from C7-6, C7-7)*
+
+- **Every message about a web order goes through `OnlineOrderMail`
+  (`src/online-orders/online-order-mail.ts`): an email to the address
+  given at checkout and, when the order belongs to a customer, an item in
+  their in-app list, both queued in the event's own transaction under one
+  dedupe key and sent after the commit.** The *Mail* and *in-app list*
+  rules, applied to orders: a failed send never fails the payment or the
+  staff command, and a replay writes nothing twice.
+- **The receipt is queued by `OnlineOrderPlacementService.place`, inside
+  the settle transaction, and always emailed (Q31's default), whatever
+  Order Updates says** (`online:<id>:receipt`, kept a week). A payment
+  that commits then always has its receipt, whoever confirmed it (the
+  webhook, the confirmation read, a sweep), and the four reports of one
+  payment send it once. Its words and layout are the website's done
+  screen ("Thank you, Ada.", "Your order is in.", the lines, "Total
+  paid"), money through `formatKobo`, the zone's label from
+  `ZONE_LABELS` (the website's).
+- **Every stage change writes the in-app item; the email goes for on its
+  way and ready only while the customer keeps Order Updates on, and for
+  a cancellation always (`statusMailKind`, `sendsStatusMail`).** Q31's
+  default and the switch's new words, "When your order is on its way or
+  ready". A cancellation is about the money the customer paid, as a
+  booking's cancellation is always sent. Preparing, delivered and
+  collected send no email: the customer has nothing to do about them.
+  **A guest's order (no customer) gets the on-its-way and ready emails**,
+  as a guest's booking gets its reminder (Q32): the guest gave the email
+  for this order and has no switch. The key carries the version the
+  command claimed (`online:<id>:status:<version>`), so two changes are two
+  messages; a command that leaves the stage as it was sends nothing. On
+  its way and ready expire after three hours
+  (`ORDER_PROGRESS_MAIL_TTL_MS`): later, the food has arrived and the
+  email would only mislead.
+- **A refund is told when the money has gone back, always, by email and
+  in the app: Cash or Transfer in `online.balance`'s transaction, a card
+  refund in the transaction that records Paystack's acceptance (`SENT`),
+  never for one refused or unconfirmed** (`online:<id>:refund:<payment
+  id>`, kept a week). A notice for a refund Paystack then refused would
+  tell the customer money is coming that is not. Extra money taken in
+  person (Q34) sends nothing. An edit or a zone change sends nothing by
+  itself; the refund notice that settles it says what came back.
+- **Deleting an account (Q36) forgets its orders' messages too
+  (`online:<id>:` prefixes in `OutboundMessagesService.forget`)**, as its
+  bookings' and checkouts' are: a sent receipt's `to` beside an order id
+  would name the person an anonymised order belonged to.
+- **`GET /me/orders` and `GET /me/orders/:number` read the orders linked
+  to the customer (`OnlineOrder.customerId`), newest first, as they now
+  stand: the stored stage, the bill's lines and `orderTotals`, the fee as
+  delivery, and the card that paid** (plan §5.2; `no-store`). The tracker
+  polls the stored stage (C7-9), never a clock. `:number` is the `CNCR-`
+  number, the one the confirmation page shows and `/account#order/<n>`
+  names. Another customer's order, or none, is 404 with the account app's
+  "We could not find that order on this account.", so the route cannot
+  tell whether another customer's order exists.
+- **The bell's online items are computed on read in
+  `StaffNotificationsService`, before the reception items as the demo
+  orders them, with their words in `online-bell-items.ts`:** the
+  Cashier's active online orders ("Online Order · Paid", the demo's item,
+  plan §9.1: the Cashier only); the Kitchen's and managers' "New Web
+  Docket" (a web docket whose revision is the bill's current one, with
+  items, no kitchen entry under its ref, on a kitchen day not closed); the
+  managers' "Checkout Needs Attention" (every `NEEDS_ATTENTION`
+  checkout). A closed day takes no more entries, so without that test its
+  dockets would ring forever; a cancellation docket has no items and
+  rings nothing.
+- **A bell item may carry `ref`, the record its page opens on: the New
+  Web Docket its `KOT-` ref, and (from the C7 review) Checkout Needs
+  Attention its checkout's id** (plan §9.1: "kitchen, with the ref filled
+  in"). The id alone would make the staff app parse ids.
+- **A held checkout stays on the managers' bell until a manager resolves
+  it: `POST /staff/online-orders/checkouts/:checkoutId/resolve` (M+r, 204,
+  audited `online.resolveCheckout` under the checkout's reference) moves
+  `NEEDS_ATTENTION` to the new final `RESOLVED` by one conditional update
+  (`Checkout_resolved_check` ties it to `resolvedAt`).** *Replaces "and
+  nothing does yet" (C7 review).* The money is sorted out in Paystack's
+  dashboard; without a way out, the item rang forever and its customer
+  could never delete their account (Q36). No order is made: a held
+  payment never becomes one without a person. A new state rather than
+  `FAILED`, because `FAILED` is settleable and a replayed report would
+  hold it again.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by
@@ -2720,6 +3205,11 @@ They are here so the first card that builds it starts from the rule.
   | `cnc-staging-sweep-tokens` | `0 3 * * *` | `tokens` | C3-9 (exists) | housekeeping; nothing reads expired rows |
   | `cnc-staging-sweep-messages` | `*/5 * * * *` | `messages` | C6-8 | a sign-in code lives 10 minutes, so a queued one must go within minutes; the backoff (5, then 30) is counted in these runs |
   | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
+  | `cnc-staging-sweep-checkouts` | `*/10 * * * *` | `checkouts` | C7-5 | plan §5.5; a checkout lives 30 minutes, so an abandoned one is expired, or a paid one whose webhook was lost gets its order, within 40 |
+  | `cnc-staging-sweep-payments` | `*/15 * * * *` | `payments` | C7-5 | plan §5.5; a delivery is handled within seconds, so one still unprocessed after 5 minutes failed, and 15 bounds how long a paid order can wait on a verify outage |
+
+  The two C7 jobs are created after the C7 deploy is live, as the C6 ones
+  were.
 
   Create the two C6 jobs **after the C6 deploy is live** (the rule
   above), each with `gcloud scheduler jobs create http <job> --location

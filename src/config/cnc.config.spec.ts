@@ -182,6 +182,27 @@ describe('deployed rules (staging and production)', () => {
     expect(new CncConfigService().cncEnv).toBe('staging');
   });
 
+  it('boots on staging with a test Paystack key or the placeholder', () => {
+    for (const key of ['sk_test_x', 'PLACEHOLDER_NOT_SET']) {
+      environment(STAGING, { CNC_PAYSTACK_SECRET_KEY: key });
+
+      expect(refusal()).toBe('');
+    }
+  });
+
+  it('refuses a live Paystack key outside production, without printing it', () => {
+    environment(STAGING, {
+      CNC_PAYSTACK_SECRET_KEY: 'sk_live_do_not_print_me',
+    });
+
+    const message = refusal();
+
+    expect(message).toMatch(
+      /CNC_PAYSTACK_SECRET_KEY is a live key outside production/,
+    );
+    expect(message).not.toContain('do_not_print_me');
+  });
+
   it('refuses staging without a sweep token', () => {
     environment(STAGING, { CNC_SWEEP_TOKEN: undefined });
 
@@ -360,6 +381,21 @@ describe('getters', () => {
     expect(() => config.paystackSecretKey).toThrow(
       /CNC_PAYSTACK_SECRET_KEY is not set/,
     );
+  });
+
+  it('reads the checkout key as unset when blank or a placeholder', () => {
+    for (const key of [undefined, ' ', 'PLACEHOLDER_NOT_SET', 'CHANGE_ME']) {
+      environment({ CNC_JWT_SECRET: SECRET }, { CNC_PAYSTACK_SECRET_KEY: key });
+
+      expect(new CncConfigService().paystackKey).toBeUndefined();
+    }
+
+    environment(
+      { CNC_JWT_SECRET: SECRET },
+      { CNC_PAYSTACK_SECRET_KEY: 'sk_test_x' },
+    );
+
+    expect(new CncConfigService().paystackKey).toBe('sk_test_x');
   });
 
   it('treats blank optional values as unset', () => {
