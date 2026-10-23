@@ -183,6 +183,13 @@ export class CustomerDeletionService {
         },
       });
 
+      // Read before they lose the person: their receipts, stage and refund
+      // messages (`online:<id>:`, C7-6) are forgotten below.
+      const onlineOrders = await tx.onlineOrder.findMany({
+        where: { customerId },
+        select: { id: true },
+      });
+
       // Its web orders keep their money, lines and mode and lose the
       // person, as its checkouts do; the bill's delivery note goes too.
       await tx.onlineOrder.updateMany({
@@ -220,6 +227,7 @@ export class CustomerDeletionService {
           keyPrefixes: [
             ...bookings.map(({ id }) => `reservation:${id}:`),
             ...checkouts.map(({ id }) => `checkout:${id}:`),
+            ...onlineOrders.map(({ id }) => `online:${id}:`),
           ],
         },
         ACCOUNT_DELETED_REASON,

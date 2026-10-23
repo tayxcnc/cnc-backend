@@ -192,6 +192,10 @@ export class CheckoutPaymentsService {
         `${placed.onlineNumber}.`,
     );
 
+    // The receipt (Q31, C7-6), queued with the order; never fails the
+    // settle, and the messages sweep sends it if this send does not.
+    await this.outbound.dispatchByKey(placed.receiptKey);
+
     return 'paid';
   }
 

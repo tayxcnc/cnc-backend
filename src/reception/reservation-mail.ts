@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '../../generated/cnc-client';
-import { phoneForDisplay } from '../common/nigerian-phone';
 import { CncConfigService } from '../config/cnc.config';
 import { bookingNotification } from '../customer-notifications/customer-notification-texts';
 import { CustomerNotificationsService } from '../customer-notifications/customer-notifications.service';
+import { cncPhoneForMail, firstName } from '../mail/mail-contact';
 import type { MailTemplateName } from '../mail/mail-templates';
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
 import { bookingDateText, clockText } from './reservation-rules';
@@ -104,26 +104,19 @@ export class ReservationMail {
 
     if (row.email === '' || options.email === false) return null;
 
-    const business = await tx.business.findUnique({
-      where: { singleton: true },
-      select: { phone: true },
-    });
-
     await this.outbound.enqueue(tx, {
       to: row.email,
       template: TEMPLATE[kind],
       params: {
         number: row.number,
-        guestName: row.name.trim().split(/\s+/)[0] || row.name,
+        guestName: firstName(row.name),
         venue: venue.customerTitle,
         table: table.name,
         date: bookingDateText(row.businessDate),
         time: clockText(row.startMinutes),
         party: row.party,
         // Stored as digits; shown as the site shows it (Q6).
-        phone: business?.phone
-          ? phoneForDisplay(business.phone)
-          : 'the number on our website',
+        phone: await cncPhoneForMail(tx),
         accountUrl: this.config.buildWebUrl('/account') ?? null,
       },
       dedupeKey,

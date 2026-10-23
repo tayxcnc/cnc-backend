@@ -12,6 +12,7 @@ import {
   PaystackRefusedError,
 } from '../payments/paystack-client';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { OnlineOrderMail } from './online-order-mail';
 
 /** The longest Paystack message kept on a refused refund. */
 const PROVIDER_MESSAGE_MAX_LENGTH = 300;
@@ -53,6 +54,7 @@ export class OnlineRefundsService {
     private readonly prisma: CncPrismaService,
     private readonly audit: AuditService,
     @Inject(PAYSTACK_CLIENT) private readonly paystack: PaystackClient,
+    private readonly mail: OnlineOrderMail,
   ) {}
 
   /**
@@ -91,7 +93,7 @@ export class OnlineRefundsService {
         merchantNote: `CNC refund for ${order.number}`,
       });
 
-      await this.prisma.$transaction(async (tx) => {
+      const noticeKey = await this.prisma.$transaction(async (tx) => {
         await tx.onlineRefund.update({
           where: { id: refundId },
           data: {
@@ -112,7 +114,17 @@ export class OnlineRefundsService {
           amountKobo: refund.amountKobo,
           providerRefundId: queued.refundId,
         });
+
+        // C7-6: the customer is told once Paystack has accepted the refund,
+        // never for one refused or unconfirmed.
+        return this.mail.refunded(tx, refund.onlineOrderId, {
+          paymentId: refund.paymentId,
+          amountKobo: refund.amountKobo,
+          method: 'CARD',
+        });
       });
+
+      await this.mail.dispatch(noticeKey);
 
       return OnlineRefundStatus.SENT;
     } catch (error) {

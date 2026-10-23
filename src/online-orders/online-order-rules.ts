@@ -29,6 +29,24 @@ export const ACTIVE_ONLINE_STATUSES: OnlineFulfilmentStatus[] = [
 ];
 
 /**
+ * The staff app's words for each stored stage (D31; the demo's
+ * `online.status` list: "Paid", "Preparing", "Out for Delivery", "Ready for
+ * Pickup", "Completed", "Cancelled"), for the Cashier's bell item (C7-7).
+ * Delivered and Collected are both the demo's one "Completed".
+ */
+export const STAFF_ONLINE_STATUS_LABELS: Readonly<
+  Record<OnlineFulfilmentStatus, string>
+> = {
+  [OnlineFulfilmentStatus.RECEIVED]: 'Paid',
+  [OnlineFulfilmentStatus.PREPARING]: 'Preparing',
+  [OnlineFulfilmentStatus.ON_THE_WAY]: 'Out for Delivery',
+  [OnlineFulfilmentStatus.READY]: 'Ready for Pickup',
+  [OnlineFulfilmentStatus.DELIVERED]: 'Completed',
+  [OnlineFulfilmentStatus.COLLECTED]: 'Completed',
+  [OnlineFulfilmentStatus.CANCELLED]: 'Cancelled',
+};
+
+/**
  * What a paid web order is made of (plan §7.4 step 4, card C7-3), as pure
  * functions, so the one transaction that writes it and the tests that
  * check it read a checkout the same way.

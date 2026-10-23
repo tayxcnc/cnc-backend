@@ -22,6 +22,7 @@ import { DocketsService } from '../orders/dockets.service';
 import { drawNumber } from '../prisma/sequences';
 import { verifiedCustomerId } from '../reception/customer-link';
 import { StockLedgerService } from '../stock/stock-ledger.service';
+import { OnlineOrderMail } from './online-order-mail';
 import {
   onlineOrderMode,
   webDocketItems,
@@ -48,6 +49,8 @@ export interface PlacedOnlineOrder {
   onlineNumber: string;
   paymentNumber: string;
   docketRef: string | null;
+  /** The receipt email's dedupe key, to send after the commit (C7-6). */
+  receiptKey: string;
 }
 
 /**
@@ -77,7 +80,9 @@ export interface PlacedOnlineOrder {
  *   (Q21);
  * - the Bar movements (`WEB_SALE`) for the drinks through the stock
  *   ledger **with `allowNegative`** (§7.4): the money is taken, so stock
- *   never refuses a paid order; a shortfall shows in Low Stock.
+ *   never refuses a paid order; a shortfall shows in Low Stock;
+ * - the receipt email (always, Q31) and the customer's in-app item
+ *   (`OnlineOrderMail.receipt`, C7-6), sent by the caller after the commit.
  */
 @Injectable()
 export class OnlineOrderPlacementService {
@@ -88,6 +93,7 @@ export class OnlineOrderPlacementService {
     private readonly dockets: DocketsService,
     private readonly ledger: StockLedgerService,
     private readonly customers: CustomerService,
+    private readonly mail: OnlineOrderMail,
   ) {}
 
   async place(
@@ -176,7 +182,7 @@ export class OnlineOrderPlacementService {
     const delivery = checkout.fulfilment === Fulfilment.DELIVERY;
     const mode = onlineOrderMode(checkout.fulfilment, checkout.zone);
 
-    await tx.onlineOrder.create({
+    const online = await tx.onlineOrder.create({
       data: {
         number: onlineNumber,
         orderId: order.id,
@@ -228,6 +234,10 @@ export class OnlineOrderPlacementService {
       tx,
     );
 
+    // C7-6: the receipt (always, Q31) and the customer's in-app item, queued
+    // with the order so a payment that commits always has its receipt.
+    const receiptKey = await this.mail.receipt(tx, online.id, paidWith);
+
     return {
       orderId: order.id,
       customerId,
@@ -235,6 +245,7 @@ export class OnlineOrderPlacementService {
       onlineNumber,
       paymentNumber,
       docketRef: docket?.ref ?? null,
+      receiptKey,
     };
   }
 

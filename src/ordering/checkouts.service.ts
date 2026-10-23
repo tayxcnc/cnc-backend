@@ -22,6 +22,7 @@ import { hashClientAddress } from '../common/client-address';
 import {
   type StoredAddressLines,
   deliveryAddressText,
+  readPickupAddressText,
   toDeliveryAddress,
 } from '../common/delivery-address';
 import { CncConfigService } from '../config/cnc.config';
@@ -418,22 +419,14 @@ export class CheckoutsService {
 
   /**
    * The address as the website's done screen writes it (`addressText`):
-   * the delivery lines and "Landmark: …", or "Pickup at CNC, " and CNC's
-   * address from the business details with ", Nigeria", as the site
-   * appends it.
+   * the delivery lines and "Landmark: …", or the pickup line with CNC's
+   * address from the business details (`pickupAddressText`).
    */
   private async addressText(
     checkout: StoredAddressLines & { fulfilment: Fulfilment },
   ): Promise<string> {
     if (checkout.fulfilment === Fulfilment.PICKUP) {
-      const business = await this.prisma.business.findUnique({
-        where: { singleton: true },
-        select: { addressLine: true },
-      });
-
-      return business === null
-        ? 'Pickup at CNC'
-        : `Pickup at CNC, ${business.addressLine}, Nigeria`;
+      return readPickupAddressText(this.prisma);
     }
 
     return deliveryAddressText(checkout);

@@ -118,5 +118,14 @@ export const REFUND_UNCONFIRMED_MESSAGE =
 export const CARD_REFUNDS_UNAVAILABLE_MESSAGE =
   'Card refunds are not available just now. Record the refund as Cash or Transfer.';
 
+/**
+ * `GET /me/orders/:number` for an order that is not the customer's, or
+ * none (404, C7-6): the account app's own sentence
+ * (`components/account/panels.tsx`), byte for byte, so another
+ * customer's order reads as no order at all.
+ */
+export const CUSTOMER_ORDER_NOT_FOUND_MESSAGE =
+  'We could not find that order on this account.';
+
 /** Longest guest name kept on an online order (the checkout's). */
 export const ONLINE_CONTACT_NAME_MAX_LENGTH = 80;

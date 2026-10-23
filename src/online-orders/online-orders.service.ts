@@ -77,6 +77,7 @@ import {
   SELECT_ONLINE_ORDER_MESSAGE,
   ZONE_BEFORE_DISPATCH_MESSAGE,
 } from './online-order-messages';
+import { OnlineOrderMail } from './online-order-mail';
 import {
   ACTIVE_ONLINE_STATUSES,
   barDifference,
@@ -146,6 +147,8 @@ export interface BalanceRecorded {
   onlineOrder: OnlineOrderResponse;
   /** The card refund to send to Paystack after the commit, if any. */
   refundId: string | null;
+  /** A Cash or Transfer refund's notice to send after the commit (C7-6). */
+  noticeKey: string | null;
 }
 
 /**
@@ -186,7 +189,13 @@ export class OnlineOrdersService {
     private readonly dockets: DocketsService,
     private readonly money: MoneyControlService,
     private readonly ledger: StockLedgerService,
+    private readonly mail: OnlineOrderMail,
   ) {}
+
+  /** Send a queued customer email after the commit (C7-6). Never throws. */
+  async dispatchMail(dedupeKey: string | null): Promise<void> {
+    await this.mail.dispatch(dedupeKey);
+  }
 
   // -------------------------------------------------------------------------
   // Reads
@@ -379,7 +388,7 @@ export class OnlineOrdersService {
     request: OnlineStatusRequest,
     ipAddress: string,
   ): Promise<OnlineOrderResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const { result, mailKey } = await this.prisma.$transaction(async (tx) => {
       const { online, order } = await this.claim(tx, id, request.version);
 
       if (isClosed(online.fulfilmentStatus)) {
@@ -416,8 +425,15 @@ export class OnlineOrdersService {
         tx,
       );
 
-      return this.read(tx, id);
+      return {
+        result: await this.read(tx, id),
+        mailKey: await this.mail.statusChanged(tx, id, online.fulfilmentStatus),
+      };
     });
+
+    await this.mail.dispatch(mailKey);
+
+    return result;
   }
 
   /**
@@ -431,7 +447,7 @@ export class OnlineOrdersService {
     request: OnlineCorrectStatusRequest,
     ipAddress: string,
   ): Promise<OnlineOrderResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const { result, mailKey } = await this.prisma.$transaction(async (tx) => {
       const { online, order } = await this.claim(tx, id, request.version);
 
       if (online.fulfilmentStatus === OnlineFulfilmentStatus.CANCELLED) {
@@ -465,8 +481,15 @@ export class OnlineOrdersService {
         tx,
       );
 
-      return this.read(tx, id);
+      return {
+        result: await this.read(tx, id),
+        mailKey: await this.mail.statusChanged(tx, id, online.fulfilmentStatus),
+      };
     });
+
+    await this.mail.dispatch(mailKey);
+
+    return result;
   }
 
   /**
@@ -599,7 +622,7 @@ export class OnlineOrdersService {
     request: OnlineCancelRequest,
     ipAddress: string,
   ): Promise<OnlineOrderChangeResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const { result, mailKey } = await this.prisma.$transaction(async (tx) => {
       const { online, order } = await this.claim(tx, id, request.version);
 
       if (isClosed(online.fulfilmentStatus)) {
@@ -678,8 +701,15 @@ export class OnlineOrdersService {
         tx,
       );
 
-      return { onlineOrder: await this.read(tx, id), docket };
+      return {
+        result: { onlineOrder: await this.read(tx, id), docket },
+        mailKey: await this.mail.statusChanged(tx, id, online.fulfilmentStatus),
+      };
     });
+
+    await this.mail.dispatch(mailKey);
+
+    return result;
   }
 
   /**
@@ -909,9 +939,24 @@ export class OnlineOrdersService {
       tx,
     );
 
+    // C7-6: money handed back by Cash or Transfer is given now, so the
+    // customer is told now; a card refund is told once Paystack accepts it
+    // (`OnlineRefundsService.send`). Extra money taken sends nothing: the
+    // customer paid it in person.
+    const noticeKey =
+      balanceKobo < 0 && !toCard
+        ? await this.mail.refunded(tx, id, {
+            paymentId: payment.id,
+            amountKobo: -balanceKobo,
+            method:
+              request.method === OnlineBalanceMethod.CASH ? 'CASH' : 'TRANSFER',
+          })
+        : null;
+
     return {
       onlineOrder: await this.read(tx, id),
       refundId: refund?.id ?? null,
+      noticeKey,
     };
   }
 

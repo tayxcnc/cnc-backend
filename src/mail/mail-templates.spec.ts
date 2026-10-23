@@ -193,4 +193,161 @@ describe('mail templates', () => {
       }
     });
   });
+
+  describe('order emails (C7-6)', () => {
+    const receipt = {
+      number: 'CNCR-000124',
+      guestName: 'Ada <b>',
+      whereLabel: 'Delivering to',
+      where: '12 Rayfield Road, Rayfield, Jos, Landmark: Opposite the church',
+      timing: 'As soon as possible, about 90 minutes',
+      card: 'Visa ending 4081',
+      lines: [
+        { qty: 2, name: 'Jollof Rice', option: '', amount: '₦13,000.00' },
+        { qty: 1, name: 'Chapman', option: 'Large', amount: '₦3,500.00' },
+      ],
+      subtotal: '₦16,500.00',
+      vatLabel: 'VAT (7.5%)',
+      vat: '₦1,237.50',
+      deliveryLabel: 'Delivery, Within Jos',
+      delivery: '₦5,000.00',
+      total: '₦22,737.50',
+      trackUrl: 'https://tayxcnc.com/cnc/account#order/CNCR-000124',
+      phone: '0802 218 8797',
+    };
+
+    it('writes the receipt as the website’s done screen, escaped in HTML', () => {
+      const mail = renderMail('order.receipt', receipt);
+
+      expect(mail.subject).toBe('Your CNC order is in: CNCR-000124');
+      expect(mail.text).toContain('Thank you, Ada <b>.');
+      expect(mail.text).toContain('Your order is in.');
+      expect(mail.text).toContain('Order: CNCR-000124');
+      expect(mail.text).toContain(
+        'Delivering to: 12 Rayfield Road, Rayfield, Jos, Landmark: Opposite the church',
+      );
+      expect(mail.text).toContain('Paid with: Visa ending 4081');
+      expect(mail.text).toContain('2 × Jollof Rice: ₦13,000.00');
+      expect(mail.text).toContain('1 × Chapman (Large): ₦3,500.00');
+      expect(mail.text).toContain('VAT (7.5%): ₦1,237.50');
+      expect(mail.text).toContain('Delivery, Within Jos: ₦5,000.00');
+      expect(mail.text).toContain('Total paid: ₦22,737.50');
+      expect(mail.text).toContain(
+        'Track this order in your account: ' +
+          'https://tayxcnc.com/cnc/account#order/CNCR-000124',
+      );
+      expect(mail.text).toContain(
+        'Questions about your order? Call CNC on 0802 218 8797.',
+      );
+      expect(mail.html).toContain('Thank you, Ada &lt;b&gt;.');
+      expect(mail.html).not.toContain('Ada <b>');
+    });
+
+    it('leaves out the card and the account link when there are none', () => {
+      const mail = renderMail('order.receipt', {
+        ...receipt,
+        card: '',
+        trackUrl: null,
+      });
+
+      expect(mail.text).not.toContain('Paid with');
+      expect(mail.text).not.toContain('Track this order');
+      expect(mail.html).not.toContain('<a ');
+    });
+
+    it('refuses a receipt that does not fit', () => {
+      for (const params of [
+        { ...receipt, lines: [] },
+        {
+          ...receipt,
+          lines: [{ qty: 0, name: 'x', option: '', amount: '₦1' }],
+        },
+        { ...receipt, total: '' },
+        { ...receipt, trackUrl: '' },
+        { ...receipt, card: null },
+      ]) {
+        expect(() => renderMail('order.receipt', params)).toThrow(/malformed/);
+      }
+    });
+
+    const status = {
+      number: 'CNCR-000124',
+      guestName: 'Ada',
+      kind: 'ON_THE_WAY',
+      place: '12 Rayfield Road, Rayfield, Jos',
+      phone: '0802 218 8797',
+      trackUrl: null,
+    };
+
+    it('says the order is on its way, ready, or cancelled', () => {
+      const way = renderMail('order.status', status);
+
+      expect(way.subject).toBe('Your CNC order CNCR-000124 is on its way');
+      expect(way.text).toContain(
+        'Your order is on its way to 12 Rayfield Road, Rayfield, Jos.',
+      );
+
+      const ready = renderMail('order.status', {
+        ...status,
+        kind: 'READY',
+        place: '1 Ahmadu Bello Way, Jos',
+      });
+
+      expect(ready.subject).toBe(
+        'Your CNC order CNCR-000124 is ready for pickup',
+      );
+      expect(ready.text).toContain(
+        'Your order is ready for pickup at CNC, 1 Ahmadu Bello Way, Jos.',
+      );
+
+      const cancelled = renderMail('order.status', {
+        ...status,
+        kind: 'CANCELLED',
+        place: '',
+      });
+
+      expect(cancelled.subject).toBe('Your CNC order CNCR-000124 is cancelled');
+      expect(cancelled.text).toContain(
+        'Your order has been cancelled. CNC will give back what you paid ' +
+          'and email you when it has.',
+      );
+      expect(() =>
+        renderMail('order.status', { ...status, kind: 'DELIVERED' }),
+      ).toThrow(/malformed/);
+    });
+
+    it('says how a refund came back', () => {
+      const refund = {
+        number: 'CNCR-000124',
+        guestName: 'Ada',
+        amount: '₦3,225.00',
+        method: 'CARD',
+        card: 'Visa ending 4081',
+        phone: '0802 218 8797',
+      };
+
+      const card = renderMail('order.refund', refund);
+
+      expect(card.subject).toBe('Refund for your CNC order CNCR-000124');
+      expect(card.text).toContain(
+        'CNC has refunded ₦3,225.00 to your card (Visa ending 4081) for ' +
+          'order CNCR-000124. It can take some days for your bank to show it.',
+      );
+      expect(
+        renderMail('order.refund', { ...refund, method: 'CASH', card: '' })
+          .text,
+      ).toContain(
+        'CNC has given you back ₦3,225.00 in cash for order CNCR-000124.',
+      );
+      expect(
+        renderMail('order.refund', { ...refund, method: 'TRANSFER', card: '' })
+          .text,
+      ).toContain(
+        'CNC has sent you back ₦3,225.00 by bank transfer for order CNCR-000124.',
+      );
+      expect(() =>
+        renderMail('order.refund', { ...refund, method: 'PAYSTACK' }),
+      ).toThrow(/malformed/);
+    });
+  });
 });

@@ -2881,6 +2881,79 @@ They are here so the first card that builds it starts from the rule.
   `UPPER_SNAKE`). Active is `ACTIVE_ONLINE_STATUSES`, which account
   deletion (Q36) shares from `online-order-rules.ts`.
 
+## Order messages, my orders and the online bell items *(from C7-6, C7-7)*
+
+- **Every message about a web order goes through `OnlineOrderMail`
+  (`src/online-orders/online-order-mail.ts`): an email to the address
+  given at checkout and, when the order belongs to a customer, an item in
+  their in-app list, both queued in the event's own transaction under one
+  dedupe key and sent after the commit.** The *Mail* and *in-app list*
+  rules, applied to orders: a failed send never fails the payment or the
+  staff command, and a replay writes nothing twice.
+- **The receipt is queued by `OnlineOrderPlacementService.place`, inside
+  the settle transaction, and always emailed (Q31's default), whatever
+  Order Updates says** (`online:<id>:receipt`, kept a week). A payment
+  that commits then always has its receipt, whoever confirmed it (the
+  webhook, the confirmation read, a sweep), and the four reports of one
+  payment send it once. Its words and layout are the website's done
+  screen ("Thank you, Ada.", "Your order is in.", the lines, "Total
+  paid"), money through `formatKobo`, the zone's label from
+  `ZONE_LABELS` (the website's).
+- **Every stage change writes the in-app item; the email goes for on its
+  way and ready only while the customer keeps Order Updates on, and for
+  a cancellation always (`statusMailKind`, `sendsStatusMail`).** Q31's
+  default and the switch's new words, "When your order is on its way or
+  ready". A cancellation is about the money the customer paid, as a
+  booking's cancellation is always sent. Preparing, delivered and
+  collected send no email: the customer has nothing to do about them.
+  **A guest's order (no customer) gets the on-its-way and ready emails**,
+  as a guest's booking gets its reminder (Q32): the guest gave the email
+  for this order and has no switch. The key carries the version the
+  command claimed (`online:<id>:status:<version>`), so two changes are two
+  messages; a command that leaves the stage as it was sends nothing. On
+  its way and ready expire after three hours
+  (`ORDER_PROGRESS_MAIL_TTL_MS`): later, the food has arrived and the
+  email would only mislead.
+- **A refund is told when the money has gone back, always, by email and
+  in the app: Cash or Transfer in `online.balance`'s transaction, a card
+  refund in the transaction that records Paystack's acceptance (`SENT`),
+  never for one refused or unconfirmed** (`online:<id>:refund:<payment
+  id>`, kept a week). A notice for a refund Paystack then refused would
+  tell the customer money is coming that is not. Extra money taken in
+  person (Q34) sends nothing. An edit or a zone change sends nothing by
+  itself; the refund notice that settles it says what came back.
+- **Deleting an account (Q36) forgets its orders' messages too
+  (`online:<id>:` prefixes in `OutboundMessagesService.forget`)**, as its
+  bookings' and checkouts' are: a sent receipt's `to` beside an order id
+  would name the person an anonymised order belonged to.
+- **`GET /me/orders` and `GET /me/orders/:number` read the orders linked
+  to the customer (`OnlineOrder.customerId`), newest first, as they now
+  stand: the stored stage, the bill's lines and `orderTotals`, the fee as
+  delivery, and the card that paid** (plan §5.2; `no-store`). The tracker
+  polls the stored stage (C7-9), never a clock. `:number` is the `CNCR-`
+  number, the one the confirmation page shows and `/account#order/<n>`
+  names. Another customer's order, or none, is 404 with the account app's
+  "We could not find that order on this account.", so the route cannot
+  tell whether another customer's order exists.
+- **The bell's online items are computed on read in
+  `StaffNotificationsService`, before the reception items as the demo
+  orders them, with their words in `online-bell-items.ts`:** the
+  Cashier's active online orders ("Online Order · Paid", the demo's item,
+  plan §9.1: the Cashier only); the Kitchen's and managers' "New Web
+  Docket" (a web docket whose revision is the bill's current one, with
+  items, no kitchen entry under its ref, on a kitchen day not closed); the
+  managers' "Checkout Needs Attention" (every `NEEDS_ATTENTION`
+  checkout). A closed day takes no more entries, so without that test its
+  dockets would ring forever; a cancellation docket has no items and
+  rings nothing.
+- **A bell item may carry `ref`, the record its page opens on; only the
+  New Web Docket does (its `KOT-` ref)** (plan §9.1: "kitchen, with the
+  ref filled in"). The id alone would make the staff app parse ids.
+- **A held checkout stays on the managers' bell until something resolves
+  it, and nothing does yet** (see the C7 report's founder questions):
+  the plan has no command for it, and hiding money taken behind a time
+  limit would be worse than an item that waits.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by

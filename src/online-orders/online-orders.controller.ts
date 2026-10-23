@@ -435,6 +435,9 @@ export class OnlineOrdersController {
       work: (tx) => this.online.balance(tx, actor, id, request, ipAddress),
     });
 
+    // A replay finds the notice already sent and sends nothing (C7-6).
+    await this.online.dispatchMail(result.body.noticeKey ?? null);
+
     if (result.body.refundId === null) {
       response.status(result.status);
 

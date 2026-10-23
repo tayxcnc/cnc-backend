@@ -1,11 +1,16 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { CncAuthModule } from '../auth/cnc-auth.module';
+import { CustomerNotificationsModule } from '../customer-notifications/customer-notifications.module';
 import { CustomersModule } from '../customers/customers.module';
+import { MailModule } from '../mail/mail.module';
 import { MoneyControlModule } from '../money-control/money-control.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PaystackClientModule } from '../payments/paystack-client.module';
 import { StockModule } from '../stock/stock.module';
+import { CustomerOrdersController } from './customer-orders.controller';
+import { CustomerOrdersService } from './customer-orders.service';
+import { OnlineOrderMail } from './online-order-mail';
 import { OnlineOrderPlacementService } from './online-order-placement.service';
 import { OnlineOrdersController } from './online-orders.controller';
 import { OnlineOrdersService } from './online-orders.service';
@@ -21,6 +26,11 @@ import { OnlineRefundsService } from './online-refunds.service';
  *
  * The audit rows of every online command are filed under the bill's
  * `CNCR-` number, whose history reader `OrdersModule` registers.
+ *
+ * From C7-6, the customer's messages about an order (`OnlineOrderMail`:
+ * the receipt, the stage changes, the refunds, by email and in the in-app
+ * list) and the customer's own orders (`GET /me/orders`,
+ * `CustomerOrdersService`).
  */
 @Module({
   imports: [
@@ -31,12 +41,16 @@ import { OnlineRefundsService } from './online-refunds.service';
     CustomersModule,
     MoneyControlModule,
     PaystackClientModule,
+    MailModule,
+    CustomerNotificationsModule,
   ],
-  controllers: [OnlineOrdersController],
+  controllers: [OnlineOrdersController, CustomerOrdersController],
   providers: [
     OnlineOrderPlacementService,
     OnlineOrdersService,
     OnlineRefundsService,
+    OnlineOrderMail,
+    CustomerOrdersService,
   ],
   exports: [OnlineOrderPlacementService],
 })
