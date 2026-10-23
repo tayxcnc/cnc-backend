@@ -1,6 +1,4 @@
-import { applyDecorators } from '@nestjs/common';
-import { SkipThrottle, Throttle } from '@nestjs/throttler';
-import { AUTH_ATTEMPT_WINDOW_MS, THROTTLERS } from '../auth/auth-throttle';
+import { AddressThrottle } from '../auth/auth-throttle';
 
 /**
  * The limits on the two enquiry forms (card C6-7), in two layers, so that
@@ -38,18 +36,7 @@ export const ENQUIRY_MAIL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** `POST /enquiries` and `POST /group-enquiries`: the address only. */
 export function EnquiryThrottle(): MethodDecorator {
-  return applyDecorators(
-    Throttle({
-      [THROTTLERS.address]: {
-        limit: ENQUIRY_REQUEST_LIMIT,
-        ttl: AUTH_ATTEMPT_WINDOW_MS,
-      },
-    }),
-    SkipThrottle({
-      [THROTTLERS.account]: true,
-      [THROTTLERS.accountAnywhere]: true,
-    }),
-  );
+  return AddressThrottle(ENQUIRY_REQUEST_LIMIT);
 }
 
 /**

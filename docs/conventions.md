@@ -2570,6 +2570,109 @@ They are here so the first card that builds it starts from the rule.
 - **No audit row**: an enquiry is not a command in the staff app's record.
   Q36's twelve-month retention of enquiries is C8-5's.
 
+## Online checkout and Paystack *(from C7)*
+
+- **CNC's own Paystack account only: `CNC_PAYSTACK_SECRET_KEY`, read as
+  `CncConfigService.paystackKey`, which treats unset, blank and
+  `PLACEHOLDER_NOT_SET` as no key; while there is none, `POST /checkouts`
+  and the webhook answer 503** (plan §8.1). The placeholder is public in
+  `.env.example`: used as the webhook's signing secret it would let anyone
+  sign a payment confirmation. **A deployed service outside production
+  refuses to boot on an `sk_live_` key**, as production refuses anything
+  else: staging's gate walks pay with test cards, and a live key there
+  would charge real ones.
+- **Every Paystack call goes through the `PaystackClient` interface
+  (`PAYSTACK_CLIENT`, `src/payments/paystack-client.ts`), chosen by
+  `CNC_ENV` (`paystackClientFor`): a local run gets `LocalPaystackClient`,
+  which calls nobody; staging and production `HttpPaystackClient`; every
+  e2e app `FakePaystackClient` (`fakePaystack(app)`).** No test and no
+  local walk may open a transaction on CNC's merchant account, whatever
+  key a `.env` holds (the mail transport's rule, for money). A local walk
+  pays by signing a fake `charge.success` with its local key
+  (`signPaystackBody`); the local client's verify answers it paid.
+- **The HTTP client is TAY's: plain `fetch`, 10 s timeout, no retries,
+  kobo never multiplied, never a body in a log line; unlike TAY's it
+  narrows every answer at runtime (`readTransaction`) instead of casting.**
+  A retry after a timeout cannot tell "never arrived" from "succeeded and
+  the answer was lost" (verify can); a charge's body carries the card
+  authorization; and a field Paystack sent in another shape must reach the
+  amount check as absent, never as a guess.
+- **The price is fixed by the server before Paystack is called: every
+  line priced from the menu as it stands (`priceCart`), VAT on the
+  subtotal rounded to the kobo, the zone's fee from Settings, total =
+  subtotal + VAT + delivery (Q33: nothing for Paystack's charge), through
+  the bill's own `orderTotals`** (`src/ordering/cart-pricing.ts`). A price
+  from the browser is a price the customer chose. One function prices the
+  quote and the checkout, so they never disagree. A dish that is not
+  Available for Sale and Show Online is refused (the menu hides it, Q37);
+  a choice must be one of the dish's options; two lines of one dish and
+  option are one line, as on a bill.
+- **A drink the Bar holds fewer of than the cart asks is a warning
+  (`warnings`), never a refusal** (plan §7.4). The money comes first and
+  stock never blocks a paid order; Q11 seeds no Bar stock, so on staging
+  every drink warns until opening balances are entered.
+- **The checkout judges its timing with `ordering-times.ts`, the
+  functions `GET /ordering/slots` offers from (`judgeTiming`)**, so a
+  time offered is a time accepted: as soon as possible only while
+  `asapOpen`, a slot only today or tomorrow in Jos and only one of that
+  day's `orderSlots`. The words stored (`timingText`) are the website's,
+  with the lead read from Settings.
+- **`POST /checkouts` runs in two steps: the idempotent transaction writes
+  the `PENDING` checkout and draws no number; after it commits,
+  `startPayment` calls Paystack's initialize and stores the access code and
+  page on the row once (`accessCode IS NULL`).** A network call must not
+  hold a transaction (the pool is 3), and the stored response of an
+  Idempotency-Key cannot hold what happened after the commit, so a retry
+  with the same key reads the page from the row. Paystack unreachable is
+  503 and the checkout waits for the same key; Paystack refusing is 502 and
+  the checkout is `FAILED`, so the page starts a new one with a new key.
+  The order number is drawn only when the payment is confirmed (C7-3), so
+  an abandoned checkout burns no `CNCR`.
+- **A checkout lives 30 minutes (`CHECKOUT_TTL_MS`) before the checkouts
+  sweep (C7-5) asks Paystack about it.** Long enough for a bank's one-time
+  code and a second card; short enough that a timing chosen at checkout
+  still means something.
+- **`GET /checkouts/:reference` answers to the reference alone, and never
+  carries the phone, email, note or account**, `no-store`. The reference
+  is `cnc-order-<uuid>` (122 random bits, held to that shape by a CHECK),
+  so knowing it is the capability the confirmation page needs; the name,
+  address and timing are what that page shows.
+- **The webhook is `POST /payments/webhook` (plan §5.1, §8.6), TAY's
+  receiver: HMAC-SHA512 over the raw body under CNC's key with
+  `timingSafeEqual`, the `PaymentEvent` ledger keyed by the body's SHA-256
+  (a replay of the same bytes changes nothing), the work after the answer
+  with an in-flight drain (`WebhookDispatcherService.settled()` in
+  tests), and a 120-a-minute ceiling per address.** Paystack retries a
+  slow or non-2xx delivery, so the work cannot sit inside the request, and
+  a 429 is a retry too, so the limit is a ceiling, not a budget.
+- **Every `charge.success` is checked against Paystack's verify, always:
+  success, the checkout's own reference, exactly its total, `NGN`; and the
+  event's own amount and currency must agree too (`paymentMismatch`).** A
+  mismatch holds the checkout `NEEDS_ATTENTION` with the reason, creates
+  nothing else, and emails CNC's inbox (`checkout.needs-attention`, dedupe
+  `checkout:<id>:attention`). TAY's webhook trusts the event; a signed
+  event is still not proof of the amount a customer paid. Paystack's
+  verify unreachable throws, so the delivery stays unprocessed for the
+  payments sweep rather than being marked done.
+- **A confirmed payment settles the checkout with one conditional update
+  on its settleable states (`PENDING`, `EXPIRED`, `FAILED`); `PAID` and
+  `NEEDS_ATTENTION` are final for the webhook.** Two reports of one
+  payment (the webhook and the sweep, two instances) then settle it once,
+  and a late payment on an expired checkout is still money taken. C7-3's
+  order is created in the same transaction.
+- **The card is stored as its brand and last four only (`cardBrand`
+  "Visa", `cardLast4`), and the confirmation says "Visa ending 4081"**
+  (plan §8.5). Nothing else of the authorization is kept.
+- **A customer deleting their account (Q36) is refused while a checkout of
+  theirs is `PENDING` or `NEEDS_ATTENTION`, and their other checkouts lose
+  the name, phone, email, address lines and note** (a CHECK lets a phone
+  be empty for this). Money may yet arrive on a waiting one, for an order
+  nobody could then reach them about.
+- **A public route counted per address only uses `AddressThrottle(limit,
+  ttl)` (`src/auth/auth-throttle.ts`)**: the bookings, the enquiries, the
+  checkout (30 in fifteen minutes) and the webhook. One decorator names
+  the three counts once, so a new route cannot forget to skip one.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by

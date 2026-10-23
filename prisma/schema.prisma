@@ -205,6 +205,31 @@ enum Fulfilment {
   PICKUP
 }
 
+/// A web checkout's life (plan §4.4, C7): waiting for Paystack, paid,
+/// abandoned past its expiry, refused by Paystack before the customer saw
+/// a payment page, or held for a person because a signed payment did not
+/// match it (§7.4 step 3).
+enum CheckoutStatus {
+  PENDING
+  PAID
+  EXPIRED
+  FAILED
+  NEEDS_ATTENTION
+}
+
+/// When a web order is wanted: as soon as possible, or at a chosen slot.
+enum CheckoutTiming {
+  ASAP
+  SCHEDULED
+}
+
+/// Where a checkout was placed: the website (a guest), or the signed-in
+/// customer app.
+enum CheckoutSource {
+  WEB
+  APP
+}
+
 /// Where stock is held: the store counts packs, the kitchen and the bar
 /// count units (plan §7.6).
 enum StockLocation {
@@ -688,6 +713,7 @@ model Customer {
   auditEntries  AuditLog[]
   orders        Order[]
   reservations  Reservation[]
+  checkouts     Checkout[]
 }
 
 /// A one-time sign-in or email-change code (A15). The code is 6 digits and
@@ -1146,6 +1172,8 @@ model Order {
   dockets        Docket[]
   payments       Payment[]
   kitchenEntries KitchenEntry[]
+  /// The web checkout that paid for this order, for a web order (C7).
+  checkout       Checkout?
 
   @@index([businessDate, department])
   @@index([status, department])
@@ -1785,6 +1813,112 @@ model Enquiry {
 
   @@index([status, createdAt])
   @@index([ipHash, createdAt])
+}
+
+// ============================== ONLINE ORDERS (§4.4) =======================
+
+/// A web or app checkout (plan §4.4, §7.4; card C7-1): the cart priced by
+/// the server, the delivery or pickup details and the timing, fixed before
+/// Paystack is called. The order number is drawn only when the payment is
+/// confirmed (C7-3, `orderId`), so an abandoned checkout burns no `CNCR`.
+///
+/// `reference` is `cnc-order-<uuid>`, chosen here and sent to Paystack, so
+/// a webhook is matched to its row by it. `lines` is the priced snapshot:
+/// `[{ menuItemId, dishId, name, option, qty, unitPriceKobo, department }]`
+/// (`dishId` is the menu slug the cart named). The money columns are the
+/// quote (Q33: CNC absorbs Paystack's charge, so the total is subtotal +
+/// VAT + delivery), and a CHECK holds that sum. `vatBps` and the zone's fee
+/// are snapshotted from Settings.
+///
+/// The address is the structured one (`src/common/delivery-address.ts`),
+/// null for pickup. `contactPhone` is `0` plus 10 digits and
+/// `contactEmail` lower case; the receipt goes to it (Q31). `timingText`
+/// is the confirmation page's words for the timing; `scheduledFor` is the
+/// chosen slot as an instant, null for as soon as possible.
+///
+/// `accessCode` and `authorizationUrl` are what Paystack's initialize
+/// answered, written once after the checkout's own transaction commits.
+/// `paidAt`, `cardBrand` and `cardLast4` come from Paystack's verified
+/// transaction (never a card number, plan §8.5). `attentionReason` says
+/// why a signed payment was held (`NEEDS_ATTENTION`), for staff only.
+/// `ipHash` is the caller's hashed address (abuse review), never the
+/// address itself.
+///
+/// A customer deleting their account anonymises their checkouts (Q36).
+/// Never deleted: a checkout is the record of money asked for.
+model Checkout {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reference    String         @unique
+  customerId   String?
+  source       CheckoutSource
+  status       CheckoutStatus @default(PENDING)
+  expiresAt    DateTime
+
+  lines        Json
+  subtotalKobo Int
+  vatKobo      Int
+  deliveryKobo Int
+  totalKobo    Int
+  vatBps       Int
+
+  fulfilment      Fulfilment
+  zone            AddressZone?
+  addressStreet   String?
+  addressArea     String?
+  addressTown     String?
+  addressLandmark String?
+
+  contactName  String
+  contactPhone String
+  contactEmail String
+  note         String  @default("")
+  saveDetails  Boolean @default(false)
+
+  timing       CheckoutTiming
+  timingText   String
+  scheduledFor DateTime?
+
+  accessCode       String?
+  authorizationUrl String?
+  paidAt           DateTime?
+  cardBrand        String?
+  cardLast4        String?
+  attentionReason  String?
+  attentionAt      DateTime?
+
+  ipHash  String
+  orderId String? @unique
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  order    Order?    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([status, expiresAt])
+  @@index([customerId])
+  @@index([ipHash, createdAt])
+}
+
+/// TAY's webhook ledger (plan §4.4, §8.2): one row per Paystack delivery,
+/// keyed by `deliveryId`, the SHA-256 of the raw body, so a redelivery of
+/// the same bytes is recognised by the unique index and changes nothing.
+/// No payload is stored: a charge's body carries the card authorization.
+///
+/// `processedAt` is null until the work the delivery triggers has
+/// finished; an old row still null is a delivery acknowledged and not
+/// handled, which the payments sweep re-dispatches (C7-5).
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  deliveryId  String    @unique
+  event       String
+  reference   String?
+  processedAt DateTime?
+
+  @@index([processedAt, createdAt])
+  @@index([reference])
 }
 
 /// A stored response for an `Idempotency-Key` (A9).

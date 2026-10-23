@@ -50,6 +50,25 @@ export interface MailTemplateParams {
   'enquiry.contact': ContactEnquiryMailParams;
   /** A large-party callback request, to CNC's inbox (C6-7). */
   'enquiry.group': GroupEnquiryMailParams;
+  /**
+   * A signed Paystack payment that did not match its checkout, to CNC's
+   * inbox (plan §7.4 step 3, C7-2): no order was made, and a person must
+   * look before the customer is refunded or served.
+   */
+  'checkout.needs-attention': CheckoutAttentionMailParams;
+}
+
+/** A held checkout as CNC's inbox reads it: display text only. */
+export interface CheckoutAttentionMailParams {
+  /** `cnc-order-<uuid>`, what Paystack's dashboard shows. */
+  reference: string;
+  /** The checkout's total, formatted: "₦26,500.00". */
+  total: string;
+  /** Why it was held, in words. */
+  reason: string;
+  /** The customer's name and phone, to call them. */
+  name: string;
+  phone: string;
 }
 
 /** A contact-form enquiry as CNC's inbox reads it. */
@@ -421,6 +440,40 @@ const TEMPLATES: { [Name in MailTemplateName]: MailTemplate<Name> } = {
         `If this is a mistake, please call CNC on ${p.phone}.`,
       ].join('\n'),
     }),
+  },
+  'checkout.needs-attention': {
+    isParams: (value): value is CheckoutAttentionMailParams =>
+      isRecord(value) &&
+      nonEmptyStrings(value, ['reference', 'total', 'reason', 'name']) &&
+      typeof value.phone === 'string',
+    render: (p) => {
+      const rows: [string, string][] = [
+        ['Reference', p.reference],
+        ['Checkout total', p.total],
+        ['Why', p.reason],
+        ['Customer', p.name],
+        ['Phone', p.phone],
+      ];
+
+      return {
+        subject: `Online payment needs attention: ${p.reference}`,
+        html: [
+          '<p>A Paystack payment arrived that does not match its online ' +
+            'checkout, so no order was made. Check the payment in the ' +
+            'Paystack dashboard and call the customer before anything is ' +
+            'cooked or refunded.</p>',
+          detailsHtml(rows),
+        ].join(''),
+        text: [
+          'A Paystack payment arrived that does not match its online ' +
+            'checkout, so no order was made. Check the payment in the ' +
+            'Paystack dashboard and call the customer before anything is ' +
+            'cooked or refunded.',
+          '',
+          ...rows.map(([label, value]) => `${label}: ${value}`),
+        ].join('\n'),
+      };
+    },
   },
   'customer.email-change-code': {
     isParams: isCodeParams,

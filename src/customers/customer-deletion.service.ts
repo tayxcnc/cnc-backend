@@ -1,5 +1,6 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import {
+  CheckoutStatus,
   ContactChannel,
   ReservationSource,
   SubjectType,
@@ -95,8 +96,19 @@ export class CustomerDeletionService {
       const open = await tx.order.count({
         where: { customerId, status: { in: UNSETTLED_ORDER_STATUSES } },
       });
+      // A checkout still waiting for its payment, or a payment held for a
+      // person (C7): money may yet arrive, or has, for an order nobody
+      // could then reach the customer about.
+      const paying = await tx.checkout.count({
+        where: {
+          customerId,
+          status: {
+            in: [CheckoutStatus.PENDING, CheckoutStatus.NEEDS_ATTENTION],
+          },
+        },
+      });
 
-      if (upcoming > 0 || open > 0) {
+      if (upcoming > 0 || open > 0 || paying > 0) {
         throw new ConflictException(DELETE_WITH_UPCOMING_MESSAGE);
       }
 
@@ -138,6 +150,28 @@ export class CustomerDeletionService {
         data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
       });
 
+      const checkouts = await tx.checkout.findMany({
+        where: { customerId },
+        select: { id: true },
+      });
+
+      // Its checkouts keep their money and lines and lose the person: the
+      // name, phone, email, address lines and note (the zone stays, as the
+      // fee was charged for it).
+      await tx.checkout.updateMany({
+        where: { customerId },
+        data: {
+          contactName: DELETED_CUSTOMER_NAME,
+          contactPhone: '',
+          contactEmail: '',
+          addressStreet: null,
+          addressArea: null,
+          addressTown: null,
+          addressLandmark: null,
+          note: '',
+        },
+      });
+
       await tx.customerNotification.deleteMany({ where: { customerId } });
 
       // Every message to the account's address, and every message about its
@@ -150,7 +184,10 @@ export class CustomerDeletionService {
         {
           to: current.email,
           keys: codes.flatMap(({ id }) => [`otp:${id}`, `email-changed:${id}`]),
-          keyPrefixes: bookings.map(({ id }) => `reservation:${id}:`),
+          keyPrefixes: [
+            ...bookings.map(({ id }) => `reservation:${id}:`),
+            ...checkouts.map(({ id }) => `checkout:${id}:`),
+          ],
         },
         ACCOUNT_DELETED_REASON,
       );

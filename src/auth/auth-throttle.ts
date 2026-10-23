@@ -185,6 +185,27 @@ export function ProfileSaveThrottle(): MethodDecorator {
   );
 }
 
+/**
+ * A public route counted per client address only: `limit` requests in
+ * `ttl` milliseconds (fifteen minutes unless given), the other two counts
+ * skipped. The bookings, the enquiries, the checkout and Paystack's
+ * webhook each name their own number; one decorator keeps the three named
+ * counts listed once, so a new public route cannot forget to skip one and
+ * be counted under an account key it has no use for.
+ */
+export function AddressThrottle(
+  limit: number,
+  ttl: number = AUTH_ATTEMPT_WINDOW_MS,
+): MethodDecorator {
+  return applyDecorators(
+    Throttle({ [THROTTLERS.address]: { limit, ttl } }),
+    SkipThrottle({
+      [THROTTLERS.account]: true,
+      [THROTTLERS.accountAnywhere]: true,
+    }),
+  );
+}
+
 /** `POST /auth/staff/sign-in`. */
 export function SignInThrottle(): MethodDecorator {
   return applyDecorators(

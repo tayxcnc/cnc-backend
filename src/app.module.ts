@@ -22,6 +22,7 @@ import { MenuModule } from './menu/menu.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrderingModule } from './ordering/ordering.module';
 import { OrdersModule } from './orders/orders.module';
+import { PaymentsModule } from './payments/payments.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
@@ -74,6 +75,7 @@ import { WasteModule } from './waste/waste.module';
     CustomerNotificationsModule,
     EnquiriesModule,
     OrderingModule,
+    PaymentsModule,
     NotificationsModule,
     ShellModule,
     SweepsModule,
