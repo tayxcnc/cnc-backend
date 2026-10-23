@@ -2,7 +2,6 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import {
   CheckoutStatus,
   ContactChannel,
-  OnlineFulfilmentStatus,
   OrderChannel,
   ReservationSource,
   SubjectType,
@@ -12,6 +11,7 @@ import { watToday } from '../common/wat';
 import { PhotoStore } from '../images/photo-store.service';
 import { idempotencyScope } from '../idempotency/idempotency-scope';
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
+import { ACTIVE_ONLINE_STATUSES } from '../online-orders/online-order-rules';
 import { UNSETTLED_ORDER_STATUSES } from '../orders/order-rules';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { HOLDING_STATUSES } from '../reception/reservation-rules';
@@ -31,14 +31,6 @@ export const DELETE_WITH_UPCOMING_MESSAGE =
  * Reception and the till still see that a booking or a bill existed.
  */
 export const DELETED_CUSTOMER_NAME = 'Deleted customer';
-
-/** A paid web order not yet delivered, collected or cancelled (C7-3). */
-export const ACTIVE_ONLINE_STATUSES: OnlineFulfilmentStatus[] = [
-  OnlineFulfilmentStatus.RECEIVED,
-  OnlineFulfilmentStatus.PREPARING,
-  OnlineFulfilmentStatus.ON_THE_WAY,
-  OnlineFulfilmentStatus.READY,
-];
 
 /** `lastError` of a message given up because its account was deleted. */
 export const ACCOUNT_DELETED_REASON = 'The account was deleted.';

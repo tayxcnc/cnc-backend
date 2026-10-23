@@ -95,6 +95,8 @@ interface PricedCart {
   sums: CartSums;
   warnings: string[];
   settings: OrderingTimeSettings;
+  /** Both zones' fees as Settings holds them now, snapshotted (Q27). */
+  zoneFees: { deliveryJosKobo: number; deliveryOutsideKobo: number };
 }
 
 const TIMING_AND_MONEY = {
@@ -209,6 +211,8 @@ export class CheckoutsService {
         deliveryKobo: priced.sums.deliveryKobo,
         totalKobo: priced.sums.totalKobo,
         vatBps: priced.vatBps,
+        deliveryJosKobo: priced.zoneFees.deliveryJosKobo,
+        deliveryOutsideKobo: priced.zoneFees.deliveryOutsideKobo,
         fulfilment: request.fulfilment,
         zone,
         addressStreet: address?.street ?? null,
@@ -484,6 +488,10 @@ export class CheckoutsService {
       sums: cartSums(priced.lines, settings.vatBps, deliveryKobo),
       warnings: await this.shortDrinks(reader, priced.lines),
       settings,
+      zoneFees: {
+        deliveryJosKobo: settings.deliveryJosKobo,
+        deliveryOutsideKobo: settings.deliveryOutsideKobo,
+      },
     };
   }
 

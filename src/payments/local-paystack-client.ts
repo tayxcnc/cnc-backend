@@ -4,6 +4,8 @@ import {
   type InitializedTransaction,
   PAYSTACK_CURRENCY,
   type PaystackClient,
+  type QueuedRefund,
+  type RefundTransaction,
   type VerifiedTransaction,
 } from './paystack-client';
 
@@ -22,6 +24,7 @@ import {
 export class LocalPaystackClient implements PaystackClient {
   private readonly logger = new Logger(LocalPaystackClient.name);
   private readonly amounts = new Map<string, number>();
+  private refunds = 0;
 
   initialize(input: InitializeTransaction): Promise<InitializedTransaction> {
     this.amounts.set(input.reference, input.amountKobo);
@@ -33,6 +36,23 @@ export class LocalPaystackClient implements PaystackClient {
     return Promise.resolve({
       authorizationUrl: `https://checkout.paystack.invalid/${input.reference}`,
       accessCode: `local-${input.reference}`,
+    });
+  }
+
+  /**
+   * Remembers nothing and calls nobody: a local walk's refund is accepted
+   * with a made-up id, so the Online Orders screen can be walked end to end.
+   */
+  refund(input: RefundTransaction): Promise<QueuedRefund> {
+    this.refunds += 1;
+    this.logger.log(
+      `Local run: no Paystack call. ${input.amountKobo} kobo of ` +
+        `${input.transactionReference} would be refunded.`,
+    );
+
+    return Promise.resolve({
+      refundId: `local-refund-${this.refunds}`,
+      status: 'pending',
     });
   }
 

@@ -59,7 +59,9 @@ export const AUDIT_MODULES: readonly string[] = [
  * `reservation.change` is Reception's "Change booking", new with C4-7
  * (plan §16), labelled as its cancel sibling is. `online.paid` is a web
  * order written by its confirmed payment (C7-3), labelled with the demo's
- * own reason for its seeded web orders, "Paid online".
+ * own reason for its seeded web orders, "Paid online". `online.refund` is
+ * what Paystack answered to a card refund `online.balance` recorded
+ * (C7-4, Q26): sent, refused or unconfirmed.
  */
 const LABELS: Readonly<Record<string, string>> = {
   'order.create': 'Order Opened',
@@ -90,6 +92,7 @@ const LABELS: Readonly<Record<string, string>> = {
   'online.cancel': 'Order Cancelled',
   'online.zone': 'Delivery Zone Changed',
   'online.balance': 'Balance Recorded',
+  'online.refund': 'Card Refund',
   'request.create': 'Stock Requested',
   'request.issue': 'Stock Issued',
   'request.reject': 'Request Declined',

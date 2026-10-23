@@ -193,6 +193,8 @@ export class OnlineOrderPlacementService {
         addressText: delivery ? deliveryAddressText(checkout) : '',
         note: checkout.note,
         feeKobo: checkout.deliveryKobo,
+        deliveryJosKobo: checkout.deliveryJosKobo,
+        deliveryOutsideKobo: checkout.deliveryOutsideKobo,
         timingText: checkout.timingText,
         scheduledFor: checkout.scheduledFor,
         fulfilmentStatus: OnlineFulfilmentStatus.RECEIVED,

@@ -7,6 +7,8 @@ import {
   PAYSTACK_CURRENCY,
   type PaystackClient,
   PaystackRefusedError,
+  type QueuedRefund,
+  type RefundTransaction,
   type VerifiedTransaction,
 } from '../src/payments/paystack-client';
 
@@ -30,6 +32,9 @@ export class FakePaystackClient implements PaystackClient {
   readonly verifyAnswers = new Map<string, Partial<VerifiedTransaction>>();
   failNextInitializeWith: Error | null = null;
   failNextVerifyWith: Error | null = null;
+  failNextRefundWith: Error | null = null;
+  /** Every refund Paystack accepted, in order. */
+  readonly refunds: RefundTransaction[] = [];
   /** References the customer has paid on Paystack's page (`pay`). */
   readonly paid = new Set<string>();
 
@@ -63,6 +68,52 @@ export class FakePaystackClient implements PaystackClient {
     return Promise.resolve({
       authorizationUrl: `https://checkout.paystack.test/${input.reference}`,
       accessCode: `access-${input.reference}`,
+    });
+  }
+
+  /**
+   * A refund as Paystack's test mode takes one: recorded, queued with an
+   * id, and refused (as Paystack refuses) when it names a transaction that
+   * was never paid or would take back more than was paid.
+   * `failNextRefundWith` makes the next refund reject once instead.
+   */
+  refund(input: RefundTransaction): Promise<QueuedRefund> {
+    if (this.failNextRefundWith !== null) {
+      const error = this.failNextRefundWith;
+
+      this.failNextRefundWith = null;
+
+      return Promise.reject(error);
+    }
+
+    const sent = this.initialized.find(
+      (one) => one.reference === input.transactionReference,
+    );
+
+    if (sent === undefined || !this.paid.has(input.transactionReference)) {
+      return Promise.reject(
+        new PaystackRefusedError(400, 'Transaction not found'),
+      );
+    }
+
+    const refundedKobo = this.refunds
+      .filter((one) => one.transactionReference === input.transactionReference)
+      .reduce((sum, one) => sum + one.amountKobo, 0);
+
+    if (refundedKobo + input.amountKobo > sent.amountKobo) {
+      return Promise.reject(
+        new PaystackRefusedError(
+          400,
+          'Refund amount cannot be more than the unrefunded balance',
+        ),
+      );
+    }
+
+    this.refunds.push(input);
+
+    return Promise.resolve({
+      refundId: String(1000 + this.refunds.length),
+      status: 'pending',
     });
   }
 

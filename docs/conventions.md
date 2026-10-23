@@ -2765,6 +2765,122 @@ They are here so the first card that builds it starts from the rule.
   address, the contact as the checkout's, the number `WEB-` and 6+
   digits.**
 
+## Staff Online Orders *(from C7-4)*
+
+- **Every online command (`online.status`, `correctStatus`, `edit`,
+  `cancel`, `zone`, `balance`) claims the `OnlineOrder`'s `version` first
+  and then locks its bill (`FOR UPDATE`), in `OnlineOrdersService.claim`;
+  its audit row's `ref` is the bill's `CNCR-` number** (the demo's
+  `ref = w.orderRef`). One claim serialises every command on one order, so
+  two devices settling one balance end as one payment and one stale 409
+  (the e2e race asks Paystack once); the `CNCR-` ref puts the history
+  under a reader `OrdersModule` already registers for the Cashier.
+- **A paid web order is worth its bill's `orderTotals` total plus its
+  `feeKobo`, nothing once cancelled (`onlineTargetKobo`, the demo's
+  `target`); paid is the bill's non-reversed payments, refunds negative;
+  the balance is worth less paid.** One function, so the list, the
+  detail, the completion rule and `online.balance` agree to the kobo. The
+  fee stays its own line outside the bill (Q21).
+- **An order completes (Delivered or Collected) only at a balance of 0:
+  "Record the outstanding payment or refund before completing this
+  order."** The demo's rule. An edit, cancel or zone change that moves
+  the order's worth leaves an `OnlineAdjustment` (+ due, − refund owed);
+  `online.balance` settles every open one with its payment, and a change
+  that brings the balance back to 0 settles them with no payment, so
+  "open adjustments" and "balance ≠ 0" never disagree (plan §4.4: an
+  order cannot complete while one is open).
+- **The demo's one "Completed" is stored as `DELIVERED` for a delivery and
+  `COLLECTED` for a pickup, and a status of the other mode is refused**
+  ("Status does not match the delivery method." for a correction; the
+  next-stage sentence for the Cashier). D31: the customer's labels need
+  both words, and one stored value per stage keeps the two label maps
+  honest.
+- **Q8's default is enforced: `online.edit` and `online.cancel` refuse a
+  completed or cancelled order with the demo's "Select an active online
+  order."; there is no customer cancel.** The demo let a manager change a
+  completed order; Q8's default stops at Completed. `correctStatus` can
+  still reopen a completed order to an earlier stage, as the demo's test
+  does, and then it can be edited.
+- **`online.edit` takes Restaurant and Bar lines (D30), refused with "Choose
+  a Restaurant or Bar menu item." (the demo's sentence with the Bar
+  added); a dish already on the order keeps the name and price it was
+  paid at, a new one takes today's; a dish off sale may stay only if the
+  order holds it.** Plan §4.1: a price change applies to new lines only.
+  The duplicate check keys a line by dish and option (`LineRules.lineKey`),
+  as the demo's `positiveLines` does.
+- **Only the fields an edit sends change: a blank name or phone keeps the
+  one held (the demo's `c.name?.trim() || w.name`), and the note changes
+  only when sent.** The demo blanked the note and the address when the
+  form left them out; the address belongs to `online.zone` (Delivery
+  Details), whose structured address the checkout's sentences judge.
+- **An edit moves the drinks' Bar stock by the difference and a cancel
+  returns them all (`barDifference`), through `StockLedgerService.move`
+  with `allowNegative`: more served is `WEB_SALE`, fewer is the new
+  `WEB_SALE_RETURN`.** D30. The paid order took its drinks without
+  refusing (§7.4), so a correction of it must not be refused for stock
+  either; a separate return type keeps the Bar's history readable.
+- **An edit writes a new docket revision (Restaurant lines only) when the
+  food or the note changed; a cancel writes an empty cancellation
+  revision when the kitchen had food; a zone change between delivery and
+  pickup reprints the food with the new fulfilment.** The kitchen's paper
+  must match the order; a drinks-only change gives the kitchen nothing
+  to print.
+- **A cancelled web bill is `CANCELLED` with `settledAt` cleared and keeps
+  its lines; the money owed back is the balance, returned by
+  `online.balance`.** `Order_settled_check` ties `settledAt` to `SETTLED`.
+  The lines are the record of what was cancelled; the demo emptied them.
+- **Q27: a zone change prices the new mode from the fees the order
+  snapshotted at checkout (`Checkout` and `OnlineOrder`
+  `deliveryJosKobo`/`deliveryOutsideKobo`), never from Settings now, and
+  only before dispatch (Received or Preparing).** "Recompute from the
+  fees snapshotted on the order": the order snapshotted only its own
+  zone's fee before C7-4, so both are now copied at checkout. A fee the
+  Owner changes later never reaches a paid order.
+- **Edit, cancel and zone are checked by `withinLimit` on the difference
+  they make (`LIMITED_DECISIONS.onlineChange`) and counted toward the
+  day; `online.balance` is checked on the balance it records
+  (`paymentCorrection`) and counted too.** The demo counts both (plan
+  §6.2: edit, cancel, balance: L, D; zone per Q27's "under the limits").
+  So a refund decided by an edit and paid by a balance counts twice
+  toward one manager's day, as in the demo; the Owner is never counted.
+- **`online.balance` records the whole balance in one payment, as the
+  demo does: extra money due is `CASH` or `TRANSFER` only (Q34); a refund
+  is `CASH`, `TRANSFER` or `PAYSTACK` (Q26), and a card refund is never
+  more than the card's `ONLINE` money not yet refunded.** Q34's default
+  has no payment link and the demo's Card is not offered (Q34 names Cash
+  or Transfer). Paystack refunds a transaction only up to its amount, and
+  cash taken later cannot go back to a card.
+- **A card refund is recorded in the idempotent transaction (a negative
+  `ONLINE` payment and a `PENDING` `OnlineRefund`, the limits and ledger
+  included) and sent to Paystack after it commits, by the one request
+  that moves it `PENDING` → `SENDING` (`OnlineRefundsService.send`).**
+  A network call must not hold a transaction (the pool is 3), and the
+  conditional claim makes a retry of the same key replay the record
+  without sending twice.
+- **Paystack refused is `REFUSED` (502): the refund's payment is reversed
+  and its adjustments open again, so the refund is owed once more and a
+  manager records it as Cash or Transfer. No answer is `UNCONFIRMED`
+  (503): the payment stays recorded and nothing resends it.** A refusal
+  means no money moved; a lost answer may mean Paystack queued it, and a
+  second send could pay the customer twice. A 5xx or a malformed success
+  from Paystack's refund API counts as no answer, never as a refusal. The
+  ledger row of a refused refund stays (append-only).
+- **CNC absorbs Paystack's fee on a refund (Q26): the refund is exactly
+  the money owed, nothing added or taken off.** Q26's default.
+- **A card refund needs CNC's Paystack key: with none, `PAYSTACK` is 503
+  "Card refunds are not available just now. Record the refund as Cash or
+  Transfer." before anything is recorded.** Without a key the HTTP client
+  cannot send it, and a refund recorded and never sent would read as
+  unconfirmed money.
+- **The Paystack client lives in `PaystackClientModule`, which
+  `PaymentsModule` re-exports and `OnlineOrdersModule` imports.**
+  `PaymentsModule` imports `OnlineOrdersModule` for the web order a
+  payment writes, so the refunds could not import `PaymentsModule` back.
+- **Online Orders' list tab travels as `ACTIVE` or `HISTORY`** (plan
+  §5.4 writes `tab=active|history`; *Contract conventions*: enums travel
+  `UPPER_SNAKE`). Active is `ACTIVE_ONLINE_STATUSES`, which account
+  deletion (Q36) shares from `online-order-rules.ts`.
+
 ## CORS
 
 - **The allowlist is exact and comes only from `CNC_CORS_ORIGINS`**, read by

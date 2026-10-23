@@ -82,8 +82,39 @@ export class PaystackRefusedError extends Error {
   }
 }
 
-/** The calls CNC makes. Neither is retried by the client (TAY's rule). */
+/**
+ * What `refund` sends (C7-4, Q26): money back to the card of one paid
+ * transaction. Kobo, never multiplied. CNC absorbs Paystack's fee (Q26):
+ * the customer gets `amountKobo` back and nothing is taken off it.
+ */
+export interface RefundTransaction {
+  /** The paid transaction's reference: the checkout's `cnc-order-<uuid>`. */
+  transactionReference: string;
+  amountKobo: number;
+  /** Read by a person in Paystack's dashboard; never matched on. */
+  merchantNote?: string;
+}
+
+/** What Paystack answered to `refund`: it has queued the refund. */
+export interface QueuedRefund {
+  /** Paystack's refund id, as text. */
+  refundId: string;
+  /** Paystack's word for the refund now: `pending`, `processing`, `processed`. */
+  status: string;
+}
+
+/**
+ * The calls CNC makes. None is retried by the client (TAY's rule): a
+ * retried refund after a timeout could send the money twice.
+ */
 export interface PaystackClient {
   initialize(input: InitializeTransaction): Promise<InitializedTransaction>;
   verify(reference: string): Promise<VerifiedTransaction>;
+  /**
+   * Ask Paystack to refund part or all of a paid transaction. Throws
+   * `PaystackRefusedError` when Paystack answered no (nothing was
+   * refunded) and `PaystackUnavailableError` when the answer did not
+   * arrive or could not be read (the refund may or may not exist).
+   */
+  refund(input: RefundTransaction): Promise<QueuedRefund>;
 }

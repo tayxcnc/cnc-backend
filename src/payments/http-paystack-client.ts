@@ -5,9 +5,11 @@ import {
   type PaystackClient,
   PaystackRefusedError,
   PaystackUnavailableError,
+  type QueuedRefund,
+  type RefundTransaction,
   type VerifiedTransaction,
 } from './paystack-client';
-import { asRecord, stringAt } from './payload-readers';
+import { asRecord, integerAt, stringAt } from './payload-readers';
 import { readTransaction } from './paystack-transaction';
 
 /** Paystack's API root. */
@@ -77,6 +79,51 @@ export class HttpPaystackClient implements PaystackClient {
     }
 
     return transaction;
+  }
+
+  /**
+   * Paystack's refund API (`POST /refund`, C7-4): new, TAY never refunds
+   * through Paystack. Paystack answered no (a 4xx, or `status: false`) is
+   * `PaystackRefusedError`: nothing was refunded. Every answer that leaves
+   * the outcome unknown (no answer, a 5xx, a success without the refund's
+   * id) is `PaystackUnavailableError`, never a refusal: a refusal lets a
+   * manager record the money another way, and a refund Paystack did queue
+   * would then go out twice.
+   */
+  async refund(input: RefundTransaction): Promise<QueuedRefund> {
+    let answer: unknown;
+
+    try {
+      answer = await this.request('POST', '/refund', {
+        transaction: input.transactionReference,
+        // Already kobo, as on initialize.
+        amount: input.amountKobo,
+        currency: 'NGN',
+        merchant_note: input.merchantNote,
+      });
+    } catch (error) {
+      if (
+        error instanceof PaystackRefusedError &&
+        error.providerStatus >= 500
+      ) {
+        throw new PaystackUnavailableError();
+      }
+
+      throw error;
+    }
+
+    const data = asRecord(answer);
+    const id = data && (integerAt(data, 'id') ?? stringAt(data, 'id'));
+    const status = data && stringAt(data, 'status');
+
+    if (id === undefined || status === undefined) {
+      this.logger.error(
+        'Paystack refund answered without the refund’s id or status.',
+      );
+      throw new PaystackUnavailableError();
+    }
+
+    return { refundId: String(id), status };
   }
 
   /**
