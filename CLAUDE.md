@@ -65,6 +65,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Bookings, arrival rules and Q30, the table lock, seatings, the floor, the Free Table Reminder, Q35 | Reception: bookings, table sessions and the floor |
 | `POST /reservations` (guest or customer), the customer link both ways, `/me/reservations`, the 24-hour rule (Q6), booking emails, the booking throttle | Bookings from the website and the app |
 | `POST /ordering/quote`, `POST /checkouts`, `GET /checkouts/:reference`, the Paystack client and its fakes, the webhook, verify and the amount check, `NEEDS_ATTENTION`, `AddressThrottle` | Online checkout and Paystack |
+| The web order a payment writes, its numbers, docket, Bar sale and customer, the confirmation read's recheck, the checkouts and payments sweeps, the fake's `pay` | Paid web orders and the payment sweeps |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -139,7 +140,12 @@ src/
   payments/          CNC's Paystack account: the PaystackClient interface and
                      its HTTP and local bindings, POST /payments/webhook, the
                      PaymentEvent ledger, the dispatcher, CheckoutPaymentsService
-                     (verify, the amount check, PAID or NEEDS_ATTENTION)
+                     (verify, the amount check, PAID or NEEDS_ATTENTION, the
+                     recheck), the checkouts and payments sweeps
+                     (PaymentSweepsService)
+  online-orders/     the web order a confirmed payment writes
+                     (OnlineOrderPlacementService: order, lines, food docket,
+                     ONLINE payment, OnlineOrder, Bar WEB_SALE), its rules
   mail/              the outbound queue (OutboundMessagesService, its retry
                      backoff), templates, the CNC mail frame, MessageSeal, the
                      Resend and recording transports
@@ -224,7 +230,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      the limits; c6-gate: the C6 gate walk, the backend
                      half of steps 1 to 8; checkouts: the quote, the
                      checkout, the confirmation read and the signed fake
-                     webhooks),
+                     webhooks; online-orders: the order a payment writes,
+                     the races, the checkouts and payments sweeps),
+                     paystack-webhooks.ts,
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,

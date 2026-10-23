@@ -19,7 +19,11 @@ import {
 } from '../../generated/cnc-client';
 import type { CustomerPrincipal } from '../auth/customer-principal';
 import { hashClientAddress } from '../common/client-address';
-import { toDeliveryAddress } from '../common/delivery-address';
+import {
+  type StoredAddressLines,
+  deliveryAddressText,
+  toDeliveryAddress,
+} from '../common/delivery-address';
 import { CncConfigService } from '../config/cnc.config';
 import { customerPhone } from '../customers/profile-rules';
 import {
@@ -31,6 +35,8 @@ import {
   PAYMENT_PROVIDER_UNREACHABLE_MESSAGE,
   PAYMENT_START_FAILED_MESSAGE,
 } from '../payments/payment-messages';
+import { SETTLEABLE_CHECKOUT_STATUSES } from '../payments/checkout-payment-rules';
+import { CheckoutPaymentsService } from '../payments/checkout-payments.service';
 import { cardText } from '../payments/paystack-transaction';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { OpeningHoursService } from '../settings/opening-hours.service';
@@ -41,6 +47,7 @@ import {
   type PricingMenuItem,
   cartSlugs,
   cartSums,
+  parseCheckoutLines,
   priceCart,
 } from './cart-pricing';
 import {
@@ -112,40 +119,6 @@ function lineResponse(line: PricedLine): PricedLineResponse {
   };
 }
 
-/** `Checkout.lines` read back, checked rather than cast. */
-function storedLines(value: Prisma.JsonValue): PricedLine[] {
-  if (!Array.isArray(value)) return [];
-
-  return value.flatMap((entry) => {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      return [];
-    }
-
-    const line = entry as Record<string, unknown>;
-
-    return typeof line.menuItemId === 'string' &&
-      typeof line.dishId === 'string' &&
-      typeof line.name === 'string' &&
-      typeof line.option === 'string' &&
-      typeof line.qty === 'number' &&
-      typeof line.unitPriceKobo === 'number' &&
-      (line.department === Department.RESTAURANT ||
-        line.department === Department.BAR)
-      ? [
-          {
-            menuItemId: line.menuItemId,
-            dishId: line.dishId,
-            name: line.name,
-            option: line.option,
-            qty: line.qty,
-            unitPriceKobo: line.unitPriceKobo,
-            department: line.department,
-          },
-        ]
-      : [];
-  });
-}
-
 /**
  * The web checkout (plan §5.1, §7.4 steps 1 and 2; card C7-1):
  *
@@ -168,6 +141,7 @@ export class CheckoutsService {
     private readonly hours: OpeningHoursService,
     private readonly config: CncConfigService,
     @Inject(PAYSTACK_CLIENT) private readonly paystack: PaystackClient,
+    private readonly payments: CheckoutPaymentsService,
   ) {}
 
   /** `POST /ordering/quote`. */
@@ -350,8 +324,36 @@ export class CheckoutsService {
     };
   }
 
-  /** `GET /checkouts/:reference`. */
+  /**
+   * `GET /checkouts/:reference`. A checkout whose payment page was opened
+   * and is not yet settled is first rechecked with Paystack's verify
+   * (C7-3): the customer lands here from Paystack, often before the
+   * webhook, and a confirmed payment then writes the order now, once,
+   * whichever of the two comes first. Verify failing never fails the
+   * read: the stored state is answered and the webhook or the sweeps
+   * settle it later.
+   */
   async read(reference: string): Promise<CheckoutStatusResponse> {
+    const waiting = await this.prisma.checkout.findUnique({
+      where: { reference },
+      select: { id: true, status: true, accessCode: true },
+    });
+
+    if (
+      waiting !== null &&
+      waiting.accessCode !== null &&
+      SETTLEABLE_CHECKOUT_STATUSES.includes(waiting.status)
+    ) {
+      try {
+        await this.payments.recheck(reference);
+      } catch (error) {
+        this.logger.warn(
+          `Rechecking checkout ${waiting.id} on its confirmation read ` +
+            `failed: ${error instanceof Error ? error.name : 'unknown'}.`,
+        );
+      }
+    }
+
     const checkout = await this.prisma.checkout.findUnique({
       where: { reference },
       select: {
@@ -399,7 +401,7 @@ export class CheckoutsService {
       address: await this.addressText(checkout),
       timing: checkout.timingText,
       scheduledFor: checkout.scheduledFor?.toISOString() ?? null,
-      lines: storedLines(checkout.lines).map(lineResponse),
+      lines: parseCheckoutLines(checkout.lines).map(lineResponse),
       sums: {
         subtotalKobo: checkout.subtotalKobo,
         vatKobo: checkout.vatKobo,
@@ -416,13 +418,9 @@ export class CheckoutsService {
    * address from the business details with ", Nigeria", as the site
    * appends it.
    */
-  private async addressText(checkout: {
-    fulfilment: Fulfilment;
-    addressStreet: string | null;
-    addressArea: string | null;
-    addressTown: string | null;
-    addressLandmark: string | null;
-  }): Promise<string> {
+  private async addressText(
+    checkout: StoredAddressLines & { fulfilment: Fulfilment },
+  ): Promise<string> {
     if (checkout.fulfilment === Fulfilment.PICKUP) {
       const business = await this.prisma.business.findUnique({
         where: { singleton: true },
@@ -434,14 +432,7 @@ export class CheckoutsService {
         : `Pickup at CNC, ${business.addressLine}, Nigeria`;
     }
 
-    return [
-      checkout.addressStreet,
-      checkout.addressArea,
-      checkout.addressTown,
-      checkout.addressLandmark && `Landmark: ${checkout.addressLandmark}`,
-    ]
-      .filter((part): part is string => typeof part === 'string' && part !== '')
-      .join(', ');
+    return deliveryAddressText(checkout);
   }
 
   /**

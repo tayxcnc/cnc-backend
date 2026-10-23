@@ -2,10 +2,12 @@ import { Module } from '@nestjs/common';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { CncConfigService } from '../config/cnc.config';
 import { MailModule } from '../mail/mail.module';
+import { OnlineOrdersModule } from '../online-orders/online-orders.module';
 import { CheckoutPaymentsService } from './checkout-payments.service';
 import { HttpPaystackClient } from './http-paystack-client';
 import { LocalPaystackClient } from './local-paystack-client';
 import { PaymentEventService } from './payment-event.service';
+import { PaymentSweepsService } from './payment-sweeps.service';
 import { PAYSTACK_CLIENT, type PaystackClient } from './paystack-client';
 import { PaymentsController } from './payments.controller';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
@@ -32,7 +34,7 @@ export function paystackClientFor(
  * imports this one for the client.
  */
 @Module({
-  imports: [MailModule],
+  imports: [MailModule, OnlineOrdersModule],
   controllers: [PaymentsController],
   providers: [
     {
@@ -43,6 +45,7 @@ export function paystackClientFor(
     PaymentEventService,
     CheckoutPaymentsService,
     WebhookDispatcherService,
+    PaymentSweepsService,
     ClientAddressThrottlerGuard,
   ],
   exports: [
@@ -50,6 +53,7 @@ export function paystackClientFor(
     CheckoutPaymentsService,
     PaymentEventService,
     WebhookDispatcherService,
+    PaymentSweepsService,
   ],
 })
 export class PaymentsModule {}

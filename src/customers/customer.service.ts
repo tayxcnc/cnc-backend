@@ -4,7 +4,11 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ContactChannel, type Prisma } from '../../generated/cnc-client';
+import {
+  type AddressZone,
+  ContactChannel,
+  type Prisma,
+} from '../../generated/cnc-client';
 import { ACCOUNT_GONE_MESSAGE } from '../auth/guards/cnc-staff.guard';
 import { toDeliveryAddress } from '../common/delivery-address';
 import { WELCOME_NOTIFICATION } from '../customer-notifications/customer-notification-texts';
@@ -172,6 +176,79 @@ export class CustomerService {
     await linkBookingsToVerifiedEmail(tx, created.id, email);
 
     return { id: created.id, isNew: true };
+  }
+
+  /**
+   * The customer a paid guest checkout ticked "Save my details" for (plan
+   * §7.4 step 4, §5.2), inside the payment's transaction: the live customer
+   * already holding the checkout's email, or a new one made from the
+   * checkout's details. **No session is created and the email is not marked
+   * verified** (A15): the account opens only when someone proves the email
+   * with a code, and `findOrCreateVerified` then finds this row.
+   *
+   * Under `lockEmail`, as every writer that gives an email to a customer
+   * is. An existing customer's details are never overwritten by a guest's
+   * form. The phone is saved only when no other customer holds it (it is
+   * unique, and unproved). The member number is drawn only for a new row.
+   */
+  async findOrCreateFromCheckout(
+    tx: Tx,
+    details: {
+      email: string;
+      name: string;
+      phone: string;
+      address: {
+        zone: AddressZone | null;
+        street: string | null;
+        area: string | null;
+        town: string | null;
+        landmark: string | null;
+      } | null;
+    },
+  ): Promise<string> {
+    await this.lockEmail(tx, details.email);
+
+    // A deleted account keeps no email (Q36), so a match is a live one.
+    const existing = await tx.customer.findUnique({
+      where: { email: details.email },
+      select: { id: true },
+    });
+
+    if (existing !== null) return existing.id;
+
+    const phoneTaken =
+      details.phone === ''
+        ? true
+        : (await tx.customer.count({ where: { phone: details.phone } })) > 0;
+
+    const created = await tx.customer.create({
+      data: {
+        memberNo: await drawNumber(tx, 'customer'),
+        name: details.name,
+        email: details.email,
+        phone: phoneTaken ? null : details.phone,
+        prefChannel: ContactChannel.EMAIL,
+        ...(details.address === null
+          ? {}
+          : {
+              addressZone: details.address.zone,
+              addressStreet: details.address.street,
+              addressArea: details.address.area,
+              addressTown: details.address.town,
+              addressLandmark: details.address.landmark,
+            }),
+      },
+      select: { id: true },
+    });
+
+    await this.notifications.record(
+      tx,
+      created.id,
+      WELCOME_NOTIFICATION,
+      `customer:${created.id}:welcome`,
+    );
+
+    return created.id;
   }
 
   /** The customer's profile. 401 when the row is gone or deleted. */

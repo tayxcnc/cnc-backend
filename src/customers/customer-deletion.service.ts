@@ -2,6 +2,8 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import {
   CheckoutStatus,
   ContactChannel,
+  OnlineFulfilmentStatus,
+  OrderChannel,
   ReservationSource,
   SubjectType,
 } from '../../generated/cnc-client';
@@ -29,6 +31,14 @@ export const DELETE_WITH_UPCOMING_MESSAGE =
  * Reception and the till still see that a booking or a bill existed.
  */
 export const DELETED_CUSTOMER_NAME = 'Deleted customer';
+
+/** A paid web order not yet delivered, collected or cancelled (C7-3). */
+export const ACTIVE_ONLINE_STATUSES: OnlineFulfilmentStatus[] = [
+  OnlineFulfilmentStatus.RECEIVED,
+  OnlineFulfilmentStatus.PREPARING,
+  OnlineFulfilmentStatus.ON_THE_WAY,
+  OnlineFulfilmentStatus.READY,
+];
 
 /** `lastError` of a message given up because its account was deleted. */
 export const ACCOUNT_DELETED_REASON = 'The account was deleted.';
@@ -108,7 +118,16 @@ export class CustomerDeletionService {
         },
       });
 
-      if (upcoming > 0 || open > 0 || paying > 0) {
+      // A paid web order still being prepared or on its way (C7-3): the
+      // kitchen and the rider still need the name, phone and address.
+      const fulfilling = await tx.onlineOrder.count({
+        where: {
+          customerId,
+          fulfilmentStatus: { in: ACTIVE_ONLINE_STATUSES },
+        },
+      });
+
+      if (upcoming > 0 || open > 0 || paying > 0 || fulfilling > 0) {
         throw new ConflictException(DELETE_WITH_UPCOMING_MESSAGE);
       }
 
@@ -170,6 +189,28 @@ export class CustomerDeletionService {
           addressLandmark: null,
           note: '',
         },
+      });
+
+      // Its web orders keep their money, lines and mode and lose the
+      // person, as its checkouts do; the bill's delivery note goes too.
+      await tx.onlineOrder.updateMany({
+        where: { customerId },
+        data: {
+          contactName: DELETED_CUSTOMER_NAME,
+          contactPhone: '',
+          contactEmail: '',
+          addressStreet: null,
+          addressArea: null,
+          addressTown: null,
+          addressLandmark: null,
+          addressText: '',
+          note: '',
+          version: { increment: 1 },
+        },
+      });
+      await tx.order.updateMany({
+        where: { customerId, channel: OrderChannel.WEB, notes: { not: '' } },
+        data: { notes: '', version: { increment: 1 } },
       });
 
       await tx.customerNotification.deleteMany({ where: { customerId } });

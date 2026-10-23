@@ -8,9 +8,11 @@ import {
   SETTLEABLE_CHECKOUT_STATUSES,
   paymentMismatch,
 } from './checkout-payment-rules';
+import { OnlineOrderPlacementService } from '../online-orders/online-order-placement.service';
 import {
   PAYSTACK_CLIENT,
   type PaystackClient,
+  PaystackRefusedError,
   type VerifiedTransaction,
 } from './paystack-client';
 import { cardBrandName } from './paystack-transaction';
@@ -27,7 +29,9 @@ export type ConfirmOutcome =
   /** The checkout is now paid. */
   | 'paid'
   /** The payment did not match: held for a person, no order. */
-  | 'needs-attention';
+  | 'needs-attention'
+  /** A recheck found nothing paid yet: nothing changed. */
+  | 'unpaid';
 
 /**
  * A Paystack payment against a web checkout (plan §7.4 step 3, card
@@ -43,14 +47,18 @@ export type ConfirmOutcome =
  *    reference with exactly the total in `NGN`, and the event's own amount
  *    and currency the same.
  * 4. A match settles the checkout `PAID` with Paystack's paid time and the
- *    card's brand and last four. A mismatch holds it `NEEDS_ATTENTION`
+ *    card's brand and last four, and in the same transaction writes the
+ *    web order (`OnlineOrderPlacementService`, C7-3). A mismatch holds it `NEEDS_ATTENTION`
  *    with the reason, creates nothing else, and emails CNC's inbox
  *    (`CNC_CONTACT_EMAIL`); the managers' bell item is C7-7's read.
  *
- * Each write is one conditional update on the checkout's settleable states,
- * so two reports of one payment racing (the webhook and the sweep, two
- * instances) settle it once: the loser updates nothing and answers
- * `unchanged`.
+ * A settle locks the checkout's row (`FOR UPDATE`) and proceeds only while
+ * it is still settleable; a hold is one conditional update on the same
+ * states. So two reports of one payment racing (the webhook, the
+ * confirmation read, a sweep, two instances) settle it once: the loser
+ * waits on the row, finds it paid or held and answers `unchanged`. The
+ * unique `Payment.providerRef`, `OnlineOrder.checkoutId` and
+ * `Checkout.orderId` refuse a second order even if that check were lost.
  */
 @Injectable()
 export class CheckoutPaymentsService {
@@ -61,17 +69,39 @@ export class CheckoutPaymentsService {
     @Inject(PAYSTACK_CLIENT) private readonly paystack: PaystackClient,
     private readonly outbound: OutboundMessagesService,
     private readonly config: CncConfigService,
+    private readonly placement: OnlineOrderPlacementService,
   ) {}
 
   /**
-   * Confirm the payment for `reference`. `event` is the webhook's own
-   * transaction (`charge.success`'s `data`), or undefined for a re-verify
-   * that has none.
+   * Confirm a payment Paystack has **reported** for `reference`: a signed
+   * `charge.success` (`event` is its own transaction, `data`), or one the
+   * payments sweep re-dispatches with no body (`event` undefined). A
+   * reported payment that verify does not confirm is held.
    */
   async confirm(
     reference: string,
     event: VerifiedTransaction | undefined,
   ): Promise<ConfirmOutcome> {
+    return this.settle(reference, { reported: true, event });
+  }
+
+  /**
+   * Ask Paystack whether a checkout nobody has reported paid has been
+   * (C7-3, C7-5): the confirmation read while the customer waits on it,
+   * and the checkouts sweep for a checkout past its expiry. Verify not
+   * answering `success` (abandoned, ongoing, failed, or a reference
+   * Paystack never saw) is `unpaid` and changes nothing; a success is
+   * settled or held exactly as a webhook's. Paystack unreachable throws.
+   */
+  async recheck(reference: string): Promise<ConfirmOutcome> {
+    return this.settle(reference, { reported: false, event: undefined });
+  }
+
+  private async settle(
+    reference: string,
+    report: { reported: boolean; event: VerifiedTransaction | undefined },
+  ): Promise<ConfirmOutcome> {
+    const { event } = report;
     const checkout = await this.prisma.checkout.findUnique({
       where: { reference },
       select: { id: true, status: true, totalKobo: true },
@@ -88,7 +118,22 @@ export class CheckoutPaymentsService {
       return 'unchanged';
     }
 
-    const verified = await this.paystack.verify(reference);
+    let verified: VerifiedTransaction;
+
+    try {
+      verified = await this.paystack.verify(reference);
+    } catch (error) {
+      // A reference Paystack refuses to look up was never paid; only a
+      // reported payment is held for that, below, by the mismatch check.
+      if (!report.reported && error instanceof PaystackRefusedError) {
+        return 'unpaid';
+      }
+
+      throw error;
+    }
+
+    if (!report.reported && verified.status !== 'success') return 'unpaid';
+
     const problem = paymentMismatch(
       { reference, totalKobo: checkout.totalKobo },
       event,
@@ -97,30 +142,57 @@ export class CheckoutPaymentsService {
 
     if (problem !== null) return this.hold(checkout.id, problem);
 
-    const paid = await this.prisma.$transaction(async (tx) => {
-      const { count } = await tx.checkout.updateMany({
-        where: {
-          id: checkout.id,
-          status: { in: SETTLEABLE_CHECKOUT_STATUSES },
-        },
+    const cardBrand =
+      verified.card === undefined ? null : cardBrandName(verified.card.type);
+    const cardLast4 = verified.card?.last4 ?? null;
+
+    const placed = await this.prisma.$transaction(async (tx) => {
+      // The row lock decides who settles: a second report racing this one
+      // waits here, then reads the checkout this one committed as paid.
+      const [locked] = await tx.$queryRaw<{ status: CheckoutStatus }[]>`
+        SELECT "status" FROM "Checkout" WHERE "id" = ${checkout.id} FOR UPDATE`;
+
+      if (
+        locked === undefined ||
+        !SETTLEABLE_CHECKOUT_STATUSES.includes(locked.status)
+      ) {
+        return null;
+      }
+
+      // C7-3: the order, the online order, the payment, the docket and the
+      // Bar movements, in this transaction, so the money and the order
+      // commit together or not at all.
+      const order = await this.placement.place(tx, checkout.id, {
+        cardBrand,
+        cardLast4,
+      });
+
+      // Paid and its order in one update (`Checkout_order_check`).
+      await tx.checkout.update({
+        where: { id: checkout.id },
         data: {
           status: CheckoutStatus.PAID,
           paidAt: verified.paidAt ?? new Date(),
-          cardBrand:
-            verified.card === undefined
-              ? null
-              : cardBrandName(verified.card.type),
-          cardLast4: verified.card?.last4 ?? null,
+          cardBrand,
+          cardLast4,
+          orderId: order.orderId,
+          ...(order.customerId === null
+            ? {}
+            : { customerId: order.customerId }),
         },
       });
 
-      // C7-3 creates the order, the online order, the payment, the docket
-      // and the Bar stock movements here, in this transaction, so the money
-      // and the order commit together or not at all.
-      return count === 1;
+      return order;
     });
 
-    return paid ? 'paid' : 'unchanged';
+    if (placed === null) return 'unchanged';
+
+    this.logger.log(
+      `Checkout ${checkout.id} paid: order ${placed.orderNumber}, ` +
+        `${placed.onlineNumber}.`,
+    );
+
+    return 'paid';
   }
 
   /** Hold the checkout for a person, and tell CNC's inbox. */

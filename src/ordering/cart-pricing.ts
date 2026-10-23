@@ -192,3 +192,45 @@ export function cartSums(
     totalKobo: bill.totalKobo + deliveryKobo,
   };
 }
+
+function isPricedLine(value: unknown): value is PricedLine {
+  if (!isRecord(value)) return false;
+
+  return (
+    typeof value.menuItemId === 'string' &&
+    typeof value.dishId === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.option === 'string' &&
+    typeof value.qty === 'number' &&
+    Number.isInteger(value.qty) &&
+    typeof value.unitPriceKobo === 'number' &&
+    Number.isInteger(value.unitPriceKobo) &&
+    (value.department === Department.RESTAURANT ||
+      value.department === Department.BAR)
+  );
+}
+
+/**
+ * `Checkout.lines` read back from `jsonb`, checked rather than cast, as
+ * `parseDocketItems` reads a docket. The confirmation page and the order
+ * a payment creates (C7-3) both read it here: a row in a shape this
+ * service did not write fails loudly instead of creating an order with a
+ * dish missing from what the customer paid for.
+ */
+export function parseCheckoutLines(value: unknown): PricedLine[] {
+  if (!Array.isArray(value) || !value.every(isPricedLine)) {
+    throw new Error(
+      'A checkout holds lines in a shape this service cannot read.',
+    );
+  }
+
+  return value.map((line) => ({
+    menuItemId: line.menuItemId,
+    dishId: line.dishId,
+    name: line.name,
+    option: line.option,
+    qty: line.qty,
+    unitPriceKobo: line.unitPriceKobo,
+    department: line.department,
+  }));
+}

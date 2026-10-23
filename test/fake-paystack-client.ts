@@ -18,9 +18,10 @@ import {
  *
  * `initialize` records what would have been sent, above all the amount,
  * because "kobo, never multiplied" is only shown by the integer that
- * reaches this boundary. `verify` answers a recorded transaction as paid
- * by a test Visa ending 4081 for the amount initialized, unless a test has
- * set `verifyAnswers` for the reference (a wrong amount, a failed status).
+ * reaches this boundary. `verify` answers a recorded transaction the test
+ * has `pay`-ed as paid by a test Visa ending 4081 for the amount
+ * initialized, one not paid as `abandoned`, unless a test has set
+ * `verifyAnswers` for the reference (a wrong amount, a failed status).
  * `failNextInitializeWith` makes the next initialize reject once.
  */
 export class FakePaystackClient implements PaystackClient {
@@ -29,6 +30,17 @@ export class FakePaystackClient implements PaystackClient {
   readonly verifyAnswers = new Map<string, Partial<VerifiedTransaction>>();
   failNextInitializeWith: Error | null = null;
   failNextVerifyWith: Error | null = null;
+  /** References the customer has paid on Paystack's page (`pay`). */
+  readonly paid = new Set<string>();
+
+  /**
+   * The customer pays on Paystack's page: from now on verify answers the
+   * transaction `success`. Until then an initialized transaction verifies
+   * as `abandoned`, as Paystack's does, so a recheck finds it unpaid.
+   */
+  pay(reference: string): void {
+    this.paid.add(reference);
+  }
 
   initialize(input: InitializeTransaction): Promise<InitializedTransaction> {
     if (this.failNextInitializeWith !== null) {
@@ -76,14 +88,25 @@ export class FakePaystackClient implements PaystackClient {
             paidAt: undefined,
             card: undefined,
           }
-        : {
-            status: 'success',
-            reference,
-            amountKobo: sent.amountKobo,
-            currency: PAYSTACK_CURRENCY,
-            paidAt: new Date(),
-            card: { type: 'visa ', last4: '4081' },
-          };
+        : !this.paid.has(reference)
+          ? {
+              // Opened and not paid: what Paystack answers while the
+              // customer is still on its page, or left it.
+              status: 'abandoned',
+              reference,
+              amountKobo: sent.amountKobo,
+              currency: PAYSTACK_CURRENCY,
+              paidAt: undefined,
+              card: undefined,
+            }
+          : {
+              status: 'success',
+              reference,
+              amountKobo: sent.amountKobo,
+              currency: PAYSTACK_CURRENCY,
+              paidAt: new Date(),
+              card: { type: 'visa ', last4: '4081' },
+            };
 
     return Promise.resolve({ ...base, ...this.verifyAnswers.get(reference) });
   }

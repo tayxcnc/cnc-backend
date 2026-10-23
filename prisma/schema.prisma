@@ -230,6 +230,29 @@ enum CheckoutSource {
   APP
 }
 
+/// How a paid web order leaves CNC (plan §4.4): the staff app's "Pickup",
+/// "Within Jos" and "Outside Jos". Delivery within Jos is the checkout's
+/// `JOS` zone, outside Jos its `PLATEAU` zone.
+enum OnlineOrderMode {
+  PICKUP
+  WITHIN_JOS
+  OUTSIDE_JOS
+}
+
+/// A paid web order's progress (plan §4.4, D31). The staff and customer
+/// labels are both mapped from this one value: Received (Paid), Preparing,
+/// On the way (Out for Delivery), Ready (for pickup), Delivered or
+/// Collected (Completed), Cancelled.
+enum OnlineFulfilmentStatus {
+  RECEIVED
+  PREPARING
+  ON_THE_WAY
+  READY
+  DELIVERED
+  COLLECTED
+  CANCELLED
+}
+
 /// Where stock is held: the store counts packs, the kitchen and the bar
 /// count units (plan §7.6).
 enum StockLocation {
@@ -714,6 +737,7 @@ model Customer {
   orders        Order[]
   reservations  Reservation[]
   checkouts     Checkout[]
+  onlineOrders  OnlineOrder[]
 }
 
 /// A one-time sign-in or email-change code (A15). The code is 6 digits and
@@ -1174,6 +1198,8 @@ model Order {
   kitchenEntries KitchenEntry[]
   /// The web checkout that paid for this order, for a web order (C7).
   checkout       Checkout?
+  /// The fulfilment record of a web order (C7-3).
+  onlineOrder    OnlineOrder?
 
   @@index([businessDate, department])
   @@index([status, department])
@@ -1892,12 +1918,64 @@ model Checkout {
   ipHash  String
   orderId String? @unique
 
-  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  order    Order?    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  order       Order?       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  onlineOrder OnlineOrder?
 
   @@index([status, expiresAt])
   @@index([customerId])
   @@index([ipHash, createdAt])
+}
+
+/// A paid web order's fulfilment record (plan §4.4, §7.4 step 4; card
+/// C7-3): `WEB-000001`, written with its `Order` (channel `WEB`, settled),
+/// the `ONLINE` payment, the food docket and the Bar movements in the one
+/// transaction that marks its checkout `PAID`. The number is drawn only
+/// then, so an abandoned checkout burns none.
+///
+/// The contact, address, note, fee and timing are snapshots of the
+/// checkout, which Online Orders' commands (C7-4) may change; the checkout
+/// keeps what the customer paid for. `addressText` is the address as one
+/// line for the screens and the docket, `""` for pickup. `feeKobo` is the
+/// delivery fee, a separate line from the bill (Q21). `paystackReference`
+/// is the checkout's reference, unique. A customer deleting their account
+/// (Q36) blanks the contact, address and note. Never deleted.
+model OnlineOrder {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number     String  @unique
+  orderId    String  @unique
+  checkoutId String  @unique
+  customerId String?
+
+  contactName  String
+  contactPhone String
+  contactEmail String
+
+  mode            OnlineOrderMode
+  addressStreet   String?
+  addressArea     String?
+  addressTown     String?
+  addressLandmark String?
+  addressText     String          @default("")
+  note            String          @default("")
+  feeKobo         Int
+  timingText      String
+  scheduledFor    DateTime?
+
+  fulfilmentStatus  OnlineFulfilmentStatus @default(RECEIVED)
+  paystackReference String                 @unique
+
+  version Int @default(0)
+
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  checkout Checkout  @relation(fields: [checkoutId], references: [id], onDelete: Restrict)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([fulfilmentStatus, createdAt])
+  @@index([customerId])
 }
 
 /// TAY's webhook ledger (plan §4.4, §8.2): one row per Paystack delivery,

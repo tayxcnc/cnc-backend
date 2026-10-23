@@ -111,3 +111,29 @@ export function toDeliveryAddress(value: unknown): DeliveryAddress {
     landmark: line(value, 'landmark'),
   };
 }
+
+/** Stored address lines, any of which a deleted account has cleared (Q36). */
+export interface StoredAddressLines {
+  addressStreet: string | null;
+  addressArea: string | null;
+  addressTown: string | null;
+  addressLandmark: string | null;
+}
+
+/**
+ * A delivery address as one line, as the website's done screen writes it
+ * (`addressText`): the street, area and town, then "Landmark: …", empty
+ * parts left out. The confirmation page (C7-1) and the online order's
+ * display text (C7-3) both write it here, so the customer and the rider
+ * read one address the same way.
+ */
+export function deliveryAddressText(address: StoredAddressLines): string {
+  return [
+    address.addressStreet,
+    address.addressArea,
+    address.addressTown,
+    address.addressLandmark && `Landmark: ${address.addressLandmark}`,
+  ]
+    .filter((part): part is string => typeof part === 'string' && part !== '')
+    .join(', ');
+}

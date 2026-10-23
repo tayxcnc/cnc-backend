@@ -46,7 +46,6 @@ import {
   PaystackUnavailableError,
 } from '../src/payments/paystack-client';
 import { WebhookDispatcherService } from '../src/payments/webhook-dispatcher.service';
-import { signPaystackBody } from '../src/payments/webhook-signature';
 import { drawNumber } from '../src/prisma/sequences';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp, sentMail } from './create-test-app';
@@ -56,6 +55,7 @@ import {
   createIsolatedDatabase,
   type IsolatedDatabase,
 } from './isolated-database';
+import { chargeSuccessBody, postSignedWebhook } from './paystack-webhooks';
 
 interface CreatedBody {
   reference: string;
@@ -191,34 +191,10 @@ describe('checkouts and the Paystack webhook (e2e)', () => {
       .send(body);
 
   /** Post a webhook body signed as Paystack signs it. */
-  const webhook = (body: unknown, key = PAYSTACK_KEY) => {
-    const raw = JSON.stringify(body);
+  const webhook = (body: unknown, key = PAYSTACK_KEY) =>
+    postSignedWebhook(app, body, key);
 
-    return request(server())
-      .post('/api/v1/payments/webhook')
-      .set('Content-Type', 'application/json')
-      .set('x-paystack-signature', signPaystackBody(raw, key))
-      .send(raw);
-  };
-
-  const chargeSuccess = (
-    reference: string,
-    amount: number,
-    over: Record<string, unknown> = {},
-  ) => ({
-    event: 'charge.success',
-    data: {
-      id: Math.floor(Math.random() * 1e9),
-      status: 'success',
-      reference,
-      amount,
-      currency: 'NGN',
-      paid_at: new Date().toISOString(),
-      channel: 'card',
-      authorization: { card_type: 'visa ', last4: '4081', bin: '408408' },
-      ...over,
-    },
-  });
+  const chargeSuccess = chargeSuccessBody;
 
   const created = async (body = checkoutBody()) =>
     (await checkout(body).expect(201)).body as CreatedBody;

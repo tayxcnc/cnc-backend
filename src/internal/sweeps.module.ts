@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MailModule } from '../mail/mail.module';
+import { PaymentsModule } from '../payments/payments.module';
 import { ReceptionModule } from '../reception/reception.module';
 import { SweepsController } from './sweeps.controller';
 import { SweepTokenGuard } from './sweep-token.guard';
@@ -14,8 +15,9 @@ import { TokensSweepService } from './tokens-sweep.service';
  */
 @Module({
   // The messages sweep's work is the outbound queue's (`MailModule`); the
-  // reminders sweep's is Reception's (`ReservationRemindersService`).
-  imports: [MailModule, ReceptionModule],
+  // reminders sweep's is Reception's (`ReservationRemindersService`); the
+  // checkouts and payments sweeps' are Payments' (`PaymentSweepsService`).
+  imports: [MailModule, ReceptionModule, PaymentsModule],
   controllers: [SweepsController],
   providers: [SweepTokenGuard, TokensSweepService],
 })

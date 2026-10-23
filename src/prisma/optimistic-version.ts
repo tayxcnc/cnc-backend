@@ -28,6 +28,7 @@ export const VERSIONED_TABLES = [
   'Staff',
   'StockItem',
   'Order',
+  'OnlineOrder',
   'KitchenEntry',
   'Reservation',
   'TableSession',

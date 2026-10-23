@@ -2654,12 +2654,17 @@ They are here so the first card that builds it starts from the rule.
   event is still not proof of the amount a customer paid. Paystack's
   verify unreachable throws, so the delivery stays unprocessed for the
   payments sweep rather than being marked done.
-- **A confirmed payment settles the checkout with one conditional update
-  on its settleable states (`PENDING`, `EXPIRED`, `FAILED`); `PAID` and
-  `NEEDS_ATTENTION` are final for the webhook.** Two reports of one
-  payment (the webhook and the sweep, two instances) then settle it once,
-  and a late payment on an expired checkout is still money taken. C7-3's
-  order is created in the same transaction.
+- **A confirmed payment settles the checkout only from its settleable
+  states (`PENDING`, `EXPIRED`, `FAILED`); `PAID` and `NEEDS_ATTENTION`
+  are final for the webhook.** A late payment on an expired checkout is
+  still money taken. *From C7-3 this replaces "one conditional update":*
+  the settle locks the checkout's row (`SELECT … FOR UPDATE`), re-reads
+  its status under the lock, writes the order, and then sets `PAID` and
+  `orderId` in one update, because `Checkout_order_check` holds `PAID`
+  and an order together and Postgres cannot defer a CHECK. Two reports of
+  one payment (the webhook, the confirmation read, a sweep, two
+  instances) then settle it once: the loser waits on the lock and finds
+  it paid.
 - **The card is stored as its brand and last four only (`cardBrand`
   "Visa", `cardLast4`), and the confirmation says "Visa ending 4081"**
   (plan §8.5). Nothing else of the authorization is kept.
@@ -2672,6 +2677,93 @@ They are here so the first card that builds it starts from the rule.
   ttl)` (`src/auth/auth-throttle.ts`)**: the bookings, the enquiries, the
   checkout (30 in fifteen minutes) and the webhook. One decorator names
   the three counts once, so a new route cannot forget to skip one.
+
+## Paid web orders and the payment sweeps *(from C7-3, C7-5)*
+
+- **A paid web order is written by `OnlineOrderPlacementService.place`
+  (`src/online-orders/`), only inside the settle transaction of
+  `CheckoutPaymentsService`, with its audit row (`online.paid`, actor
+  `SYSTEM` "Online checkout", reason "Paid online", ref the order
+  number)** (plan §7.4 step 4). The order, its lines, the food docket, the
+  `ONLINE` payment, the `OnlineOrder` and the Bar movements commit with the
+  checkout's `PAID` or not at all; a paid checkout with no order would be
+  money nobody cooks for.
+- **The numbers (`CNCR-`, `WEB-`, `PAY-`) are drawn inside that
+  transaction and nowhere earlier**, so an abandoned or expired checkout
+  burns none (the C7 gate's step 5, checked against
+  `order_restaurant_no_seq` in `test/online-orders.e2e-spec.ts`).
+- **A web order is one `CNCR-` order, channel `WEB`, `SETTLED`, its lines
+  carrying their own department (D29, D30), the checkout's VAT rate and no
+  service charge; its `label` is the `WEB-` number and its `guest` the
+  contact name.** The till's history tags `channel === 'WEB'` "Online"
+  (`staff/components/cnc/pos.tsx`), and the reversal already refuses a
+  non-POS bill.
+- **The payment is the checkout's whole total (delivery included), the
+  bill's `orderTotals` excludes the fee, and the fee is the online order's
+  own `feeKobo`** (Q21: a separate line; Q33: nothing added for Paystack).
+  The demo's `paid === totals(bill).total + fee` completion rule (C7-4)
+  reads them that way.
+- **The docket is revision 1 of the Restaurant lines only, written through
+  `DocketsService.write` with the fulfilment, the scheduled time and the
+  customer's note ("Note for the kitchen or rider"); a cart of drinks
+  alone gets no docket and revision 0.** Drinks never go to the kitchen
+  (§7.4), so the crosscheck never says "Mapping required" for them.
+- **The drinks leave the Bar as `WEB_SALE` movements through
+  `StockLedgerService.move` with `allowNegative`, one per paired stock
+  item by the sum of its lines, in stock id order (`webSalePlan`); a drink
+  with no paired stock item moves nothing and is logged as an error, never
+  refused.** The money is taken (§7.4), so stock cannot block a paid order;
+  the till refuses the same gap at settle because it can still say no.
+- **Business dates and `settledAt` of a web order are the moment the
+  payment is confirmed (Lagos), not Paystack's `paid_at`, which is kept on
+  the checkout.** A payment confirmed after midnight would otherwise put a
+  docket on a kitchen day already closed.
+- **The order's customer is the signed-in one who placed it while live;
+  else a verified customer by the checkout's email or phone, as a guest
+  booking links (Q35); else, with "Save my details", the customer found or
+  made by the email through `CustomerService.findOrCreateFromCheckout`,
+  unverified, with no session (A15).** An existing account's details are
+  never overwritten by a guest's form, and an unproved phone is saved only
+  when no customer holds it. Signing in later with a code verifies that
+  row, so the order is already in the account.
+- **`GET /checkouts/:reference` rechecks a checkout whose payment page was
+  opened and is still settleable (`CheckoutPaymentsService.recheck`), and
+  never fails for it.** The customer lands there from Paystack, often
+  before the webhook; whichever comes first writes the order. A recheck
+  answers `unpaid` and changes nothing when verify does not say `success`
+  (or Paystack does not know the reference); a reported payment
+  (`confirm`, the webhook and the payments sweep) that verify does not
+  confirm is held instead.
+- **`FakePaystackClient` verifies a transaction `abandoned` until the
+  test `pay`s it; `postSignedWebhook` (`test/paystack-webhooks.ts`) pays
+  before a `charge.success`.** Paystack sends that event only for a paid
+  transaction, and a fake that answered every initialized reference as paid
+  would let the confirmation read and the sweeps settle checkouts nobody
+  paid.
+- **The checkouts sweep (`POST /internal/sweeps/checkouts`,
+  `PaymentSweepsService.sweepCheckouts`) rechecks `PENDING` checkouts past
+  `expiresAt`, 50 a run, oldest first: paid ones get their order, wrongly
+  paid ones are held, unpaid ones become `EXPIRED` by a conditional update
+  on `PENDING`, and Paystack unreachable leaves them for the next run.** A
+  checkout is never expired without asking Paystack, because a lost
+  webhook must not turn money taken into an expired checkout.
+- **The payments sweep (`POST /internal/sweeps/payments`,
+  `sweepPayments`) re-dispatches `PaymentEvent` rows unprocessed for five
+  minutes (`UNPROCESSED_EVENT_AGE_MS`), 50 a run, by event and reference,
+  through `WebhookDispatcherService.dispatch`.** No body is stored, so a
+  `charge.success` is judged by verify alone, still as a reported payment.
+  Five minutes, so a dispatch still in flight after its answer finishes
+  first.
+- **A deleted account (Q36) is refused while one of its online orders is
+  `RECEIVED`, `PREPARING`, `ON_THE_WAY` or `READY`
+  (`ACTIVE_ONLINE_STATUSES`); its other online orders lose the contact,
+  address lines, display address and note, and its web bills their
+  notes.** The kitchen and the rider still need a live order's details.
+  The docket keeps its note: a docket revision is never changed.
+- **`Checkout_order_check`: a checkout is `PAID` exactly when it has an
+  order. `OnlineOrder` CHECKs: a fee never negative, pickup with no
+  address, the contact as the checkout's, the number `WEB-` and 6+
+  digits.**
 
 ## CORS
 
@@ -2823,6 +2915,11 @@ They are here so the first card that builds it starts from the rule.
   | `cnc-staging-sweep-tokens` | `0 3 * * *` | `tokens` | C3-9 (exists) | housekeeping; nothing reads expired rows |
   | `cnc-staging-sweep-messages` | `*/5 * * * *` | `messages` | C6-8 | a sign-in code lives 10 minutes, so a queued one must go within minutes; the backoff (5, then 30) is counted in these runs |
   | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
+  | `cnc-staging-sweep-checkouts` | `*/10 * * * *` | `checkouts` | C7-5 | plan §5.5; a checkout lives 30 minutes, so an abandoned one is expired, or a paid one whose webhook was lost gets its order, within 40 |
+  | `cnc-staging-sweep-payments` | `*/15 * * * *` | `payments` | C7-5 | plan §5.5; a delivery is handled within seconds, so one still unprocessed after 5 minutes failed, and 15 bounds how long a paid order can wait on a verify outage |
+
+  The two C7 jobs are created after the C7 deploy is live, as the C6 ones
+  were.
 
   Create the two C6 jobs **after the C6 deploy is live** (the rule
   above), each with `gcloud scheduler jobs create http <job> --location
