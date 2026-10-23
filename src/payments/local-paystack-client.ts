@@ -4,6 +4,7 @@ import {
   type InitializedTransaction,
   PAYSTACK_CURRENCY,
   type PaystackClient,
+  PaystackRefusedError,
   type QueuedRefund,
   type RefundTransaction,
   type VerifiedTransaction,
@@ -19,7 +20,8 @@ import {
  * `verify` answers a transaction it initialized as paid by a test Visa
  * ending 4081, with that amount, so a local walk completes a checkout by
  * signing a fake `charge.success` with the local key. A reference it never
- * initialized is `abandoned`. Memory only: a restart forgets.
+ * initialized is refused (400), as Paystack refuses one. Memory only: a
+ * restart forgets.
  */
 export class LocalPaystackClient implements PaystackClient {
   private readonly logger = new Logger(LocalPaystackClient.name);
@@ -59,24 +61,20 @@ export class LocalPaystackClient implements PaystackClient {
   verify(reference: string): Promise<VerifiedTransaction> {
     const amountKobo = this.amounts.get(reference);
 
-    return Promise.resolve(
-      amountKobo === undefined
-        ? {
-            status: 'abandoned',
-            reference,
-            amountKobo: undefined,
-            currency: undefined,
-            paidAt: undefined,
-            card: undefined,
-          }
-        : {
-            status: 'success',
-            reference,
-            amountKobo,
-            currency: PAYSTACK_CURRENCY,
-            paidAt: new Date(),
-            card: { type: 'visa', last4: '4081' },
-          },
-    );
+    if (amountKobo === undefined) {
+      // Paystack's answer for a reference it never initialized.
+      return Promise.reject(
+        new PaystackRefusedError(400, 'Transaction reference not found'),
+      );
+    }
+
+    return Promise.resolve({
+      status: 'success',
+      reference,
+      amountKobo,
+      currency: PAYSTACK_CURRENCY,
+      paidAt: new Date(),
+      card: { type: 'visa', last4: '4081' },
+    });
   }
 }

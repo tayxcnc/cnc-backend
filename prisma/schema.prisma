@@ -208,13 +208,15 @@ enum Fulfilment {
 /// A web checkout's life (plan §4.4, C7): waiting for Paystack, paid,
 /// abandoned past its expiry, refused by Paystack before the customer saw
 /// a payment page, or held for a person because a signed payment did not
-/// match it (§7.4 step 3).
+/// match it (§7.4 step 3), and a held one a manager has since dealt with
+/// in Paystack's dashboard (`RESOLVED`, final).
 enum CheckoutStatus {
   PENDING
   PAID
   EXPIRED
   FAILED
   NEEDS_ATTENTION
+  RESOLVED
 }
 
 /// When a web order is wanted: as soon as possible, or at a chosen slot.
@@ -1942,6 +1944,12 @@ model Checkout {
   cardLast4        String?
   attentionReason  String?
   attentionAt      DateTime?
+  /// When a manager resolved the held checkout (`RESOLVED`); who and why
+  /// are in its audit row.
+  resolvedAt       DateTime?
+  /// When the confirmation read last asked Paystack about it: at most one
+  /// recheck per checkout every few seconds.
+  recheckedAt      DateTime?
 
   ipHash  String
   orderId String? @unique

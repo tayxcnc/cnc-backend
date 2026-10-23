@@ -31,6 +31,7 @@ import {
   PAYSTACK_CLIENT,
   type PaystackClient,
   PaystackUnavailableError,
+  paystackNeverSawIt,
 } from '../payments/paystack-client';
 import {
   PAYMENT_PROVIDER_UNREACHABLE_MESSAGE,
@@ -79,6 +80,22 @@ type Reader = Pick<
  * enough that a timing chosen at checkout still means something.
  */
 export const CHECKOUT_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * The least time between two confirmation-read rechecks of one checkout:
+ * each is a verify on CNC's merchant key, and a page polling it, or a
+ * script looping on a reference, must not spend Paystack's rate limit,
+ * which the webhook's own verifies need.
+ */
+export const RECHECK_INTERVAL_MS = 5 * 1000;
+
+/**
+ * How long after its expiry an expired or failed checkout is still
+ * rechecked on its confirmation read: a day. A late payment (a bank
+ * transfer still settling) lands within it; after it, the webhook and the
+ * payments sweep remain, and the read stops calling Paystack for good.
+ */
+export const RECHECK_AFTER_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 /** The prefix of every reference CNC sends Paystack. */
 export const CHECKOUT_REFERENCE_PREFIX = 'cnc-order-';
@@ -250,9 +267,10 @@ export class CheckoutsService {
    * Otherwise Paystack's initialize with the checkout's reference, its
    * email and **exactly its total in kobo**, and the page stored only if
    * no other request stored one first. Paystack unreachable: 503, the
-   * checkout waits and the same key tries again. Paystack refusing (a bad
-   * email, a reference it has seen): 502, and the checkout is closed
-   * `FAILED`, so the page asks for a new checkout.
+   * checkout waits and the same key tries again. Paystack refusing is
+   * judged by `afterRefusedStart`: a reference it already holds keeps the
+   * checkout waiting; one it never saw (a bad email) is closed `FAILED`
+   * (502), so the page asks for a new checkout.
    */
   async startPayment(
     reference: string,
@@ -300,14 +318,7 @@ export class CheckoutsService {
         );
       }
 
-      this.logger.error(
-        `Paystack refused to start checkout ${checkout.id}; closed as failed.`,
-      );
-      await this.prisma.checkout.updateMany({
-        where: { id: checkout.id, status: CheckoutStatus.PENDING },
-        data: { status: CheckoutStatus.FAILED },
-      });
-      throw new BadGatewayException(PAYMENT_START_FAILED_MESSAGE);
+      return this.afterRefusedStart(checkout.id, reference);
     }
 
     await this.prisma.checkout.updateMany({
@@ -330,24 +341,95 @@ export class CheckoutsService {
   }
 
   /**
+   * Paystack refused to initialize the checkout's reference. A refusal
+   * also comes for a reference Paystack already holds: a same-key retry
+   * after an initialize whose answer was lost, or a second request racing
+   * the first. So verify is asked before anything is closed:
+   *
+   * - another request stored the page meanwhile: that page;
+   * - Paystack knows the reference: the checkout stays `PENDING` (503, the
+   *   same key tries again; the checkouts sweep settles or expires it);
+   * - Paystack has never seen it (its definite "not found"): a real
+   *   refusal (a bad email), so the checkout is `FAILED` (502, a new one);
+   * - verify unreachable or unclear: 503 and nothing changes.
+   */
+  private async afterRefusedStart(
+    checkoutId: string,
+    reference: string,
+  ): Promise<{ accessCode: string; authorizationUrl: string }> {
+    let known: boolean;
+
+    try {
+      await this.paystack.verify(reference);
+      known = true;
+    } catch (error) {
+      if (!paystackNeverSawIt(error)) {
+        throw new ServiceUnavailableException(
+          PAYMENT_PROVIDER_UNREACHABLE_MESSAGE,
+        );
+      }
+
+      known = false;
+    }
+
+    if (known) {
+      const stored = await this.prisma.checkout.findUniqueOrThrow({
+        where: { id: checkoutId },
+        select: { accessCode: true, authorizationUrl: true },
+      });
+
+      if (stored.accessCode !== null && stored.authorizationUrl !== null) {
+        return {
+          accessCode: stored.accessCode,
+          authorizationUrl: stored.authorizationUrl,
+        };
+      }
+
+      this.logger.warn(
+        `Paystack already holds checkout ${checkoutId} with no page stored; ` +
+          'left pending for a retry and the sweep.',
+      );
+      throw new ServiceUnavailableException(
+        PAYMENT_PROVIDER_UNREACHABLE_MESSAGE,
+      );
+    }
+
+    this.logger.error(
+      `Paystack refused to start checkout ${checkoutId}; closed as failed.`,
+    );
+    await this.prisma.checkout.updateMany({
+      where: { id: checkoutId, status: CheckoutStatus.PENDING },
+      data: { status: CheckoutStatus.FAILED },
+    });
+    throw new BadGatewayException(PAYMENT_START_FAILED_MESSAGE);
+  }
+
+  /**
    * `GET /checkouts/:reference`. A checkout whose payment page was opened
    * and is not yet settled is first rechecked with Paystack's verify
    * (C7-3): the customer lands here from Paystack, often before the
    * webhook, and a confirmed payment then writes the order now, once,
    * whichever of the two comes first. Verify failing never fails the
    * read: the stored state is answered and the webhook or the sweeps
-   * settle it later.
+   * settle it later. At most one recheck per checkout every
+   * `RECHECK_INTERVAL_MS` (`claimRecheck`), and an expired or failed one
+   * only for `RECHECK_AFTER_EXPIRY_MS` after its expiry.
    */
   async read(reference: string): Promise<CheckoutStatusResponse> {
+    const now = new Date();
     const waiting = await this.prisma.checkout.findUnique({
       where: { reference },
-      select: { id: true, status: true, accessCode: true },
+      select: { id: true, status: true, accessCode: true, expiresAt: true },
     });
 
     if (
       waiting !== null &&
       waiting.accessCode !== null &&
-      SETTLEABLE_CHECKOUT_STATUSES.includes(waiting.status)
+      SETTLEABLE_CHECKOUT_STATUSES.includes(waiting.status) &&
+      (waiting.status === CheckoutStatus.PENDING ||
+        waiting.expiresAt.getTime() >
+          now.getTime() - RECHECK_AFTER_EXPIRY_MS) &&
+      (await this.claimRecheck(waiting.id, now))
     ) {
       try {
         await this.payments.recheck(reference);
@@ -415,6 +497,30 @@ export class CheckoutsService {
       },
       card: cardText(checkout.cardBrand, checkout.cardLast4),
     };
+  }
+
+  /**
+   * Take this checkout's turn to ask Paystack: one conditional update, so
+   * across every request and instance at most one recheck per checkout
+   * runs in `RECHECK_INTERVAL_MS`, however often the page is polled.
+   */
+  private async claimRecheck(checkoutId: string, now: Date): Promise<boolean> {
+    const { count } = await this.prisma.checkout.updateMany({
+      where: {
+        id: checkoutId,
+        OR: [
+          { recheckedAt: null },
+          {
+            recheckedAt: {
+              lte: new Date(now.getTime() - RECHECK_INTERVAL_MS),
+            },
+          },
+        ],
+      },
+      data: { recheckedAt: now },
+    });
+
+    return count === 1;
   }
 
   /**

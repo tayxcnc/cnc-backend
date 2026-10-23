@@ -52,6 +52,17 @@ import {
 export const CHECKOUT_ADDRESS_LIMIT = 30;
 
 /**
+ * Confirmation reads per client address in a minute, in memory (A18).
+ * A read may recheck with Paystack, so a script cycling through many
+ * references must stop somewhere; five a second is far above a page
+ * polling every few seconds, even for many guests on the venue's Wi-Fi.
+ */
+export const CHECKOUT_READ_ADDRESS_LIMIT = 300;
+
+/** The window of `CHECKOUT_READ_ADDRESS_LIMIT`. */
+export const CHECKOUT_READ_WINDOW_MS = 60 * 1000;
+
+/**
  * The web and app checkout (plan §5.1, §7.4; card C7-1). No sign-in is
  * needed; with a customer token the checkout is the app's and the
  * customer's. Checkout never creates a session (A15).
@@ -156,6 +167,8 @@ export class CheckoutsController {
   }
 
   @Get(':reference')
+  @UseGuards(ClientAddressThrottlerGuard)
+  @AddressThrottle(CHECKOUT_READ_ADDRESS_LIMIT, CHECKOUT_READ_WINDOW_MS)
   @Header('Cache-Control', 'no-store')
   @ApiParam({ name: 'reference', description: 'Checkout.reference.' })
   @ApiOperation({
@@ -172,6 +185,11 @@ export class CheckoutsController {
   @ApiResponse({
     status: 404,
     description: '"We could not find that order."',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse({
+    status: 429,
+    description: 'More than 300 reads a minute from one address.',
     type: ApiErrorResponse,
   })
   read(@Param('reference') reference: string): Promise<CheckoutStatusResponse> {

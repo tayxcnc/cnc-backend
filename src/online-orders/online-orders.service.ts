@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CheckoutStatus,
   Department,
   OnlineFulfilmentStatus,
   OnlineOrderMode,
@@ -47,8 +48,11 @@ import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
 import { StockLedgerService } from '../stock/stock-ledger.service';
 import {
+  type HeldCheckoutResolveRequest,
   OnlineBalanceMethod,
   type OnlineBalanceRequest,
+  OnlineRefundOutcome,
+  type OnlineRefundResolveRequest,
   type OnlineCancelRequest,
   type OnlineCorrectStatusRequest,
   type OnlineEditRequest,
@@ -67,29 +71,41 @@ import type {
 import {
   BALANCE_TRANSFER_MESSAGE,
   CARD_REFUND_LIMIT_MESSAGE,
+  CHECKOUT_NOT_HELD_MESSAGE,
   DELIVERY_ADDRESS_MESSAGE,
   EXTRA_MONEY_METHOD_MESSAGE,
+  HELD_CHECKOUT_NOT_FOUND_MESSAGE,
   NO_ADJUSTMENT_MESSAGE,
   ONLINE_ORDER_CLOSED_MESSAGE,
   ONLINE_ORDER_NOT_FOUND_MESSAGE,
   OUTSTANDING_BALANCE_MESSAGE,
+  REFUND_ID_MESSAGE,
+  REFUND_NOT_FOUND_MESSAGE,
+  REFUND_NOT_UNCONFIRMED_MESSAGE,
   SELECT_ACTIVE_ONLINE_ORDER_MESSAGE,
   SELECT_ONLINE_ORDER_MESSAGE,
   ZONE_BEFORE_DISPATCH_MESSAGE,
 } from './online-order-messages';
 import { OnlineOrderMail } from './online-order-mail';
 import {
+  OnlineRefundsService,
+  REFUND_SENDING_STUCK_MS,
+} from './online-refunds.service';
+import {
   ACTIVE_ONLINE_STATUSES,
   barDifference,
   type BarLine,
   correctStatusProblem,
   editLineProblem,
+  heldToTaken,
   isClosed,
   isCompleted,
   modeFulfilment,
   modeZone,
   nextStageProblem,
   onlineTargetKobo,
+  recordedBalanceKobo,
+  webDocketDate,
   webDocketItems,
   zoneFeeKobo,
 } from './online-order-rules';
@@ -190,6 +206,7 @@ export class OnlineOrdersService {
     private readonly money: MoneyControlService,
     private readonly ledger: StockLedgerService,
     private readonly mail: OnlineOrderMail,
+    private readonly refunds: OnlineRefundsService,
   ) {}
 
   /** Send a queued customer email after the commit (C7-6). Never throws. */
@@ -834,7 +851,10 @@ export class OnlineOrdersService {
    * the demo does. Extra money due is Cash or Transfer taken by staff
    * (Q34); a refund is Cash or Transfer given back, or a card refund
    * through Paystack (Q26), never more than the card paid and has not had
-   * back. Runs in the idempotency service's transaction (A9).
+   * back: a refund owed beyond that sends the card's part and leaves the
+   * rest owed, for a Cash or Transfer `online.balance`
+   * (`recordedBalanceKobo`). Runs in the idempotency service's transaction
+   * (A9).
    *
    * A card refund is recorded here, `PENDING`, as a negative `ONLINE`
    * payment with its `OnlineRefund`; Paystack is asked only after this
@@ -848,13 +868,10 @@ export class OnlineOrdersService {
     request: OnlineBalanceRequest,
     ipAddress: string,
   ): Promise<BalanceRecorded> {
-    if (
-      request.method === OnlineBalanceMethod.TRANSFER &&
-      (!request.sender || !request.reference)
-    ) {
-      throw new BadRequestException(BALANCE_TRANSFER_MESSAGE);
-    }
-
+    // The demo's order: the order (404, or a stale version), something
+    // owed, the limits, then the transfer's details. The card's own
+    // sentences (new) come before the limits, which judge what is
+    // recorded.
     const { online, order } = await this.claim(tx, id, request.version);
     const money = await this.moneyOf(tx, online, order.status);
     const balanceKobo = money.balanceKobo;
@@ -869,17 +886,32 @@ export class OnlineOrdersService {
       throw new BadRequestException(EXTRA_MONEY_METHOD_MESSAGE);
     }
 
-    if (toCard && -balanceKobo > money.cardRefundableKobo) {
+    if (toCard && money.cardRefundableKobo === 0) {
       throw new ConflictException(CARD_REFUND_LIMIT_MESSAGE);
     }
 
+    const amountKobo = recordedBalanceKobo({
+      balanceKobo,
+      toCard,
+      cardRefundableKobo: money.cardRefundableKobo,
+    });
+
     await this.money.withinLimit(tx, actor, {
-      amountKobo: balanceKobo,
+      amountKobo,
       what: LIMITED_DECISIONS.paymentCorrection,
       count: true,
       action: 'online.balance',
       ref: order.number,
     });
+
+    if (
+      request.method === OnlineBalanceMethod.TRANSFER &&
+      (!request.sender || !request.reference)
+    ) {
+      throw new BadRequestException(BALANCE_TRANSFER_MESSAGE);
+    }
+
+    const settlesAll = amountKobo === balanceKobo;
 
     const payment = await tx.payment.create({
       data: {
@@ -890,7 +922,7 @@ export class OnlineOrdersService {
           : request.method === OnlineBalanceMethod.CASH
             ? PaymentMethod.CASH
             : PaymentMethod.TRANSFER,
-        amountKobo: balanceKobo,
+        amountKobo,
         sender: toCard ? '' : (request.sender ?? ''),
         reference: toCard
           ? online.paystackReference
@@ -907,17 +939,21 @@ export class OnlineOrdersService {
             onlineOrderId: id,
             paymentId: payment.id,
             transactionReference: online.paystackReference,
-            amountKobo: -balanceKobo,
+            amountKobo: -amountKobo,
             staffId: actor.id,
           },
           select: { id: true },
         })
       : null;
 
-    await tx.onlineAdjustment.updateMany({
-      where: { onlineOrderId: id, settledAt: null },
-      data: { settledAt: new Date(), settledPaymentId: payment.id },
-    });
+    // The adjustments are settled only by the payment that brings the
+    // balance to 0; a card refund of part leaves them open for the rest.
+    if (settlesAll) {
+      await tx.onlineAdjustment.updateMany({
+        where: { onlineOrderId: id, settledAt: null },
+        data: { settledAt: new Date(), settledPaymentId: payment.id },
+      });
+    }
 
     await this.audit.record(
       {
@@ -926,8 +962,8 @@ export class OnlineOrdersService {
         ref: order.number,
         before: { paidKobo: money.paidKobo, balanceKobo },
         after: {
-          paidKobo: money.paidKobo + balanceKobo,
-          balanceKobo: 0,
+          paidKobo: money.paidKobo + amountKobo,
+          balanceKobo: balanceKobo - amountKobo,
           method: request.method,
           payment: payment.number,
           ...(refund ? { refund: OnlineRefundStatus.PENDING } : {}),
@@ -958,6 +994,130 @@ export class OnlineOrdersService {
       refundId: refund?.id ?? null,
       noticeKey,
     };
+  }
+
+  /**
+   * A manager records what Paystack's dashboard shows for a card refund
+   * whose answer never arrived (`UNCONFIRMED`), or one stuck `SENDING`
+   * past `REFUND_SENDING_STUCK_MS` (M+r, new). Shown: `SENT` with the
+   * dashboard's refund id, and the customer is told. Not shown: undone as
+   * a refusal is, so the refund is owed again for a Cash or Transfer
+   * `online.balance`. Claims the order's version like every online
+   * command, so it cannot race a balance; audited `online.resolveRefund`.
+   * Answers the order and the notice to send after the commit.
+   */
+  async resolveRefund(
+    actor: StaffPrincipal,
+    id: string,
+    refundId: string,
+    request: OnlineRefundResolveRequest,
+    ipAddress: string,
+  ): Promise<{ onlineOrder: OnlineOrderResponse; noticeKey: string | null }> {
+    const shown = request.outcome === OnlineRefundOutcome.SENT;
+
+    if (shown && !request.providerRefundId) {
+      throw new BadRequestException(REFUND_ID_MESSAGE);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const { order } = await this.claim(tx, id, request.version);
+      const refund = await tx.onlineRefund.findFirst({
+        where: { id: refundId, onlineOrderId: id },
+      });
+
+      if (refund === null) {
+        throw new NotFoundException(REFUND_NOT_FOUND_MESSAGE);
+      }
+
+      const stuck =
+        refund.status === OnlineRefundStatus.SENDING &&
+        refund.updatedAt.getTime() <= Date.now() - REFUND_SENDING_STUCK_MS;
+
+      if (refund.status !== OnlineRefundStatus.UNCONFIRMED && !stuck) {
+        throw new ConflictException(REFUND_NOT_UNCONFIRMED_MESSAGE);
+      }
+
+      const noticeKey = await this.refunds.resolve(
+        tx,
+        refund,
+        shown ? { providerRefundId: request.providerRefundId! } : null,
+      );
+
+      await this.audit.record(
+        {
+          actor: staffActor(actor),
+          action: 'online.resolveRefund',
+          ref: order.number,
+          before: { status: refund.status, amountKobo: refund.amountKobo },
+          after: {
+            status: shown
+              ? OnlineRefundStatus.SENT
+              : OnlineRefundStatus.REFUSED,
+            ...(shown ? { providerRefundId: request.providerRefundId } : {}),
+          },
+          reason: request.reason,
+          channel: OrderChannel.WEB,
+          ipAddress,
+        },
+        tx,
+      );
+
+      return { onlineOrder: await this.read(tx, id), noticeKey };
+    });
+  }
+
+  /**
+   * A manager closes a checkout held `NEEDS_ATTENTION` once the money is
+   * sorted out in Paystack's dashboard (M+r, new): `RESOLVED`, final, so
+   * it leaves the managers' bell and no longer blocks its customer's
+   * account deletion. One conditional update on `NEEDS_ATTENTION`, so two
+   * managers resolving it at once resolve it once; audited
+   * `online.resolveCheckout` under the checkout's reference.
+   */
+  async resolveCheckout(
+    actor: StaffPrincipal,
+    checkoutId: string,
+    request: HeldCheckoutResolveRequest,
+    ipAddress: string,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.checkout.updateMany({
+        where: { id: checkoutId, status: CheckoutStatus.NEEDS_ATTENTION },
+        data: { status: CheckoutStatus.RESOLVED, resolvedAt: new Date() },
+      });
+      const checkout = await tx.checkout.findUnique({
+        where: { id: checkoutId },
+        select: {
+          reference: true,
+          totalKobo: true,
+          attentionReason: true,
+        },
+      });
+
+      if (checkout === null) {
+        throw new NotFoundException(HELD_CHECKOUT_NOT_FOUND_MESSAGE);
+      }
+
+      if (count === 0) throw new ConflictException(CHECKOUT_NOT_HELD_MESSAGE);
+
+      await this.audit.record(
+        {
+          actor: staffActor(actor),
+          action: 'online.resolveCheckout',
+          ref: checkout.reference,
+          before: {
+            status: CheckoutStatus.NEEDS_ATTENTION,
+            totalKobo: checkout.totalKobo,
+            attentionReason: checkout.attentionReason,
+          },
+          after: { status: CheckoutStatus.RESOLVED },
+          reason: request.reason,
+          channel: OrderChannel.WEB,
+          ipAddress,
+        },
+        tx,
+      );
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1088,7 +1248,12 @@ export class OnlineOrdersService {
     return request.lines.map((line) => {
       const option = typeof line.option === 'string' ? line.option : '';
       const item = itemOf.get(line.menuItemId) ?? null;
-      const held = before.find((one) => one.menuItemId === line.menuItemId);
+      // A line is its dish and option (the bill's own key): only a line
+      // the order already holds keeps what it was paid at; another option
+      // of the same dish is a new line at today's price (plan §4.1).
+      const held = before.find(
+        (one) => one.menuItemId === line.menuItemId && one.option === option,
+      );
       const problem = editLineProblem(item, option, held !== undefined);
 
       if (problem !== null || item === null) {
@@ -1149,7 +1314,10 @@ export class OnlineOrdersService {
    * served leave the Bar (`WEB_SALE`), fewer come back (`WEB_SALE_RETURN`),
    * one movement per paired stock item in id order, with `allowNegative`
    * as the paid order's own sale. A drink with no paired item moves
-   * nothing and is logged, as at payment.
+   * nothing and is logged, as at payment. A return is never more than the
+   * order's own movements took from that item (`heldToTaken`), and a
+   * cancellation returns exactly what they took, so a pairing changed
+   * since the sale cannot put back stock that never left.
    */
   private async moveBar(
     tx: Tx,
@@ -1168,28 +1336,67 @@ export class OnlineOrdersService {
 
     if (drinkIds.length === 0) return;
 
-    const paired = await tx.stockItem.findMany({
-      where: { menuItemId: { in: drinkIds }, kind: StockKind.BAR },
-      select: { id: true, menuItemId: true },
+    // What the order has taken from each Bar stock item so far, by its own
+    // movements: the pairing may have changed since the sale.
+    const movements = await tx.stockMovement.groupBy({
+      by: ['stockItemId'],
+      where: {
+        ref: orderNumber,
+        location: StockLocation.BAR,
+        type: {
+          in: [StockMovementType.WEB_SALE, StockMovementType.WEB_SALE_RETURN],
+        },
+      },
+      _sum: { qty: true },
     });
-    const plan = barDifference(
-      before,
-      after,
-      new Map(
-        paired.flatMap((item) =>
-          item.menuItemId === null ? [] : [[item.menuItemId, item.id]],
-        ),
-      ),
+    const taken = new Map(
+      movements.map((row) => [row.stockItemId, -(row._sum.qty ?? 0)]),
     );
 
-    if (plan.unpaired.length > 0) {
-      this.logger.error(
-        `Web order ${orderNumber} changed drinks with no paired Bar stock ` +
-          `item, so no stock moved for them: ${plan.unpaired.join(', ')}.`,
+    let moves: { stockItemId: string; delta: number }[];
+
+    if (after.length === 0) {
+      // A cancellation returns exactly what the order took, whatever is
+      // paired with which drink today.
+      moves = [...taken.entries()]
+        .filter(([, qty]) => qty > 0)
+        .map(([stockItemId, qty]) => ({ stockItemId, delta: qty }))
+        .sort((a, b) => (a.stockItemId < b.stockItemId ? -1 : 1));
+    } else {
+      const paired = await tx.stockItem.findMany({
+        where: { menuItemId: { in: drinkIds }, kind: StockKind.BAR },
+        select: { id: true, menuItemId: true },
+      });
+      const plan = barDifference(
+        before,
+        after,
+        new Map(
+          paired.flatMap((item) =>
+            item.menuItemId === null ? [] : [[item.menuItemId, item.id]],
+          ),
+        ),
       );
+
+      if (plan.unpaired.length > 0) {
+        this.logger.error(
+          `Web order ${orderNumber} changed drinks with no paired Bar stock ` +
+            `item, so no stock moved for them: ${plan.unpaired.join(', ')}.`,
+        );
+      }
+
+      const held = heldToTaken(plan.moves, taken);
+
+      if (held.cut.length > 0) {
+        this.logger.warn(
+          `Web order ${orderNumber}: a return was held to what the order ` +
+            `took from the Bar (stock items ${held.cut.join(', ')}).`,
+        );
+      }
+
+      moves = held.moves;
     }
 
-    for (const move of plan.moves) {
+    for (const move of moves) {
       await this.ledger.move(tx, {
         stockItemId: move.stockItemId,
         location: StockLocation.BAR,
@@ -1221,7 +1428,7 @@ export class OnlineOrdersService {
       orderId: order.id,
       orderNumber: order.number,
       revision: order.revision + 1,
-      businessDate: order.businessDate,
+      businessDate: webDocketDate(online.scheduledFor, order.businessDate),
       items: docket.items,
       notes: docket.notes,
       staffId: actor.id,

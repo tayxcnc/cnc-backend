@@ -25,6 +25,7 @@ import { StockLedgerService } from '../stock/stock-ledger.service';
 import { OnlineOrderMail } from './online-order-mail';
 import {
   onlineOrderMode,
+  webDocketDate,
   webDocketItems,
   webSalePlan,
 } from './online-order-rules';
@@ -154,7 +155,8 @@ export class OnlineOrderPlacementService {
             orderId: order.id,
             orderNumber,
             revision: 1,
-            businessDate,
+            // The kitchen day it is cooked on (tomorrow's slot: tomorrow).
+            businessDate: webDocketDate(checkout.scheduledFor, businessDate),
             items: food,
             notes: checkout.note,
             staffId: null,

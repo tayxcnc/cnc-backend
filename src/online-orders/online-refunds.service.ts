@@ -14,8 +14,21 @@ import {
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { OnlineOrderMail } from './online-order-mail';
 
+type Tx = Prisma.TransactionClient;
+
 /** The longest Paystack message kept on a refused refund. */
 const PROVIDER_MESSAGE_MAX_LENGTH = 300;
+
+/** A refund a manager found missing from Paystack's dashboard. */
+const NOT_SENT_PROVIDER_MESSAGE =
+  'Not in the Paystack dashboard, as a manager recorded.';
+
+/**
+ * How long a refund may stay `SENDING` before a manager may resolve it:
+ * two minutes, far beyond the client's 10-second timeout, so a send still
+ * waiting for Paystack is never resolved under it.
+ */
+export const REFUND_SENDING_STUCK_MS = 2 * 60 * 1000;
 
 /** The prefix of a refund payment's `providerRef`: Paystack's refund id. */
 export const REFUND_PROVIDER_REF_PREFIX = 'paystack-refund-';
@@ -94,34 +107,14 @@ export class OnlineRefundsService {
       });
 
       const noticeKey = await this.prisma.$transaction(async (tx) => {
-        await tx.onlineRefund.update({
-          where: { id: refundId },
-          data: {
-            status: OnlineRefundStatus.SENT,
-            providerRefundId: queued.refundId,
-            providerStatus: queued.status,
-            sentAt: new Date(),
-          },
-        });
-        await tx.payment.update({
-          where: { id: refund.paymentId },
-          data: {
-            providerRef: `${REFUND_PROVIDER_REF_PREFIX}${queued.refundId}`,
-          },
-        });
+        await this.accepted(tx, refund, queued.refundId, queued.status);
         await this.recordOutcome(tx, actor, order.number, ipAddress, {
           status: OnlineRefundStatus.SENT,
           amountKobo: refund.amountKobo,
           providerRefundId: queued.refundId,
         });
 
-        // C7-6: the customer is told once Paystack has accepted the refund,
-        // never for one refused or unconfirmed.
-        return this.mail.refunded(tx, refund.onlineOrderId, {
-          paymentId: refund.paymentId,
-          amountKobo: refund.amountKobo,
-          method: 'CARD',
-        });
+        return this.notice(tx, refund);
       });
 
       await this.mail.dispatch(noticeKey);
@@ -173,30 +166,112 @@ export class OnlineRefundsService {
     );
 
     await this.prisma.$transaction(async (tx) => {
-      const refund = await tx.onlineRefund.update({
-        where: { id: refundId },
-        data: {
-          status: OnlineRefundStatus.REFUSED,
-          providerMessage: error.providerMessage.slice(
-            0,
-            PROVIDER_MESSAGE_MAX_LENGTH,
-          ),
-          sentAt: new Date(),
-        },
-      });
+      const refund = await this.undone(tx, refundId, error.providerMessage);
 
-      await tx.payment.update({
-        where: { id: refund.paymentId },
-        data: { reversed: true, reversedAt: new Date() },
-      });
-      await tx.onlineAdjustment.updateMany({
-        where: { settledPaymentId: refund.paymentId },
-        data: { settledAt: null, settledPaymentId: null },
-      });
       await this.recordOutcome(tx, actor, orderNumber, ipAddress, {
         status: OnlineRefundStatus.REFUSED,
         amountKobo: refund.amountKobo,
       });
+    });
+  }
+
+  /**
+   * A manager's record of what Paystack's dashboard shows for a refund
+   * whose answer never arrived (`UNCONFIRMED`), or one left `SENDING` by
+   * an instance that died mid-call (older than `REFUND_SENDING_STUCK_MS`),
+   * in the caller's transaction, after the order's claim: shown there,
+   * it is `SENT` with Paystack's id and the customer is told; not shown,
+   * it is undone as a refusal is, so the money is owed again for Cash or
+   * Transfer. Answers the notice's key, or null.
+   */
+  async resolve(
+    tx: Tx,
+    refund: Prisma.OnlineRefundGetPayload<object>,
+    shown: { providerRefundId: string } | null,
+  ): Promise<string | null> {
+    if (shown === null) {
+      await this.undone(tx, refund.id, NOT_SENT_PROVIDER_MESSAGE);
+
+      return null;
+    }
+
+    await this.accepted(tx, refund, shown.providerRefundId, null);
+
+    return this.notice(tx, refund);
+  }
+
+  /**
+   * Paystack has the refund: `SENT` with its id, kept on the refund and,
+   * as `paystack-refund-<id>`, on its payment's unique `providerRef`.
+   */
+  private async accepted(
+    tx: Tx,
+    refund: Prisma.OnlineRefundGetPayload<object>,
+    providerRefundId: string,
+    providerStatus: string | null,
+  ): Promise<void> {
+    await tx.onlineRefund.update({
+      where: { id: refund.id },
+      data: {
+        status: OnlineRefundStatus.SENT,
+        providerRefundId,
+        providerStatus,
+        sentAt: refund.sentAt ?? new Date(),
+      },
+    });
+    await tx.payment.update({
+      where: { id: refund.paymentId },
+      data: { providerRef: `${REFUND_PROVIDER_REF_PREFIX}${providerRefundId}` },
+    });
+  }
+
+  /**
+   * Nothing was refunded: `REFUSED` with Paystack's words, its payment
+   * reversed (never deleted), and the adjustments it settled opened
+   * again, so the order owes the refund once more.
+   */
+  private async undone(
+    tx: Tx,
+    refundId: string,
+    providerMessage: string,
+  ): Promise<Prisma.OnlineRefundGetPayload<object>> {
+    const before = await tx.onlineRefund.findUniqueOrThrow({
+      where: { id: refundId },
+      select: { sentAt: true },
+    });
+    const refund = await tx.onlineRefund.update({
+      where: { id: refundId },
+      data: {
+        status: OnlineRefundStatus.REFUSED,
+        providerMessage: providerMessage.slice(0, PROVIDER_MESSAGE_MAX_LENGTH),
+        sentAt: before.sentAt ?? new Date(),
+      },
+    });
+
+    await tx.payment.update({
+      where: { id: refund.paymentId },
+      data: { reversed: true, reversedAt: new Date() },
+    });
+    await tx.onlineAdjustment.updateMany({
+      where: { settledPaymentId: refund.paymentId },
+      data: { settledAt: null, settledPaymentId: null },
+    });
+
+    return refund;
+  }
+
+  /**
+   * C7-6: the customer is told once Paystack has the refund, never for
+   * one refused or unconfirmed.
+   */
+  private notice(
+    tx: Tx,
+    refund: Prisma.OnlineRefundGetPayload<object>,
+  ): Promise<string | null> {
+    return this.mail.refunded(tx, refund.onlineOrderId, {
+      paymentId: refund.paymentId,
+      amountKobo: refund.amountKobo,
+      method: 'CARD',
     });
   }
 

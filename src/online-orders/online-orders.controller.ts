@@ -37,8 +37,10 @@ import {
 import { idempotencyScope } from '../idempotency/idempotency-scope';
 import { IdempotencyService } from '../idempotency/idempotency.service';
 import {
+  HeldCheckoutResolveRequest,
   OnlineBalanceMethod,
   OnlineBalanceRequest,
+  OnlineRefundResolveRequest,
   OnlineCancelRequest,
   OnlineCorrectStatusRequest,
   OnlineEditRequest,
@@ -366,7 +368,9 @@ export class OnlineOrdersController {
       'Managers, with a reason: records the whole balance as one payment. ' +
       'Extra money due is CASH or TRANSFER (Q34); a refund is CASH, ' +
       'TRANSFER, or PAYSTACK back to the card (Q26), never more than the ' +
-      'card paid and has not had back. Checked against the approval limits ' +
+      'card paid and has not had back: a larger refund sends the card’s ' +
+      'part and leaves the rest owed, for CASH or TRANSFER. Checked against ' +
+      'the approval limits (on what is recorded) ' +
       'and counted. A card refund is sent to Paystack once, after the ' +
       'record commits. Takes an Idempotency-Key.',
   })
@@ -461,5 +465,113 @@ export class OnlineOrdersController {
     response.status(result.status);
 
     return this.online.detail(id);
+  }
+
+  @Post(':id/refunds/:refundId/resolve')
+  @HttpCode(HttpStatus.OK)
+  @Roles()
+  @ApiParam(ID_PARAM)
+  @ApiParam({ name: 'refundId', description: 'OnlineRefund.id.' })
+  @ApiOperation({
+    operationId: 'staffOnlineRefundResolve',
+    summary: 'Resolve an unconfirmed card refund',
+    description:
+      'Managers, with a reason, after checking Paystack’s dashboard, for a ' +
+      'card refund whose answer never arrived (UNCONFIRMED, or SENDING for ' +
+      'more than two minutes). SENT, with the dashboard’s refund id: the ' +
+      'refund is sent and the customer is told. NOT_SENT: nothing was ' +
+      'refunded, its payment is reversed and the refund is owed again, for ' +
+      'Cash or Transfer through `balance`.',
+  })
+  @ApiResponse({ status: 200, type: OnlineOrderResponse })
+  @ApiResponse({
+    status: 400,
+    description:
+      '"Choose whether the Paystack dashboard shows the refund.", "Enter ' +
+      'the refund id the Paystack dashboard shows.", "An admin correction ' +
+      'requires a reason.", or a bad version.',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse(UNAUTHORISED)
+  @ApiResponse(ROLE_REFUSED)
+  @ApiResponse({
+    status: 404,
+    description: '"Online order not found." or "Refund not found."',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      '"Only a card refund Paystack has not confirmed can be resolved.", ' +
+      `or ${STALE}`,
+    type: ApiErrorResponse,
+  })
+  async resolveRefund(
+    @CurrentStaff() actor: StaffPrincipal,
+    @Param('id') id: string,
+    @Param('refundId') refundId: string,
+    @Body() request: OnlineRefundResolveRequest,
+    @Req() httpRequest: Request,
+  ): Promise<OnlineOrderResponse> {
+    const resolved = await this.online.resolveRefund(
+      actor,
+      id,
+      refundId,
+      request,
+      clientAddressOf(httpRequest),
+    );
+
+    await this.online.dispatchMail(resolved.noticeKey);
+
+    return resolved.onlineOrder;
+  }
+
+  @Post('checkouts/:checkoutId/resolve')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Roles()
+  @ApiParam({
+    name: 'checkoutId',
+    description:
+      'Checkout.id: the `ref` of the "Checkout Needs Attention" item.',
+  })
+  @ApiOperation({
+    operationId: 'staffHeldCheckoutResolve',
+    summary: 'Resolve a checkout held for attention',
+    description:
+      'Managers, with a reason, once the payment is dealt with in ' +
+      'Paystack’s dashboard (refunded, or otherwise): the held checkout ' +
+      'becomes RESOLVED, leaves the managers’ bell and no longer stops its ' +
+      'customer deleting their account. No order is made.',
+  })
+  @ApiResponse({ status: 204, description: 'Resolved.' })
+  @ApiResponse({
+    status: 400,
+    description: '"An admin correction requires a reason."',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse(UNAUTHORISED)
+  @ApiResponse(ROLE_REFUSED)
+  @ApiResponse({
+    status: 404,
+    description: '"Checkout not found."',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse({
+    status: 409,
+    description: '"This checkout is not waiting for attention."',
+    type: ApiErrorResponse,
+  })
+  async resolveCheckout(
+    @CurrentStaff() actor: StaffPrincipal,
+    @Param('checkoutId') checkoutId: string,
+    @Body() request: HeldCheckoutResolveRequest,
+    @Req() httpRequest: Request,
+  ): Promise<void> {
+    await this.online.resolveCheckout(
+      actor,
+      checkoutId,
+      request,
+      clientAddressOf(httpRequest),
+    );
   }
 }

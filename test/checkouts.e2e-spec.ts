@@ -496,6 +496,32 @@ describe('checkouts and the Paystack webhook (e2e)', () => {
       ).toBe(CheckoutStatus.FAILED);
     });
 
+    it('keeps the checkout waiting when a retry finds Paystack already holds its reference', async () => {
+      const key = randomUUID();
+      const body = checkoutBody({ name: 'Lost Answer Guest' });
+
+      // Paystack opened the transaction; its answer was lost on the way.
+      fakePaystack(app).loseNextInitializeAnswer = true;
+      expect(messageOf(await checkout(body, key).expect(503))).toBe(
+        PAYMENT_PROVIDER_UNREACHABLE_MESSAGE,
+      );
+
+      // The same key again: Paystack refuses the duplicate reference, and
+      // the checkout is not closed for it.
+      expect(messageOf(await checkout(body, key).expect(503))).toBe(
+        PAYMENT_PROVIDER_UNREACHABLE_MESSAGE,
+      );
+
+      const waiting = await prisma.checkout.findFirstOrThrow({
+        where: { contactName: 'Lost Answer Guest' },
+      });
+
+      expect(waiting).toMatchObject({
+        status: CheckoutStatus.PENDING,
+        accessCode: null,
+      });
+    });
+
     it('refuses with 503 while the Paystack key is the placeholder, storing nothing', async () => {
       const before = await prisma.checkout.count();
 
@@ -609,6 +635,24 @@ describe('checkouts and the Paystack webhook (e2e)', () => {
         'sk_test_someone_else',
       ).expect(401);
       expect(await prisma.paymentEvent.count()).toBe(before);
+    });
+
+    it('settles the payment inside the delivery’s own request, while the instance has CPU', async () => {
+      const body = await created();
+
+      await webhook(chargeSuccess(body.reference, body.sums.totalKobo)).expect(
+        200,
+      );
+
+      // No `settled()`: the answer came after the work.
+      expect((await row(body.reference)).status).toBe(CheckoutStatus.PAID);
+      expect(
+        (
+          await prisma.paymentEvent.findFirstOrThrow({
+            where: { reference: body.reference },
+          })
+        ).processedAt,
+      ).not.toBeNull();
     });
 
     it('pays the checkout on a signed charge.success that verify confirms; a replay changes nothing', async () => {

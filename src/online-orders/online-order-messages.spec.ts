@@ -128,6 +128,7 @@ describe('online order messages', () => {
           'Ada Okafor · ₦22,737.50 · Paystack verified ₦1.00, not ₦22,737.50.',
         page: 'online',
         category: 'Payment',
+        ref: 'c1',
       });
     });
   });

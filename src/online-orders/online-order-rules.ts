@@ -5,6 +5,7 @@ import {
   OnlineFulfilmentStatus,
   OnlineOrderMode,
 } from '../../generated/cnc-client';
+import { watToday } from '../common/wat';
 import type { PricedLine } from '../ordering/cart-pricing';
 import { docketItem, type DocketItem } from '../orders/docket-items';
 import { chooseOptionMessage } from '../orders/order-messages';
@@ -244,6 +245,71 @@ export function onlineTargetKobo(order: {
   feeKobo: number;
 }): number {
   return order.cancelled ? 0 : order.billTotalKobo + order.feeKobo;
+}
+
+/**
+ * The money one `online.balance` records (positive taken, negative given
+ * back): the whole balance, as the demo records it, except a card refund
+ * owed beyond the card's money not yet refunded, which sends the card's
+ * part and leaves the rest owed for Cash or Transfer (Q26: refunds go
+ * through Paystack as far as Paystack can take them).
+ */
+export function recordedBalanceKobo(money: {
+  balanceKobo: number;
+  toCard: boolean;
+  cardRefundableKobo: number;
+}): number {
+  if (!money.toCard || money.balanceKobo >= 0) return money.balanceKobo;
+
+  return -Math.min(-money.balanceKobo, money.cardRefundableKobo);
+}
+
+/**
+ * The kitchen day a web docket belongs to: the Lagos day of its scheduled
+ * time, or the day the order was paid for one wanted as soon as possible
+ * (or scheduled before it was paid, a late payment). A docket for
+ * tomorrow's lunch dated today would leave the Kitchen bell when today's
+ * kitchen day closes, and tomorrow the cook's entry would count as a
+ * manager's correction.
+ */
+export function webDocketDate(scheduledFor: Date | null, paidDay: Date): Date {
+  if (scheduledFor === null) return paidDay;
+
+  const scheduledDay = watToday(scheduledFor);
+
+  return scheduledDay.getTime() > paidDay.getTime() ? scheduledDay : paidDay;
+}
+
+/**
+ * The Bar moves of a correction, with every return held to what the order
+ * actually took from that stock item (its `WEB_SALE` less its
+ * `WEB_SALE_RETURN` movements, `takenByStockItem`). The difference is
+ * worked out from today's pairing of drinks to stock items, which may not
+ * be the pairing at the sale: a drink paired only after it was sold must
+ * not be "returned" to a Bar it never left. Answers the moves to make and
+ * the stock items whose return was cut.
+ */
+export function heldToTaken(
+  moves: readonly BarDifference[],
+  takenByStockItem: ReadonlyMap<string, number>,
+): { moves: BarDifference[]; cut: string[] } {
+  const kept: BarDifference[] = [];
+  const cut: string[] = [];
+
+  for (const move of moves) {
+    if (move.delta <= 0) {
+      kept.push(move);
+      continue;
+    }
+
+    const taken = Math.max(0, takenByStockItem.get(move.stockItemId) ?? 0);
+    const delta = Math.min(move.delta, taken);
+
+    if (delta !== move.delta) cut.push(move.stockItemId);
+    if (delta > 0) kept.push({ stockItemId: move.stockItemId, delta });
+  }
+
+  return { moves: kept, cut };
 }
 
 /** The fees an online order snapshotted from its checkout (Q27). */

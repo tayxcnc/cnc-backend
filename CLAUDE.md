@@ -66,7 +66,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `POST /reservations` (guest or customer), the customer link both ways, `/me/reservations`, the 24-hour rule (Q6), booking emails, the booking throttle | Bookings from the website and the app |
 | `POST /ordering/quote`, `POST /checkouts`, `GET /checkouts/:reference`, the Paystack client and its fakes, the webhook, verify and the amount check, `NEEDS_ATTENTION`, `AddressThrottle` | Online checkout and Paystack |
 | The web order a payment writes, its numbers, docket, Bar sale and customer, the confirmation read's recheck, the checkouts and payments sweeps, the fake's `pay` | Paid web orders and the payment sweeps |
-| Staff Online Orders: stages, corrections, edits (Bar too), zone fees (Q27), cancel (Q8), the balance, card refunds (Q26), adjustments, limits | Staff Online Orders |
+| Staff Online Orders: stages, corrections, edits (Bar too), zone fees (Q27), cancel (Q8), the balance, card refunds (Q26), resolving unconfirmed refunds and held checkouts, adjustments, limits | Staff Online Orders |
 | The receipt (Q31), stage and refund emails and in-app items (`OnlineOrderMail`), `GET /me/orders`, the online bell items and `ref` | Order messages, my orders and the online bell items |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |

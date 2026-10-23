@@ -6,14 +6,30 @@ import { PAYSTACK_CURRENCY, type VerifiedTransaction } from './paystack-client';
  * The checkout states a confirmed payment may still settle (plan §7.4,
  * §5.5): waiting, abandoned past its expiry (a late payment is still
  * money taken), or refused at initialize (Paystack may yet have opened
- * the page). `PAID` and `NEEDS_ATTENTION` are final for the webhook: a
- * replay or a second event changes neither.
+ * the page). `PAID`, `NEEDS_ATTENTION` and `RESOLVED` are final for the
+ * webhook: a replay or a second event changes none of them.
  */
 export const SETTLEABLE_CHECKOUT_STATUSES: CheckoutStatus[] = [
   CheckoutStatus.PENDING,
   CheckoutStatus.EXPIRED,
   CheckoutStatus.FAILED,
 ];
+
+/**
+ * Why a paid checkout is held when its customer deleted their account
+ * before the payment arrived (Q36): for CNC's inbox and the managers.
+ */
+export const ANONYMISED_CHECKOUT_REASON =
+  'The customer deleted their account before this payment arrived, so the order has no name, phone, email or address. Refund it in Paystack.';
+
+/**
+ * Whether a checkout lost its contact to an account deletion (Q36): a
+ * checkout always has an email otherwise (the checkout form requires one),
+ * and only the deletion writes it empty.
+ */
+export function isAnonymisedContact(contactEmail: string): boolean {
+  return contactEmail === '';
+}
 
 /** What a checkout expects Paystack to confirm. */
 export interface ExpectedPayment {

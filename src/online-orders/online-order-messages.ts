@@ -108,7 +108,40 @@ export const REFUND_REFUSED_MESSAGE =
  * own: a second request could return the money twice.
  */
 export const REFUND_UNCONFIRMED_MESSAGE =
-  'We could not confirm the refund with Paystack. Check the Paystack dashboard before recording it again.';
+  'We could not confirm the refund with Paystack. Check the Paystack dashboard, then resolve the refund as sent or not sent.';
+
+/**
+ * Resolving a card refund with an outcome that is not one of the two
+ * (400). New: a refund left unconfirmed is resolved by what the Paystack
+ * dashboard shows.
+ */
+export const REFUND_OUTCOME_MESSAGE =
+  'Choose whether the Paystack dashboard shows the refund.';
+
+/** Resolving a refund as sent without Paystack's refund id (400). New. */
+export const REFUND_ID_MESSAGE =
+  'Enter the refund id the Paystack dashboard shows.';
+
+/** Resolving a refund this order does not have (404). New. */
+export const REFUND_NOT_FOUND_MESSAGE = 'Refund not found.';
+
+/**
+ * Resolving a refund that was answered, or is still being sent (409).
+ * New: only a refund whose answer never arrived needs a person, and one
+ * still in flight may yet be answered.
+ */
+export const REFUND_NOT_UNCONFIRMED_MESSAGE =
+  'Only a card refund Paystack has not confirmed can be resolved.';
+
+/** Resolving a held checkout that does not exist (404). New. */
+export const HELD_CHECKOUT_NOT_FOUND_MESSAGE = 'Checkout not found.';
+
+/**
+ * Resolving a checkout that is not held (409): paid, already resolved,
+ * or never held. New.
+ */
+export const CHECKOUT_NOT_HELD_MESSAGE =
+  'This checkout is not waiting for attention.';
 
 /**
  * A card refund asked for while CNC's Paystack key is unset or a

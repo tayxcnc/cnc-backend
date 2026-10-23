@@ -65,7 +65,9 @@ export function newWebDocketItem(docket: {
  * The managers' "Checkout Needs Attention" (plan §7.4 step 3, §9.1, new):
  * a signed payment that did not match its checkout, so no order was made.
  * The customer's name, the checkout's total and the reason, on Online
- * Orders.
+ * Orders, with the checkout's id as `ref` for
+ * `POST /staff/online-orders/checkouts/:checkoutId/resolve`; the item
+ * leaves the bell once that resolves it.
  */
 export function checkoutAttentionItem(checkout: {
   id: string;
@@ -83,5 +85,7 @@ export function checkoutAttentionItem(checkout: {
     ].join(' · '),
     page: 'online',
     category: 'Payment',
+    // The checkout a manager resolves once it is dealt with in Paystack.
+    ref: checkout.id,
   };
 }

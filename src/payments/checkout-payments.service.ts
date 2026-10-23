@@ -5,15 +5,17 @@ import { CncConfigService } from '../config/cnc.config';
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import {
+  ANONYMISED_CHECKOUT_REASON,
   SETTLEABLE_CHECKOUT_STATUSES,
+  isAnonymisedContact,
   paymentMismatch,
 } from './checkout-payment-rules';
 import { OnlineOrderPlacementService } from '../online-orders/online-order-placement.service';
 import {
   PAYSTACK_CLIENT,
   type PaystackClient,
-  PaystackRefusedError,
   type VerifiedTransaction,
+  paystackNeverSawIt,
 } from './paystack-client';
 import { cardBrandName } from './paystack-transaction';
 
@@ -123,11 +125,11 @@ export class CheckoutPaymentsService {
     try {
       verified = await this.paystack.verify(reference);
     } catch (error) {
-      // A reference Paystack refuses to look up was never paid; only a
-      // reported payment is held for that, below, by the mismatch check.
-      if (!report.reported && error instanceof PaystackRefusedError) {
-        return 'unpaid';
-      }
+      // Only Paystack's definite "no such transaction" means never paid.
+      // An outage, a rate limit, a refused key or a malformed answer throws,
+      // so the sweep leaves the checkout waiting instead of expiring money
+      // that may have been taken.
+      if (!report.reported && paystackNeverSawIt(error)) return 'unpaid';
 
       throw error;
     }
@@ -149,8 +151,11 @@ export class CheckoutPaymentsService {
     const placed = await this.prisma.$transaction(async (tx) => {
       // The row lock decides who settles: a second report racing this one
       // waits here, then reads the checkout this one committed as paid.
-      const [locked] = await tx.$queryRaw<{ status: CheckoutStatus }[]>`
-        SELECT "status" FROM "Checkout" WHERE "id" = ${checkout.id} FOR UPDATE`;
+      const [locked] = await tx.$queryRaw<
+        { status: CheckoutStatus; contactEmail: string }[]
+      >`
+        SELECT "status", "contactEmail" FROM "Checkout"
+        WHERE "id" = ${checkout.id} FOR UPDATE`;
 
       if (
         locked === undefined ||
@@ -158,6 +163,12 @@ export class CheckoutPaymentsService {
       ) {
         return null;
       }
+
+      // The customer deleted their account while the payment was still
+      // possible (an expired or failed checkout can still be paid): an
+      // order with no name, phone, email or address could be cooked but
+      // never delivered, and nobody could tell the payer about a refund.
+      if (isAnonymisedContact(locked.contactEmail)) return 'anonymised';
 
       // C7-3: the order, the online order, the payment, the docket and the
       // Bar movements, in this transaction, so the money and the order
@@ -186,6 +197,10 @@ export class CheckoutPaymentsService {
     });
 
     if (placed === null) return 'unchanged';
+
+    if (placed === 'anonymised') {
+      return this.hold(checkout.id, ANONYMISED_CHECKOUT_REASON);
+    }
 
     this.logger.log(
       `Checkout ${checkout.id} paid: order ${placed.orderNumber}, ` +

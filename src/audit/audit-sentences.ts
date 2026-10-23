@@ -61,7 +61,10 @@ export const AUDIT_MODULES: readonly string[] = [
  * order written by its confirmed payment (C7-3), labelled with the demo's
  * own reason for its seeded web orders, "Paid online". `online.refund` is
  * what Paystack answered to a card refund `online.balance` recorded
- * (C7-4, Q26): sent, refused or unconfirmed.
+ * (C7-4, Q26): sent, refused or unconfirmed. `online.resolveRefund` is a
+ * manager's record of what Paystack's dashboard shows for an unconfirmed
+ * one, and `online.resolveCheckout` a manager closing a checkout held for
+ * attention (C7 review).
  */
 const LABELS: Readonly<Record<string, string>> = {
   'order.create': 'Order Opened',
@@ -93,6 +96,8 @@ const LABELS: Readonly<Record<string, string>> = {
   'online.zone': 'Delivery Zone Changed',
   'online.balance': 'Balance Recorded',
   'online.refund': 'Card Refund',
+  'online.resolveRefund': 'Card Refund Resolved',
+  'online.resolveCheckout': 'Held Payment Resolved',
   'request.create': 'Stock Requested',
   'request.issue': 'Stock Issued',
   'request.reject': 'Request Declined',

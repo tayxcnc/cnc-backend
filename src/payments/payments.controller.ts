@@ -39,6 +39,16 @@ export const WEBHOOK_DELIVERY_LIMIT = 120;
 export const WEBHOOK_DELIVERY_WINDOW_MS = 60 * 1000;
 
 /**
+ * How long a delivery's request waits for its own handling before it
+ * answers anyway (`dispatchWithin`): five seconds. A verify (10 s timeout
+ * at worst) and a settle normally take well under a second, and the
+ * request must stay open while they run, because Cloud Run throttles an
+ * instance's CPU outside requests; the cap keeps the answer well inside
+ * the time Paystack waits before it retries.
+ */
+export const WEBHOOK_INLINE_WAIT_MS = 5 * 1000;
+
+/**
  * Paystack's webhook receiver (plan §5.1, §7.4 step 3, card C7-2), copied
  * from TAY's `PaymentsController`.
  *
@@ -49,8 +59,9 @@ export const WEBHOOK_DELIVERY_WINDOW_MS = 60 * 1000;
  * were signed, and the ValidationPipe would refuse Paystack's fields.
  *
  * A signed delivery is recorded in `PaymentEvent` (its body's SHA-256
- * unique) and acknowledged at once; the work runs after the answer
- * (`WebhookDispatcherService`). A replay of the same bytes finds the row
+ * unique) and handled by `WebhookDispatcherService` while the request
+ * waits up to `WEBHOOK_INLINE_WAIT_MS`, then acknowledged; anything slower
+ * carries on after the answer. A replay of the same bytes finds the row
  * and changes nothing. A failure to record is a 500, so Paystack retries a
  * delivery CNC has no record of.
  */
@@ -152,7 +163,11 @@ export class PaymentsController {
     );
 
     if (recorded.isNew) {
-      this.dispatcher.dispatchInBackground(envelope, recorded.id);
+      await this.dispatcher.dispatchWithin(
+        envelope,
+        recorded.id,
+        WEBHOOK_INLINE_WAIT_MS,
+      );
     }
 
     return { received: true };

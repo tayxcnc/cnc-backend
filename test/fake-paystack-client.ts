@@ -7,6 +7,7 @@ import {
   PAYSTACK_CURRENCY,
   type PaystackClient,
   PaystackRefusedError,
+  PaystackUnavailableError,
   type QueuedRefund,
   type RefundTransaction,
   type VerifiedTransaction,
@@ -22,7 +23,8 @@ import {
  * because "kobo, never multiplied" is only shown by the integer that
  * reaches this boundary. `verify` answers a recorded transaction the test
  * has `pay`-ed as paid by a test Visa ending 4081 for the amount
- * initialized, one not paid as `abandoned`, unless a test has set
+ * initialized, one not paid as `abandoned`, and refuses (400) a reference
+ * never initialized, as Paystack does, unless a test has set
  * `verifyAnswers` for the reference (a wrong amount, a failed status).
  * `failNextInitializeWith` makes the next initialize reject once.
  */
@@ -31,6 +33,11 @@ export class FakePaystackClient implements PaystackClient {
   readonly verified: string[] = [];
   readonly verifyAnswers = new Map<string, Partial<VerifiedTransaction>>();
   failNextInitializeWith: Error | null = null;
+  /**
+   * The next initialize opens the transaction at Paystack and then loses
+   * its answer (a timeout after Paystack acted), once.
+   */
+  loseNextInitializeAnswer = false;
   failNextVerifyWith: Error | null = null;
   failNextRefundWith: Error | null = null;
   /** Every refund Paystack accepted, in order. */
@@ -64,6 +71,13 @@ export class FakePaystackClient implements PaystackClient {
     }
 
     this.initialized.push(input);
+
+    if (this.loseNextInitializeAnswer) {
+      // Paystack opened the transaction; its answer never arrived.
+      this.loseNextInitializeAnswer = false;
+
+      return Promise.reject(new PaystackUnavailableError());
+    }
 
     return Promise.resolve({
       authorizationUrl: `https://checkout.paystack.test/${input.reference}`,
@@ -129,6 +143,14 @@ export class FakePaystackClient implements PaystackClient {
     }
 
     const sent = this.initialized.find((one) => one.reference === reference);
+
+    if (sent === undefined && !this.verifyAnswers.has(reference)) {
+      // Paystack's answer for a reference it never initialized.
+      return Promise.reject(
+        new PaystackRefusedError(400, 'Transaction reference not found'),
+      );
+    }
+
     const base: VerifiedTransaction =
       sent === undefined
         ? {

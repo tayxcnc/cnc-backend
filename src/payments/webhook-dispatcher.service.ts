@@ -9,12 +9,15 @@ import {
 import { readTransaction } from './paystack-transaction';
 
 /**
- * Hands a verified, recorded delivery to what acts on it, after the
- * webhook has answered (TAY's `WebhookDispatcherService`, plan §8.2).
+ * Hands a verified, recorded delivery to what acts on it (TAY's
+ * `WebhookDispatcherService`, plan §8.2), while the webhook's request
+ * waits a few seconds for it (`dispatchWithin`), and after the answer if
+ * it takes longer.
  *
- * After the answer, because Paystack retries a slow delivery: work done
- * inside the request (verify is a network call) would turn a slow minute
- * into a retry of an event already being handled. Every dispatch is
+ * Never unbounded inside the request, because Paystack retries a slow
+ * delivery: a slow minute of verify would turn into a retry of an event
+ * already being handled. Not entirely after it either, because Cloud Run
+ * throttles CPU outside requests. Every dispatch is
  * wrapped so a failure is logged, never an unhandled rejection, and the
  * in-flight set is drained on shutdown, so a Cloud Run SIGTERM mid-deploy
  * does not abandon a payment half handled. A failure leaves the
@@ -34,11 +37,41 @@ export class WebhookDispatcherService implements OnModuleDestroy {
     private readonly checkouts: CheckoutPaymentsService,
   ) {}
 
-  /** Start handling a delivery without waiting for it. */
+  /**
+   * Handle a delivery, waiting for it at most `waitMs` before answering;
+   * past that it carries on in the background. Cloud Run gives an
+   * instance CPU only while a request is open (request-based allocation,
+   * the default, with `--min-instances 0`), so work left entirely to the
+   * background may stall until the next request; a verify and a settle
+   * normally finish within a second, inside the delivery's own request.
+   * The cap keeps a slow Paystack from turning the delivery into a retry.
+   */
+  async dispatchWithin(
+    envelope: PaystackEnvelope,
+    paymentEventId: string,
+    waitMs: number,
+  ): Promise<void> {
+    const work = this.dispatchInBackground(envelope, paymentEventId);
+    let timer: NodeJS.Timeout | undefined;
+    const cap = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, waitMs);
+    });
+
+    try {
+      await Promise.race([work, cap]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Start handling a delivery without waiting for it. Answers the work,
+   * which never rejects.
+   */
   dispatchInBackground(
     envelope: PaystackEnvelope,
     paymentEventId: string,
-  ): void {
+  ): Promise<void> {
     const work = this.dispatch(envelope, paymentEventId).catch(
       (error: unknown) => {
         // The event id, never the payload: a charge's body carries the
@@ -53,6 +86,8 @@ export class WebhookDispatcherService implements OnModuleDestroy {
 
     this.inFlight.add(work);
     void work.finally(() => this.inFlight.delete(work));
+
+    return work;
   }
 
   /** Every dispatch running now, settled. For shutdown and the e2e suite. */

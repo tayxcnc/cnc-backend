@@ -43,6 +43,8 @@ import {
   ONLINE_ORDER_CLOSED_MESSAGE,
   ONLINE_ORDER_NOT_FOUND_MESSAGE,
   OUTSTANDING_BALANCE_MESSAGE,
+  REFUND_ID_MESSAGE,
+  REFUND_NOT_UNCONFIRMED_MESSAGE,
   REFUND_REFUSED_MESSAGE,
   REFUND_UNCONFIRMED_MESSAGE,
   SELECT_ACTIVE_ONLINE_ORDER_MESSAGE,
@@ -93,7 +95,12 @@ interface Detail {
   version: number;
   order: {
     status: OrderStatus;
-    lines: { menuItemId: string; qty: number; unitPriceKobo: number }[];
+    lines: {
+      menuItemId: string;
+      option: string;
+      qty: number;
+      unitPriceKobo: number;
+    }[];
     payments: {
       number: string;
       method: PaymentMethod;
@@ -102,7 +109,12 @@ interface Detail {
     }[];
   };
   adjustments: { action: string; amountKobo: number; settled: boolean }[];
-  refunds: { amountKobo: number; status: OnlineRefundStatus }[];
+  refunds: {
+    id: string;
+    amountKobo: number;
+    status: OnlineRefundStatus;
+    providerRefundId: string | null;
+  }[];
 }
 
 interface Docket {
@@ -803,6 +815,33 @@ describe('Online Orders: the staff commands (e2e)', () => {
         method: PaymentMethod.TRANSFER,
         amountKobo: extraKobo,
       });
+
+      // The demo's order of sentences: the order, then something owed,
+      // before the transfer's details.
+      const blank = { method: 'TRANSFER', reason: 'Again' };
+
+      expect(
+        messageOf(
+          await run(
+            id,
+            'balance',
+            StaffRole.MANAGER,
+            blank,
+            randomUUID(),
+          ).expect(409),
+        ),
+      ).toBe(NO_ADJUSTMENT_MESSAGE);
+      expect(
+        messageOf(
+          await command(
+            'no-such-order',
+            'balance',
+            StaffRole.MANAGER,
+            { version: 0, ...blank },
+            randomUUID(),
+          ).expect(404),
+        ),
+      ).toBe(ONLINE_ORDER_NOT_FOUND_MESSAGE);
     });
 
     it('keeps a refused refund owed, and never resends one Paystack did not answer', async () => {
@@ -907,6 +946,104 @@ describe('Online Orders: the staff commands (e2e)', () => {
         key2,
       ).expect(503);
       expect(paystack.refunds).toHaveLength(before);
+
+      // The dashboard shows no refund: a manager records that, and the
+      // money is owed again, for Cash.
+      const refundId = kept.refunds[0].id;
+      const resolve = (body: Record<string, unknown>) =>
+        run(
+          unconfirmed.id,
+          `refunds/${refundId}/resolve`,
+          StaffRole.MANAGER,
+          body,
+        );
+
+      expect(
+        messageOf(
+          await resolve({
+            outcome: 'SENT',
+            reason: 'In the dashboard',
+          }).expect(400),
+        ),
+      ).toBe(REFUND_ID_MESSAGE);
+      await run(
+        unconfirmed.id,
+        `refunds/${refundId}/resolve`,
+        StaffRole.CASHIER,
+        { outcome: 'NOT_SENT', reason: 'Not there' },
+      ).expect(403);
+
+      const reopened = (
+        await resolve({
+          outcome: 'NOT_SENT',
+          reason: 'Not in the Paystack dashboard',
+        }).expect(200)
+      ).body as Detail;
+
+      expect(reopened.money.balanceKobo).toBe(-owed);
+      expect(reopened.refunds).toEqual([
+        expect.objectContaining({ status: OnlineRefundStatus.REFUSED }),
+      ]);
+      expect(reopened.adjustments).toEqual([
+        expect.objectContaining({ settled: false }),
+      ]);
+      expect(
+        messageOf(
+          await resolve({ outcome: 'NOT_SENT', reason: 'Again' }).expect(409),
+        ),
+      ).toBe(REFUND_NOT_UNCONFIRMED_MESSAGE);
+      expect(
+        await prisma.auditLog.count({
+          where: { action: 'online.resolveRefund' },
+        }),
+      ).toBe(1);
+
+      const settled = (
+        await run(
+          unconfirmed.id,
+          'balance',
+          StaffRole.MANAGER,
+          { method: 'CASH', reason: 'Refunded in cash' },
+          randomUUID(),
+        ).expect(200)
+      ).body as Detail;
+
+      expect(settled.money.balanceKobo).toBe(0);
+    });
+
+    it('resolves an unconfirmed refund the dashboard shows as sent', async () => {
+      const placed = await place();
+
+      await run(placed.id, 'edit', StaffRole.MANAGER, {
+        lines: [{ menuItemId: food.id, qty: 2 }],
+        reason: 'No drinks',
+      }).expect(200);
+      paystack.failNextRefundWith = new PaystackUnavailableError();
+      await run(
+        placed.id,
+        'balance',
+        StaffRole.MANAGER,
+        { method: 'PAYSTACK', reason: 'Refund drinks' },
+        randomUUID(),
+      ).expect(503);
+
+      const refundId = (await read(placed.id)).refunds[0].id;
+      const sent = (
+        await run(placed.id, `refunds/${refundId}/resolve`, StaffRole.MANAGER, {
+          outcome: 'SENT',
+          providerRefundId: '987654',
+          reason: 'Shown as processed',
+        }).expect(200)
+      ).body as Detail;
+
+      expect(sent.money.balanceKobo).toBe(0);
+      expect(sent.refunds).toEqual([
+        expect.objectContaining({
+          status: OnlineRefundStatus.SENT,
+          providerRefundId: '987654',
+        }),
+      ]);
+      expect(sent.order.payments.at(-1)).toMatchObject({ reversed: false });
     });
   });
 
@@ -1055,13 +1192,119 @@ describe('Online Orders: the staff commands (e2e)', () => {
       });
     });
 
-    it('never refunds to a card more than the card paid', async () => {
-      const { id } = await place();
+    it('returns to the Bar only what the sale took, whatever was paired since', async () => {
+      // A drink sold while no Bar stock item was paired with it.
+      const unpaired = await prisma.menuItem.findFirstOrThrow({
+        where: {
+          active: true,
+          showOnline: true,
+          department: Department.BAR,
+          choiceOptions: { isEmpty: true },
+          priceKobo: { gt: 0 },
+          id: { not: drink.id },
+        },
+        orderBy: { slug: 'desc' },
+      });
+      const pairedItem = await prisma.stockItem.findFirstOrThrow({
+        where: { menuItemId: unpaired.id },
+      });
+
+      // A Bar stock item is always paired with something (a CHECK), so the
+      // drink is left unpaired by pointing its item at a dish for now.
+      await prisma.stockItem.update({
+        where: { id: pairedItem.id },
+        data: { menuItemId: food.id },
+      });
+
+      try {
+        const placed = await place({
+          lines: [
+            { dishId: food.slug, qty: 1 },
+            { dishId: unpaired.slug, qty: 2 },
+          ],
+        });
+        const number = (await read(placed.id)).orderNumber;
+        const moved = () =>
+          prisma.stockMovement.count({ where: { ref: number } });
+
+        expect(await moved()).toBe(0);
+
+        // A manager pairs it afterwards, then the order is cancelled.
+        await prisma.stockItem.update({
+          where: { id: pairedItem.id },
+          data: { menuItemId: unpaired.id },
+        });
+        await run(placed.id, 'cancel', StaffRole.MANAGER, {
+          reason: 'Guest cancelled',
+        }).expect(200);
+
+        // Nothing left the Bar for this order, so nothing comes back.
+        expect(await moved()).toBe(0);
+      } finally {
+        await prisma.stockItem.update({
+          where: { id: pairedItem.id },
+          data: { menuItemId: unpaired.id },
+        });
+      }
+    });
+
+    it('prices a new option of a dish already on the order at today’s price', async () => {
+      const choice = await prisma.menuItem.findFirstOrThrow({
+        where: {
+          active: true,
+          showOnline: true,
+          department: Department.RESTAURANT,
+          priceKobo: { gt: 0 },
+          NOT: { choiceOptions: { isEmpty: true } },
+        },
+        orderBy: { slug: 'asc' },
+      });
+      const [first, second] = choice.choiceOptions;
+      const placed = await place({
+        lines: [{ dishId: choice.slug, option: first, qty: 1 }],
+      });
+      const raised = choice.priceKobo + 100000;
+
+      await prisma.menuItem.update({
+        where: { id: choice.id },
+        data: { priceKobo: raised },
+      });
+
+      try {
+        const edited = (
+          await run(placed.id, 'edit', StaffRole.MANAGER, {
+            lines: [
+              { menuItemId: choice.id, option: first, qty: 1 },
+              { menuItemId: choice.id, option: second, qty: 1 },
+            ],
+            reason: 'Guest added another',
+          }).expect(200)
+        ).body as Change;
+        const priceOf = (option: string) =>
+          edited.onlineOrder.order.lines.find((line) => line.option === option)
+            ?.unitPriceKobo;
+
+        expect(priceOf(first)).toBe(choice.priceKobo);
+        expect(priceOf(second)).toBe(raised);
+      } finally {
+        await prisma.menuItem.update({
+          where: { id: choice.id },
+          data: { priceKobo: choice.priceKobo },
+        });
+      }
+    });
+
+    it('refunds to the card only what the card paid, and the rest is recorded as Cash', async () => {
+      const placed = await place();
+      const { id } = placed;
 
       await run(id, 'zone', StaffRole.MANAGER, {
         mode: 'OUTSIDE_JOS',
         reason: 'Further away',
       }).expect(200);
+
+      const extraKobo = (await read(id)).money.balanceKobo;
+
       await run(
         id,
         'balance',
@@ -1073,23 +1316,48 @@ describe('Online Orders: the staff commands (e2e)', () => {
         reason: 'Guest cancelled',
       }).expect(200);
 
+      // Owed: the card's money and the cash. Q26: the card's part goes
+      // back through Paystack; the rest stays owed.
+      const card = (
+        await run(
+          id,
+          'balance',
+          StaffRole.MANAGER,
+          { method: 'PAYSTACK', reason: 'Full refund' },
+          randomUUID(),
+        ).expect(200)
+      ).body as Detail;
+
+      expect(paystack.refunds.at(-1)).toMatchObject({
+        transactionReference: placed.reference,
+        amountKobo: placed.totalKobo,
+      });
+      expect(card.money.balanceKobo).toBe(-extraKobo);
+      expect(card.adjustments.some((one) => !one.settled)).toBe(true);
+
+      // Nothing is left on the card to refund.
       const tooMuch = await run(
         id,
         'balance',
         StaffRole.MANAGER,
-        { method: 'PAYSTACK', reason: 'Full refund' },
+        { method: 'PAYSTACK', reason: 'The rest' },
         randomUUID(),
       ).expect(409);
 
       expect(messageOf(tooMuch)).toBe(CARD_REFUND_LIMIT_MESSAGE);
 
-      await run(
-        id,
-        'balance',
-        StaffRole.MANAGER,
-        { method: 'CASH', reason: 'Refunded in cash' },
-        randomUUID(),
-      ).expect(200);
+      const cash = (
+        await run(
+          id,
+          'balance',
+          StaffRole.MANAGER,
+          { method: 'CASH', reason: 'Refunded in cash' },
+          randomUUID(),
+        ).expect(200)
+      ).body as Detail;
+
+      expect(cash.money.balanceKobo).toBe(0);
+      expect(cash.adjustments.every((one) => one.settled)).toBe(true);
     });
   });
 

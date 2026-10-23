@@ -83,6 +83,30 @@ export class PaystackRefusedError extends Error {
 }
 
 /**
+ * The HTTP statuses Paystack answers with when it is struggling or CNC's
+ * key is not accepted, not when it has looked and found nothing: an
+ * outage at its end, a rate limit, a key refused.
+ */
+const PAYSTACK_NOT_AN_ANSWER_STATUSES = new Set([401, 403, 429]);
+
+/**
+ * Whether a verify that threw is Paystack's definite "no such transaction"
+ * (its 400 or 404 "Transaction reference not found"), the only failure a
+ * recheck may read as "never paid". Anything else (a 5xx, a 429, a key
+ * refused, a malformed answer, no answer) says nothing about the payment,
+ * so the checkout must wait for a later ask: expiring it then could turn
+ * money taken into an expired checkout nobody looks at again.
+ */
+export function paystackNeverSawIt(error: unknown): boolean {
+  return (
+    error instanceof PaystackRefusedError &&
+    error.providerStatus >= 400 &&
+    error.providerStatus < 500 &&
+    !PAYSTACK_NOT_AN_ANSWER_STATUSES.has(error.providerStatus)
+  );
+}
+
+/**
  * What `refund` sends (C7-4, Q26): money back to the card of one paid
  * transaction. Kobo, never multiplied. CNC absorbs Paystack's fee (Q26):
  * the customer gets `amountKobo` back and nothing is taken off it.

@@ -17,6 +17,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import {
+  CheckoutStatus,
   CustomerNotificationKind,
   Department,
   OnlineFulfilmentStatus,
@@ -27,7 +28,10 @@ import {
 } from '../generated/cnc-client';
 import { seedData } from '../prisma/data-seed';
 import { CncTokenService } from '../src/auth/cnc-token.service';
+import { formatIsoDate } from '../src/common/calendar-date';
 import { formatKobo } from '../src/common/money';
+import { watToday } from '../src/common/wat';
+import { ANONYMISED_CHECKOUT_REASON } from '../src/payments/checkout-payment-rules';
 import { CUSTOMER_ORDER_NOT_FOUND_MESSAGE } from '../src/online-orders/online-order-messages';
 import { PaystackRefusedError } from '../src/payments/paystack-client';
 import { WebhookDispatcherService } from '../src/payments/webhook-dispatcher.service';
@@ -855,6 +859,181 @@ describe('Online order messages, my orders and the bell (e2e)', () => {
         true,
       );
       expect(await items(me.id)).toEqual([]);
+    });
+
+    /** A checkout of one dish for pickup, by `headers`' customer. */
+    const checkoutFor = async (headers: Record<string, string>) =>
+      (
+        await request(server())
+          .post('/api/v1/checkouts')
+          .set('Idempotency-Key', randomUUID())
+          .set(headers)
+          .send({
+            lines: [{ dishId: food.slug, qty: 1 }],
+            fulfilment: 'PICKUP',
+            timing: 'ASAP',
+            name: 'Chidi Eze',
+            phone: '0803 123 4567',
+            email: `chidi-${randomUUID()}@example.com`,
+          })
+          .expect(201)
+      ).body as { reference: string; sums: { totalKobo: number } };
+
+    const resolveHeld = (
+      checkoutId: string,
+      role: StaffRole = StaffRole.MANAGER,
+    ) =>
+      request(server())
+        .post(`/api/v1/staff/online-orders/checkouts/${checkoutId}/resolve`)
+        .set(auth(role))
+        .send({ reason: 'Refunded in the Paystack dashboard' });
+
+    it('blocks deletion while a payment is held, until a manager resolves it; the bell item goes with it', async () => {
+      const me = await customer();
+      const created = await checkoutFor(me.headers);
+
+      // A signed payment of the wrong amount: held.
+      await postSignedWebhook(
+        app,
+        chargeSuccessBody(created.reference, 100),
+        PAYSTACK_KEY,
+      ).expect(200);
+      await dispatcher.settled();
+
+      const held = await prisma.checkout.findUniqueOrThrow({
+        where: { reference: created.reference },
+      });
+      const onBell = async () =>
+        (await bell(auth(StaffRole.MANAGER))).data.find(
+          (item) => item.id === `attention:${held.id}`,
+        );
+
+      expect(held.status).toBe(CheckoutStatus.NEEDS_ATTENTION);
+      expect(await onBell()).toMatchObject({ ref: held.id });
+      await request(server()).delete('/api/v1/me').set(me.headers).expect(409);
+
+      await resolveHeld(held.id, StaffRole.CASHIER).expect(403);
+      await request(server())
+        .post(`/api/v1/staff/online-orders/checkouts/${held.id}/resolve`)
+        .set(auth(StaffRole.MANAGER))
+        .send({})
+        .expect(400);
+      await resolveHeld(held.id).expect(204);
+
+      expect(
+        await prisma.checkout.findUniqueOrThrow({ where: { id: held.id } }),
+      ).toMatchObject({ status: CheckoutStatus.RESOLVED, orderId: null });
+      expect(await onBell()).toBeUndefined();
+      expect(
+        await prisma.auditLog.count({
+          where: { action: 'online.resolveCheckout', ref: created.reference },
+        }),
+      ).toBe(1);
+      await resolveHeld(held.id).expect(409);
+      await resolveHeld('no-such-checkout').expect(404);
+
+      await request(server()).delete('/api/v1/me').set(me.headers).expect(204);
+    });
+
+    it('holds a late payment on a deleted customer’s expired checkout instead of writing an order nobody can deliver', async () => {
+      const me = await customer();
+      const created = await checkoutFor(me.headers);
+
+      // The checkout expired unpaid; the customer deleted their account.
+      await prisma.checkout.update({
+        where: { reference: created.reference },
+        data: { status: CheckoutStatus.EXPIRED },
+      });
+      await request(server()).delete('/api/v1/me').set(me.headers).expect(204);
+
+      // Then the payment still open on Paystack's page went through.
+      await postSignedWebhook(
+        app,
+        chargeSuccessBody(created.reference, created.sums.totalKobo),
+        PAYSTACK_KEY,
+      ).expect(200);
+      await dispatcher.settled();
+
+      const checkout = await prisma.checkout.findUniqueOrThrow({
+        where: { reference: created.reference },
+      });
+
+      expect(checkout).toMatchObject({
+        status: CheckoutStatus.NEEDS_ATTENTION,
+        orderId: null,
+        attentionReason: ANONYMISED_CHECKOUT_REASON,
+      });
+      expect(
+        await prisma.onlineOrder.count({
+          where: { paystackReference: created.reference },
+        }),
+      ).toBe(0);
+      expect(
+        (await bell(auth(StaffRole.MANAGER))).data.some(
+          (item) => item.id === `attention:${checkout.id}`,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('a web order for tomorrow (last: it closes today’s kitchen day)', () => {
+    it('dates its docket on the day it is cooked, so closing today keeps it on the bell and the cook enters it tomorrow', async () => {
+      const slots = (
+        await request(server())
+          .get('/api/v1/ordering/slots?fulfilment=PICKUP')
+          .expect(200)
+      ).body as { tomorrow: string[] };
+      const today = watToday(new Date());
+      const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+      const placed = await place({
+        fulfilment: 'PICKUP',
+        address: undefined,
+        timing: 'SCHEDULED',
+        date: formatIsoDate(tomorrow),
+        time: slots.tomorrow[0],
+      });
+      const ref = `KOT-${placed.number}`;
+      const docket = await prisma.docket.findFirstOrThrow({ where: { ref } });
+      const order = await prisma.order.findFirstOrThrow({
+        where: { number: placed.number },
+      });
+
+      expect(formatIsoDate(docket.businessDate)).toBe(formatIsoDate(tomorrow));
+      // The money is today's: the sale is dated the day it was paid.
+      expect(formatIsoDate(order.businessDate)).toBe(formatIsoDate(today));
+
+      await request(server())
+        .post(`/api/v1/staff/kitchen/days/${formatIsoDate(today)}/close`)
+        .set(auth(StaffRole.KITCHEN))
+        .expect(200);
+
+      const onBell = async (headers: Record<string, string>) =>
+        (await bell(headers)).data.some((item) => item.ref === ref);
+
+      expect(await onBell(auth(StaffRole.KITCHEN))).toBe(true);
+
+      // Tomorrow: the cook enters it as the kitchen's own entry.
+      jest.setSystemTime(Date.now() + 24 * 60 * 60 * 1000);
+
+      try {
+        // Today's tokens have expired overnight: a cook signed in today.
+        const cook = {
+          Authorization: `Bearer ${await accessTokenFor(
+            tokens,
+            (await createStaffAccount(prisma, StaffRole.KITCHEN)).id,
+          )}`,
+        };
+
+        expect(await onBell(cook)).toBe(true);
+        await request(server())
+          .put(`/api/v1/staff/kitchen/entries/${ref}`)
+          .set(cook)
+          .send({ lines: [{ stockItemId: kitchenStockId, qty: 2 }] })
+          .expect(200);
+        expect(await onBell(cook)).toBe(false);
+      } finally {
+        jest.setSystemTime(Date.now() - 24 * 60 * 60 * 1000);
+      }
     });
   });
 });

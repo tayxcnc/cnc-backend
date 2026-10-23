@@ -26,6 +26,7 @@ import {
   INVALID_ZONE_MESSAGE,
   NEXT_STAGE_MESSAGE,
   ONLINE_CONTACT_NAME_MAX_LENGTH,
+  REFUND_OUTCOME_MESSAGE,
 } from '../online-order-messages';
 
 /** The Online Orders screen's two tabs (`GET /staff/online-orders`). */
@@ -245,5 +246,54 @@ export class OnlineBalanceRequest extends VersionedWriteDto {
   reference?: string;
 
   @AdminReason('Why the money is recorded or returned.')
+  reason!: string;
+}
+
+/**
+ * What Paystack's dashboard shows for a card refund whose answer never
+ * arrived: it has the refund (`SENT`), or it does not (`NOT_SENT`).
+ */
+export enum OnlineRefundOutcome {
+  SENT = 'SENT',
+  NOT_SENT = 'NOT_SENT',
+}
+
+/** Longest Paystack refund id accepted. */
+const PROVIDER_REFUND_ID_MAX_LENGTH = 64;
+
+/**
+ * Body of `POST /staff/online-orders/:id/refunds/:refundId/resolve`: a
+ * manager records what Paystack's dashboard shows for an unconfirmed card
+ * refund.
+ */
+export class OnlineRefundResolveRequest extends VersionedWriteDto {
+  @ApiProperty({
+    enum: OnlineRefundOutcome,
+    enumName: 'OnlineRefundOutcome',
+    description:
+      'SENT: the dashboard shows the refund (give its id). NOT_SENT: it ' +
+      'does not; the refund is owed again, for Cash or Transfer.',
+  })
+  @Checked((value) =>
+    (Object.values(OnlineRefundOutcome) as unknown[]).includes(value)
+      ? null
+      : REFUND_OUTCOME_MESSAGE,
+  )
+  outcome!: OnlineRefundOutcome;
+
+  @ApiPropertyOptional({
+    description: 'Paystack’s refund id from the dashboard; required for SENT.',
+    maxLength: PROVIDER_REFUND_ID_MAX_LENGTH,
+  })
+  @OptionalText('providerRefundId', PROVIDER_REFUND_ID_MAX_LENGTH)
+  providerRefundId?: string;
+
+  @AdminReason('What the Paystack dashboard showed.')
+  reason!: string;
+}
+
+/** Body of `POST /staff/online-orders/checkouts/:checkoutId/resolve`. */
+export class HeldCheckoutResolveRequest {
+  @AdminReason('How the held payment was dealt with in Paystack.')
   reason!: string;
 }

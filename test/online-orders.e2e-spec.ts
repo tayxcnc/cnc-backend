@@ -27,7 +27,14 @@ import { formatIsoDate } from '../src/common/calendar-date';
 import { watToday } from '../src/common/wat';
 import { DELETE_WITH_UPCOMING_MESSAGE } from '../src/customers/customer-deletion.service';
 import { SWEEP_TOKEN_HEADER } from '../src/internal/sweep-token.guard';
-import { PaystackUnavailableError } from '../src/payments/paystack-client';
+import {
+  RECHECK_AFTER_EXPIRY_MS,
+  RECHECK_INTERVAL_MS,
+} from '../src/ordering/checkouts.service';
+import {
+  PaystackRefusedError,
+  PaystackUnavailableError,
+} from '../src/payments/paystack-client';
 import { WebhookDispatcherService } from '../src/payments/webhook-dispatcher.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { drawNumber } from '../src/prisma/sequences';
@@ -430,6 +437,21 @@ describe('online orders on payment, and the payment sweeps (e2e)', () => {
 
       fakePaystack(app).pay(body.reference);
 
+      // Within the recheck interval the read answers what is stored and
+      // asks Paystack nothing.
+      const asked = fakePaystack(app).verified.length;
+
+      expect((await read(body.reference)).body).toMatchObject({
+        status: 'PENDING',
+      });
+      expect(fakePaystack(app).verified.length).toBe(asked);
+
+      // The interval passed (as five seconds of polling would).
+      await prisma.checkout.update({
+        where: { reference: body.reference },
+        data: { recheckedAt: new Date(Date.now() - RECHECK_INTERVAL_MS) },
+      });
+
       const paid = (await read(body.reference)).body as { number: string };
 
       expect(paid).toMatchObject({ status: 'PAID' });
@@ -447,6 +469,28 @@ describe('online orders on payment, and the payment sweeps (e2e)', () => {
         movements: 1,
         audits: 1,
       });
+    });
+
+    it('stops asking Paystack on the read a day after an expired checkout’s expiry', async () => {
+      const body = await created();
+
+      await prisma.checkout.update({
+        where: { reference: body.reference },
+        data: {
+          status: CheckoutStatus.EXPIRED,
+          expiresAt: new Date(Date.now() - RECHECK_AFTER_EXPIRY_MS - 60_000),
+        },
+      });
+
+      const asked = fakePaystack(app).verified.length;
+
+      for (let poll = 0; poll < 3; poll += 1) {
+        expect((await read(body.reference)).body).toMatchObject({
+          status: CheckoutStatus.EXPIRED,
+        });
+      }
+
+      expect(fakePaystack(app).verified.length).toBe(asked);
     });
 
     it('sends drinks alone to no kitchen: no docket, revision 0', async () => {
@@ -724,6 +768,41 @@ describe('online orders on payment, and the payment sweeps (e2e)', () => {
       expect((await sweep('checkouts').expect(200)).body).toMatchObject({
         expired: 1,
       });
+    });
+
+    it('never expires a checkout while Paystack answers an outage, a rate limit or a refused key', async () => {
+      const body = await created();
+
+      await prisma.checkout.update({
+        where: { reference: body.reference },
+        data: { expiresAt: new Date(Date.now() - 60 * 1000) },
+      });
+      // Paid; the webhook was lost; then Paystack struggles.
+      fakePaystack(app).pay(body.reference);
+
+      for (const status of [503, 429, 401]) {
+        fakePaystack(app).failNextVerifyWith = new PaystackRefusedError(
+          status,
+          'Paystack is not answering properly',
+        );
+
+        expect((await sweep('checkouts').expect(200)).body).toEqual({
+          checked: 1,
+          paid: 0,
+          held: 0,
+          expired: 0,
+          unreachable: 1,
+        });
+        expect((await checkoutRow(body.reference)).status).toBe(
+          CheckoutStatus.PENDING,
+        );
+      }
+
+      // Paystack answers again: the money taken becomes its order.
+      expect((await sweep('checkouts').expect(200)).body).toMatchObject({
+        paid: 1,
+      });
+      expect(await written(body.reference)).toMatchObject({ orders: 1 });
     });
 
     it('settles once when the sweep and a webhook race', async () => {
