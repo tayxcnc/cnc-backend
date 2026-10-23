@@ -1,5 +1,6 @@
 import {
   ReservationSource,
+  ReservationStatus,
   TableSessionStatus,
 } from '../../generated/cnc-client';
 import {
@@ -22,6 +23,17 @@ import {
  * for a clock to pass a booking time.
  */
 
+/**
+ * The statuses that hold a table for the booking's date (plan §4.5), the
+ * statuses of the partial unique index `Reservation_tableId_businessDate_key`.
+ * One list for the booking command, the floor, the public availability and
+ * account deletion, so none of them can disagree on what "booked" means.
+ */
+export const HOLDING_STATUSES: ReservationStatus[] = [
+  ReservationStatus.CONFIRMED,
+  ReservationStatus.CHECKED_IN,
+];
+
 /** `HH:mm`, zero-padded, 24-hour: the form every arrival time travels in. */
 export const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -40,6 +52,24 @@ export function clockText(minutes: number): string {
 }
 
 /**
+ * A booking date as the website writes it (`lib/booking/engine.ts`
+ * `dateText`): "Sat 24 Oct 2026". The date is a `@db.Date` (UTC midnight),
+ * so it is formatted in UTC, never shifted a day. The booking emails and
+ * the in-app list both write dates through this.
+ */
+export function bookingDateText(businessDate: Date): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+    .format(businessDate)
+    .replace(/,/g, '');
+}
+
+/**
  * The instant a booking starts: its date and arrival time on a wall clock
  * in Jos (A11). `businessDate` is a `@db.Date` value (UTC midnight).
  */
@@ -50,6 +80,85 @@ export function bookingStart(businessDate: Date, startMinutes: number): Date {
     businessDate.getUTCDate(),
     Math.floor(startMinutes / 60),
     startMinutes % 60,
+  );
+}
+
+/**
+ * How long before a booking starts a customer may still change or cancel
+ * it online (Q6: "until 24 hours before the booking (≥ 24 h)"). After that,
+ * they call CNC; staff can still change or cancel it.
+ */
+export const CHANGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** The last instant a customer may change or cancel the booking online. */
+export function changeableUntil(
+  businessDate: Date,
+  startMinutes: number,
+): Date {
+  return new Date(
+    bookingStart(businessDate, startMinutes).getTime() - CHANGE_WINDOW_MS,
+  );
+}
+
+/**
+ * Whether the booking is less than 24 hours away at `now` (Q6), so the
+ * customer's change or cancel is refused. Exactly 24 hours ahead is still
+ * allowed ("≥ 24 h"); a booking whose time has passed is inside too.
+ */
+export function insideChangeWindow(
+  businessDate: Date,
+  startMinutes: number,
+  now: Date,
+): boolean {
+  return now.getTime() > changeableUntil(businessDate, startMinutes).getTime();
+}
+
+/**
+ * How long before a booking its reminder goes (Q32's default: "24 hours
+ * before"). Its own constant, not `CHANGE_WINDOW_MS`: the two answers
+ * (Q6, Q32) are the founder's separately and may part.
+ */
+export const REMINDER_LEAD_MS = 24 * 60 * 60 * 1000;
+
+/** The instant a booking's reminder is due: `REMINDER_LEAD_MS` before it starts. */
+export function reminderDueAt(businessDate: Date, startMinutes: number): Date {
+  return new Date(
+    bookingStart(businessDate, startMinutes).getTime() - REMINDER_LEAD_MS,
+  );
+}
+
+/**
+ * What a booking's `reminderSentAt` starts as when it is made, or when its
+ * date or time is changed, at `now`: `now` when it is already less than
+ * `REMINDER_LEAD_MS` away, so the reminders sweep passes it by (Q32: "none
+ * for bookings made less than 24 hours ahead"; a guest who has just
+ * chosen the time needs no reminder of it), else null, so the sweep sends
+ * one when it falls due. Exactly 24 hours ahead still gets one, as Q6
+ * still allows a change then.
+ */
+export function initialReminderStamp(
+  businessDate: Date,
+  startMinutes: number,
+  now: Date,
+): Date | null {
+  return now.getTime() > reminderDueAt(businessDate, startMinutes).getTime()
+    ? now
+    : null;
+}
+
+/**
+ * Whether the reminders sweep sends a booking's reminder at `now`: it is
+ * due, and the booking has not started. A sweep that did not run for a
+ * day sends nothing for a booking already begun.
+ */
+export function reminderDue(
+  businessDate: Date,
+  startMinutes: number,
+  now: Date,
+): boolean {
+  return (
+    now.getTime() >= reminderDueAt(businessDate, startMinutes).getTime() &&
+    now.getTime() < bookingStart(businessDate, startMinutes).getTime()
   );
 }
 
@@ -125,6 +234,68 @@ export function arrivalProblem(input: {
   }
 
   return null;
+}
+
+/**
+ * The arrival times a website or app guest is offered on `businessDate`,
+ * as `HH:mm`, earliest first (`GET /venues/:venue/availability`): every
+ * minute from the day's opening to its closing that `arrivalProblem`
+ * accepts for an online booking, on the grid. Built from that one rule, so
+ * a time offered is a time the booking command takes. Today's passed
+ * times are dropped, as the website's `arrivalSlots` drops them.
+ */
+export function arrivalTimes(input: {
+  businessDate: Date;
+  now: Date;
+  hours: DayHours;
+  settings: ArrivalSettings;
+}): string[] {
+  const { hours } = input;
+
+  if (
+    hours.isClosed ||
+    hours.opensAtMinutes === null ||
+    hours.closesAtMinutes === null
+  ) {
+    return [];
+  }
+
+  const times: string[] = [];
+
+  for (
+    let minutes = hours.opensAtMinutes;
+    minutes < hours.closesAtMinutes;
+    minutes += input.settings.slotStepMinutes
+  ) {
+    const problem = arrivalProblem({
+      ...input,
+      source: ReservationSource.WEB,
+      startMinutes: minutes,
+    });
+
+    if (problem === null) times.push(clockText(minutes));
+  }
+
+  return times;
+}
+
+/** What the website shows a table as (plan §5.1, §7.5). */
+export const PUBLIC_TABLE_STATUSES = [
+  'AVAILABLE',
+  'RESERVED',
+  'OCCUPIED',
+  'BLOCKED',
+] as const;
+
+export type PublicTableStatus = (typeof PUBLIC_TABLE_STATUSES)[number];
+
+/**
+ * A floor status as the website names it: a Locked table is "blocked"
+ * (plan §7.5; the website shows it as Unavailable), and nothing of why it
+ * is locked leaves the staff app.
+ */
+export function publicTableStatus(status: FloorStatus): PublicTableStatus {
+  return status === 'LOCKED' ? 'BLOCKED' : status;
 }
 
 /**

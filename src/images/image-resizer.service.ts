@@ -11,12 +11,13 @@ import {
 /**
  * How each kind of photo is stored (A17): a staff photo is a square of at
  * most 320 pixels (the staff card and avatars), a menu photo fits inside
- * 800 pixels at its own shape (the menu pages frame it). Customer photos
- * (256 square) arrive with C6.
+ * 800 pixels at its own shape (the menu pages frame it), and a customer's
+ * is a square of at most 256 pixels (the account's avatar, from C6).
  */
 export const PHOTO_SHAPES = {
   staff: { edge: 320, square: true },
   menu: { edge: 800, square: false },
+  customer: { edge: 256, square: true },
 } as const;
 
 export type PhotoKind = keyof typeof PHOTO_SHAPES;

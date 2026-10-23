@@ -22,7 +22,10 @@ import {
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
 import { watToday } from '../common/wat';
+import { lockCustomerEmail } from '../customers/customer-email-lock';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { verifiedCustomerId } from './customer-link';
+import { ReservationMail } from './reservation-mail';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
 import { uniqueViolationTargets } from '../prisma/unique-violation';
@@ -63,22 +66,18 @@ import {
   reservationResponse,
 } from './reception-records';
 import {
+  HOLDING_STATUSES,
   arrivalProblem,
   bigPartyProblem,
   bookingStart,
   clockMinutes,
   clockText,
   guestPhone,
+  initialReminderStamp,
   tableRef,
 } from './reservation-rules';
 
 type Tx = Prisma.TransactionClient;
-
-/** The statuses that hold a table for the booking's date (plan §4.5). */
-const HOLDING: ReservationStatus[] = [
-  ReservationStatus.CONFIRMED,
-  ReservationStatus.CHECKED_IN,
-];
 
 /**
  * One booking as `book` takes it, whatever the channel: Reception now, the
@@ -88,7 +87,10 @@ const HOLDING: ReservationStatus[] = [
 export interface BookingInput {
   actor: AuditActor;
   source: ReservationSource;
-  /** The signed-in customer (C6), or null; Reception's link is Q35's. */
+  /**
+   * The signed-in customer (an app booking), or null: the booking then
+   * links only to a customer with the same verified email or phone (Q35).
+   */
   customerId: string | null;
   name: string;
   phone: string;
@@ -99,6 +101,12 @@ export interface BookingInput {
   party: number;
   note: string;
   ipAddress: string;
+  /**
+   * The hashed client address of a website or app booking, which the
+   * stored booking caps count (`assertOnlineBookingCaps`); null for
+   * Reception's.
+   */
+  ipHash: string | null;
 }
 
 /**
@@ -118,6 +126,7 @@ export class ReservationsService {
   constructor(
     private readonly prisma: CncPrismaService,
     private readonly audit: AuditService,
+    private readonly mail: ReservationMail,
   ) {}
 
   /**
@@ -144,6 +153,7 @@ export class ReservationsService {
       party: request.party,
       note: request.note ?? '',
       ipAddress,
+      ipHash: null,
     });
   }
 
@@ -179,21 +189,24 @@ export class ReservationsService {
 
     await this.assertArrival(tx, input.source, businessDate, startMinutes, now);
 
-    const clash = alreadyReservedMessage(input.source);
+    const holds = holdMessages(input.source);
 
-    await this.assertTableFree(tx, table.id, businessDate, null, clash, now);
+    await this.assertTableFree(tx, table.id, businessDate, null, holds, now);
 
     const phone = guestPhone(input.phone);
+    // A signed-in customer's booking is theirs; any other (Reception's, a
+    // website guest's) links only to a verified exact match (Q35, A15).
     const customerId =
-      input.source === ReservationSource.RECEPTION
-        ? await verifiedCustomerId(tx, input.email, phone)
-        : input.customerId;
+      input.customerId ?? (await verifiedCustomerId(tx, input.email, phone));
     const number = await drawNumber(tx, 'reservation');
 
     const row = await insertOrClash(
       () =>
         tx.reservation.create({
           data: {
+            // On the service's clock (A11): the stored booking caps count
+            // creation times against it.
+            createdAt: now,
             number,
             tableId: table.id,
             customerId,
@@ -205,10 +218,22 @@ export class ReservationsService {
             party: input.party,
             source: input.source,
             note: input.note,
+            // The guest's own words, the only note they are shown; a
+            // Reception note is staff's (*Bookings from the website and the
+            // app*).
+            guestNote:
+              input.source === ReservationSource.RECEPTION ? '' : input.note,
+            ipHash: input.ipHash,
+            // Q32: no reminder for a booking made under 24 hours ahead.
+            reminderSentAt: initialReminderStamp(
+              businessDate,
+              startMinutes,
+              now,
+            ),
           },
           select: RESERVATION_COLUMNS,
         }),
-      clash,
+      holds.booked,
     );
 
     await this.audit.record(
@@ -216,6 +241,10 @@ export class ReservationsService {
         actor: input.actor,
         action: 'reservation.create',
         ref: number,
+        // Which screen a guest booked from; Reception's rows stay as C4
+        // wrote them, with the staff member as the actor.
+        channel:
+          input.source === ReservationSource.RECEPTION ? null : input.source,
         after: {
           table: table.ref,
           businessDate: input.businessDate,
@@ -233,7 +262,19 @@ export class ReservationsService {
       tx,
     );
 
+    // The confirmation, to the email given whatever the channel (plan
+    // §9.2, Q31); sent after the commit by `sendConfirmation`.
+    await this.mail.enqueue(tx, 'confirmed', row.id);
+
     return reservationResponse(row, table);
+  }
+
+  /**
+   * Send a booking's confirmation once `book`'s transaction has committed.
+   * Safe after a replayed create: a sent message is not sent again.
+   */
+  sendConfirmation(reservationId: string): Promise<void> {
+    return this.mail.dispatch(`reservation:${reservationId}:confirmed`);
   }
 
   /**
@@ -322,13 +363,14 @@ export class ReservationsService {
    * Cancelled and frees the table for the date (plan §7.5). No deposit is
    * taken at launch (D38), so there is nothing to refund.
    */
-  cancel(
+  async cancel(
     actor: StaffPrincipal,
     id: string,
     version: number,
     ipAddress: string,
   ): Promise<ReservationResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    let mailKey: string | null = null;
+    const response = await this.prisma.$transaction(async (tx) => {
       const now = new Date();
       const row = await this.claim(tx, id, version, false);
 
@@ -357,8 +399,14 @@ export class ReservationsService {
         tx,
       );
 
+      mailKey = await this.mail.enqueue(tx, 'cancelled', id);
+
       return readReservation(tx, id);
     });
+
+    await this.mail.dispatch(mailKey);
+
+    return response;
   }
 
   /**
@@ -420,13 +468,14 @@ export class ReservationsService {
     request: ChangeReservationRequest,
     ipAddress: string,
   ): Promise<ReservationResponse> {
-    return insertOrClash(
+    let mailKey: string | null = null;
+    const response = await insertOrClash(
       () =>
         this.prisma.$transaction(async (tx) => {
           const now = new Date();
           const found = await tx.reservation.findUnique({
             where: { id },
-            select: { tableId: true },
+            select: { tableId: true, customerId: true, email: true },
           });
 
           if (found === null) {
@@ -437,6 +486,19 @@ export class ReservationsService {
             found.tableId,
             request.tableId ?? found.tableId,
           ]);
+
+          // An unlinked booking may link below (`verifiedCustomerId`), which
+          // takes the email's lock. Taken here, before the claim locks the
+          // booking's row, in the order every path takes them (table, email,
+          // row): a first sign-in holds the email's lock and then updates
+          // the unlinked bookings' rows, so taking the row first could
+          // deadlock against it. A change to the booking between this read
+          // and the claim moves its version, and the claim refuses.
+          const linkEmail = request.email ?? found.email;
+
+          if (found.customerId === null && linkEmail !== '') {
+            await lockCustomerEmail(tx, linkEmail);
+          }
 
           const row = await this.claim(tx, id, request.version, false);
 
@@ -499,7 +561,7 @@ export class ReservationsService {
               next.tableId,
               nextDate,
               id,
-              ALREADY_RESERVED_MESSAGE,
+              holdMessages(ReservationSource.RECEPTION),
               now,
             );
           }
@@ -523,6 +585,17 @@ export class ReservationsService {
               email: next.email,
               note: next.note,
               customerId,
+              // A new date or time gets its own reminder (Q32), unless it
+              // is already under 24 hours away.
+              ...(dateMoved || next.startMinutes !== before.startMinutes
+                ? {
+                    reminderSentAt: initialReminderStamp(
+                      nextDate,
+                      next.startMinutes,
+                      now,
+                    ),
+                  }
+                : {}),
             },
           });
 
@@ -552,10 +625,25 @@ export class ReservationsService {
             tx,
           );
 
+          // The guest hears of a change to what they will find on arrival:
+          // the table, the date, the time or the party (plan §9.2).
+          if (
+            tableMoved ||
+            dateMoved ||
+            next.startMinutes !== before.startMinutes ||
+            next.party !== before.party
+          ) {
+            mailKey = await this.mail.enqueue(tx, 'changed', id);
+          }
+
           return readReservation(tx, id);
         }),
       ALREADY_RESERVED_MESSAGE,
     );
+
+    await this.mail.dispatch(mailKey);
+
+    return response;
   }
 
   /** `GET /staff/reservations`: one date's bookings (today by default), or every date's. */
@@ -641,7 +729,7 @@ export class ReservationsService {
    * row): the table is read before the claim, and a booking moved to
    * another table in between has moved its version, so the claim refuses.
    */
-  private async claim(tx: Tx, id: string, version: number, lockTable: boolean) {
+  async claim(tx: Tx, id: string, version: number, lockTable: boolean) {
     if (lockTable) {
       const found = await tx.reservation.findUnique({
         where: { id },
@@ -669,7 +757,7 @@ export class ReservationsService {
   }
 
   /** A table that exists and is in use, else the demo's capacity sentence (400). */
-  private async bookableTable(tx: Tx, id: string): Promise<TableInfo> {
+  async bookableTable(tx: Tx, id: string): Promise<TableInfo> {
     const table = await readTable(tx, id);
 
     if (table === null || !table.active) {
@@ -679,7 +767,7 @@ export class ReservationsService {
     return table;
   }
 
-  /** The arrival rules for the date's opening hours and the timing settings. */
+  /** The arrival rules for the date's opening hours and the timing settings (400). */
   private async assertArrival(
     tx: Tx,
     source: ReservationSource,
@@ -687,6 +775,29 @@ export class ReservationsService {
     startMinutes: number,
     now: Date,
   ): Promise<void> {
+    const problem = await this.arrivalProblemOn(
+      tx,
+      source,
+      businessDate,
+      startMinutes,
+      now,
+    );
+
+    if (problem !== null) throw new BadRequestException(problem);
+  }
+
+  /**
+   * `arrivalProblem` for the date's opening hours and the timing settings:
+   * the sentence that refuses the arrival, or null. Public for the
+   * customer's change, which answers in the account app's words.
+   */
+  async arrivalProblemOn(
+    tx: Tx,
+    source: ReservationSource,
+    businessDate: Date,
+    startMinutes: number,
+    now: Date,
+  ): Promise<string | null> {
     const hours = await tx.openingHoursDay.findUnique({
       where: { dayOfWeek: businessDate.getUTCDay() },
       select: { isClosed: true, opensAtMinutes: true, closesAtMinutes: true },
@@ -695,7 +806,7 @@ export class ReservationsService {
       where: { singleton: true },
       select: { lastArrivalMinutes: true, slotStepMinutes: true },
     });
-    const problem = arrivalProblem({
+    return arrivalProblem({
       source,
       businessDate,
       startMinutes,
@@ -708,35 +819,33 @@ export class ReservationsService {
       },
       settings,
     });
-
-    if (problem !== null) throw new BadRequestException(problem);
   }
 
   /**
    * The demo's three holds on a table for a date, in its order: another
-   * Confirmed or Checked In booking that date (`clash`), a Locked
-   * seating, and for today, guests seated now (409 each). `except` is the
+   * Confirmed or Checked In booking that date, a Locked seating, and for
+   * today, guests seated now (409 each, in `holds`' words). `except` is the
    * booking being changed.
    */
-  private async assertTableFree(
+  async assertTableFree(
     tx: Tx,
     tableId: string,
     businessDate: Date,
     except: string | null,
-    clash: string,
+    holds: TableHoldMessages,
     now: Date,
   ): Promise<void> {
     const booked = await tx.reservation.findFirst({
       where: {
         tableId,
         businessDate,
-        status: { in: HOLDING },
+        status: { in: HOLDING_STATUSES },
         ...(except === null ? {} : { id: { not: except } }),
       },
       select: { id: true },
     });
 
-    if (booked !== null) throw new ConflictException(clash);
+    if (booked !== null) throw new ConflictException(holds.booked);
 
     const session = await tx.tableSession.findFirst({
       where: { tableId, endedAt: null },
@@ -744,14 +853,14 @@ export class ReservationsService {
     });
 
     if (session?.status === TableSessionStatus.LOCKED) {
-      throw new ConflictException(TABLE_LOCKED_MESSAGE);
+      throw new ConflictException(holds.locked);
     }
 
     if (
       session?.status === TableSessionStatus.OCCUPIED &&
       formatIsoDate(businessDate) === today(now)
     ) {
-      throw new ConflictException(GUESTS_SEATED_MESSAGE);
+      throw new ConflictException(holds.seated);
     }
   }
 }
@@ -761,22 +870,44 @@ function today(now: Date): string {
   return formatIsoDate(watToday(now));
 }
 
-/** The clash sentence in the channel's own words. */
-function alreadyReservedMessage(source: ReservationSource): string {
+/**
+ * The sentences for the three holds on a table (409), in the words of
+ * whoever is asking. Reception is told which hold it is, in the demo's
+ * words. A website or app guest is told only that the place has just
+ * been taken (the website's own sentence): why a table is locked, or that
+ * guests are seated at it, is staff knowledge, and the floor plan the
+ * guest saw showed the table free, so the answer is the same race.
+ */
+export interface TableHoldMessages {
+  booked: string;
+  locked: string;
+  seated: string;
+}
+
+export function holdMessages(source: ReservationSource): TableHoldMessages {
   return source === ReservationSource.RECEPTION
-    ? ALREADY_RESERVED_MESSAGE
-    : TAKEN_ONLINE_MESSAGE;
+    ? {
+        booked: ALREADY_RESERVED_MESSAGE,
+        locked: TABLE_LOCKED_MESSAGE,
+        seated: GUESTS_SEATED_MESSAGE,
+      }
+    : {
+        booked: TAKEN_ONLINE_MESSAGE,
+        locked: TAKEN_ONLINE_MESSAGE,
+        seated: TAKEN_ONLINE_MESSAGE,
+      };
 }
 
 /**
  * Run a write that may meet the one-active-booking index, and answer its
  * clash with the domain's sentence (409) rather than a 500. The index is
  * what decides a race between two bookings (*Data and migrations*); it is
- * read by its fields through `uniqueViolationTargets`.
+ * read by its fields through `uniqueViolationTargets`. Shared with the
+ * customer's change (`CustomerReservationsService`).
  */
-async function insertOrClash<T>(
+export async function insertOrClash<T>(
   write: () => Promise<T>,
-  clash: string,
+  clash: string | (() => string),
 ): Promise<T> {
   try {
     return await write();
@@ -784,37 +915,11 @@ async function insertOrClash<T>(
     const targets = uniqueViolationTargets(error);
 
     if (targets.includes('tableId') && targets.includes('businessDate')) {
-      throw new ConflictException(clash);
+      throw new ConflictException(typeof clash === 'string' ? clash : clash());
     }
 
     throw error;
   }
-}
-
-/**
- * Q35's default: a Reception booking links to an existing customer only on
- * an exact match to a verified email, else a verified phone; no customer
- * is ever created from a staff booking. The email is stored lower case on
- * both sides, and a Nigerian phone in its one form (`guestPhone`).
- */
-async function verifiedCustomerId(
-  tx: Tx,
-  email: string,
-  phone: string,
-): Promise<string | null> {
-  const byEmail = await tx.customer.findFirst({
-    where: { email, emailVerifiedAt: { not: null } },
-    select: { id: true },
-  });
-
-  if (byEmail !== null) return byEmail.id;
-
-  const byPhone = await tx.customer.findFirst({
-    where: { phone, phoneVerifiedAt: { not: null } },
-    select: { id: true },
-  });
-
-  return byPhone?.id ?? null;
 }
 
 /**

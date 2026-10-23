@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { hashClientAddress } from '../common/client-address';
 
 /**
  * Whose keys a key is compared with (plan §4.8): `staff:<id>`,
@@ -15,11 +15,10 @@ export const idempotencyScope = {
   customer: (customerId: string): string => `customer:${customerId}`,
   /**
    * A caller with no session (the website's checkout and booking), by the
-   * address `clientAddressOf` reports. Hashed, so the table does not keep a
-   * list of addresses; SHA-256 of an IPv4 address can be reversed by trying
-   * them all, so this is tidiness, not secrecy. Two guests behind one
-   * address share a scope, which only matters if they also share a UUID.
+   * address `clientAddressOf` reports, hashed (`hashClientAddress`), so the
+   * table does not keep a list of addresses. Two guests behind one address
+   * share a scope, which only matters if they also share a UUID.
    */
   anonymous: (clientAddress: string): string =>
-    `anon:${createHash('sha256').update(clientAddress).digest('hex')}`,
+    `anon:${hashClientAddress(clientAddress)}`,
 };

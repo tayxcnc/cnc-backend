@@ -437,8 +437,12 @@ describe('Approvals (e2e)', () => {
     const entry = await logWaste('kitchen', 2);
     expect(entry.valueKobo).toBe(2 * STEAK_KOBO);
 
-    // A newer requisition changes steak's latest pack cost to ₦10,000.
-    await raise([{ stockItemId: steak.id, qty: 1, costKobo: 1_000_000 }]);
+    // A newer requisition, once approved, changes steak's latest pack cost
+    // to ₦10,000 (Q25: a Pending one sets nothing).
+    const cheaper = await raise([
+      { stockItemId: steak.id, qty: 1, costKobo: 1_000_000 },
+    ]);
+    await decide('owner', 'purchases', cheaper, 'approve').expect(200);
 
     const row = (await read('manager')).waste.data.find(
       (w) => w.id === entry.id,
@@ -452,6 +456,10 @@ describe('Approvals (e2e)', () => {
       await decide('manager', 'waste', row, 'approve').expect(200)
     ).body as Waste;
     expect(approved.valueKobo).toBe(row.awaiting!.valueKobo);
+
+    // Steak back at ₦40,000, for the cases after this one.
+    const restored = await steakPurchase(1);
+    await decide('owner', 'purchases', restored, 'approve').expect(200);
 
     await clearPending();
   });

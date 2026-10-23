@@ -39,6 +39,13 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `migrate dev` local only; `migrate deploy` by hand before the merge | Data and migrations |
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
+| Customer email codes: caps, tries, sentences, `OtpService`, `CncCustomerGuard`, creating customers | Auth |
+| Email: the outbound queue, sealed payloads, expiry, the retry backoff, the transports, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
+| `GET /me/notifications`, what writes an item, unread, the booking reminders (Q32) and `reminderSentAt` | The customer's in-app list and booking reminders |
+| `POST /enquiries`, `POST /group-enquiries`: honeypot, the two limits, the inbox email (Q20) | Enquiries |
+| The Cloud Scheduler sweep jobs, their schedules and how to create them | Infrastructure |
+| `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
+| Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
@@ -46,7 +53,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | The C5 tables' CHECKs, one open shift per person, task links, pack cost | Stock requests, purchasing, waste, tasks, assets and attendance: the schema |
 | Stock requests: location, packs, issue, own record, reads, history | Stock requests |
 | Purchases, approvals and their limits, receiving, R1's automatic tasks, vendors, the lite list, the assigned-task bell item | Purchasing and vendors |
-| Waste: each role's location, stock on approval, Q25's coded value, approvals and corrections, the read and history | Waste |
+| Waste: each role's location, stock on approval, Q25's per-pack value, approvals, corrections of approved records (day limit, own record), the read and history | Waste |
 | `GET /staff/approvals`: a read only, what awaits whom, `approvalRefusal` and `standing()`, fresh waste values | Approvals |
 | `task.save`: the role gate, who may raise and save what, links, assignees, history, who sees which task | Tasks |
 | `asset.save` by tag, repairs, the asset following its repair, R3's resolved date, the follow-up task, the MT- reader, the assets lite list | Assets and repairs |
@@ -56,6 +63,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Kitchen entries, corrections, the day's close, the crosscheck, the cash count | Kitchen entries, the kitchen day and the cash count |
 | Business dates in requests (`calendarDate`) | Errors |
 | Bookings, arrival rules and Q30, the table lock, seatings, the floor, the Free Table Reminder, Q35 | Reception: bookings, table sessions and the floor |
+| `POST /reservations` (guest or customer), the customer link both ways, `/me/reservations`, the 24-hour rule (Q6), booking emails, the booking throttle | Bookings from the website and the app |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -116,14 +124,32 @@ src/
                      one-sentence field checks, the admin reason, item lists
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
-  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens sweep
+  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens,
+                     messages and reminders sweeps
+  customers/         the customer email-code sign-in (/auth/code, verify, refresh,
+                     sign-out), the account (/me: profile, email change, photo,
+                     DELETE); CustomerService (the one creator of customers),
+                     OtpService (codes and their caps), CustomerEmailService,
+                     CustomerDeletionService, profile-rules.ts
+  ordering/          the public ordering reads (GET /ordering/config, /slots) and
+                     the ordering times (ordering-times.ts); C7 adds checkout
+  mail/              the outbound queue (OutboundMessagesService, its retry
+                     backoff), templates, the CNC mail frame, MessageSeal, the
+                     Resend and recording transports
+  customer-notifications/  the customer's in-app list (GET /me/notifications,
+                     POST /me/notifications/read), CustomerNotificationsService
+                     (the one writer), the items' words
+  enquiries/         POST /enquiries and /group-enquiries: honeypot, the stored
+                     cap and the throttle, the email to CNC's inbox
   images/            PhotoStore: byte inspection, sharp resizing, the upload route
                      decorator; the only importer of storage/
   storage/           MediaStorage and its Cloud Storage binding (gs:// URIs, V4 links)
   staff/             Staff & Access: staff.save, staff.photo, the ID reissue,
                      staff ID cards (the QR payload in staff-qr.ts)
-  settings/          settings.save, business details, opening hours
-  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item
+  settings/          settings.save, business details, opening hours; the public
+                     GET /business and GET /opening-hours
+  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item;
+                     the public GET /menu
   stock/             the stock core: StockLedgerService (the one writer of balances
                      and movements), balances and movements reads, issue, count,
                      Correct Balance, stock items, kitchen comparison rules;
@@ -155,7 +181,12 @@ src/
   cash/              cash.count and the Cash Reconciliation report
   reception/         Reception: bookings (ReservationsService.book, the one
                      booking command), table sessions, the floor read, the
-                     Free Table Reminder; arrival rules in reservation-rules.ts
+                     Free Table Reminder; arrival rules in reservation-rules.ts;
+                     the public GET /venues and availability; the website's
+                     and the app's POST /reservations and /me/reservations
+                     (CustomerReservationsService), the customer link
+                     (customer-link.ts), the booking emails and in-app items
+                     (ReservationMail), the reminders (ReservationRemindersService)
   notifications/     GET /staff/notifications, the staff bell (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
@@ -173,7 +204,18 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      assets-maintenance: assets and repairs; attendance:
                      the scan, corrections, reads and step 7;
                      approvals: the approvals read and the C5 races;
-                     c5-gate: the C5 gate walk, steps 1 to 7),
+                     c5-gate: the C5 gate walk, steps 1 to 7;
+                     customer-auth: the email-code sign-in, its caps,
+                     the realms, the outbound queue and TAY's cookies;
+                     customer-account: /me, the email change, the photo,
+                     deletion; public-reads: the C6-4 public reads;
+                     customer-reservations: web and app bookings, the
+                     link, change and cancel, the races and the 24-hour
+                     boundary; customer-messages: the in-app list, the
+                     reminders sweep, the messages sweep's backoff and
+                     attempts cap; enquiries: both forms, the honeypot,
+                     the limits; c6-gate: the C6 gate walk, the backend
+                     half of steps 1 to 8),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, shared-rows-lock.ts, test-images.ts

@@ -20,6 +20,7 @@ import {
   dailyLimitMessage,
   LIMITED_DECISIONS,
   OWN_RECORD_KINDS,
+  ownRecordCorrectionMessage,
   ownRecordMessage,
 } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
@@ -55,8 +56,9 @@ import { accessTokenFor, createStaffAccount } from './staff-fixtures';
  * Waste (card C5-4) through HTTP and against Postgres: logging at each
  * location, the managers' approvals within the Owner's limits and never
  * their own, rejections, corrections and status changes, stock leaving
- * only on approval and only through the ledger, the coded valuation (Q25),
- * the read and the history. The C5 gate's steps 5 and 6 are walked first;
+ * only on approval and only through the ledger, the valuation as the
+ * founder answered Q25, corrections of approved entries (the founder's
+ * decision of 2026-10-22), the read and the history. The C5 gate's steps 5 and 6 are walked first;
  * the demo's waste cases (`owner.test.cjs`, `domain.test.cjs`,
  * `stock.test.cjs`, `revision.test.cjs`) are ported by name.
  *
@@ -77,6 +79,8 @@ describe('Waste (e2e)', () => {
     | 'manager'
     | 'manager2'
     | 'manager3'
+    | 'manager4'
+    | 'manager5'
     | 'kitchen'
     | 'bartender'
     | 'cashier'
@@ -89,6 +93,8 @@ describe('Waste (e2e)', () => {
     manager: StaffRole.MANAGER,
     manager2: StaffRole.MANAGER,
     manager3: StaffRole.MANAGER,
+    manager4: StaffRole.MANAGER,
+    manager5: StaffRole.MANAGER,
     kitchen: StaffRole.KITCHEN,
     bartender: StaffRole.BARTENDER,
     cashier: StaffRole.CASHIER,
@@ -134,6 +140,11 @@ describe('Waste (e2e)', () => {
 
   const RICE_BAG_KOBO = 7_000_000;
   const STEAK_KOBO = 4_000_000;
+  /** Rice in the Kitchen, valued per portion. */
+  const RICE_PORTION_KOBO = RICE_BAG_KOBO / 50;
+
+  /** The vendor the suite's requisitions name. */
+  let vendorId: string;
 
   beforeAll(async () => {
     database = await createIsolatedDatabase();
@@ -158,29 +169,24 @@ describe('Waste (e2e)', () => {
     rice = await kitchenItem('Waste Rice', 'bag', 50);
     steak = await kitchenItem('Waste Steak', 'carton', 1);
 
-    // The pack costs: a requisition that is not Rejected or Cancelled sets
-    // an item's latest cost (`latestPackCostKobo`), Pending included.
-    const vendor = (
-      await request(server())
-        .post('/api/v1/staff/vendors')
-        .set(as('storekeeper'))
-        .set('Idempotency-Key', randomUUID())
-        .send({ name: 'Waste Foods', service: 'Food', phone: '08000000020' })
-        .expect(201)
-    ).body as { id: string };
+    // The pack costs: only an Approved or Fulfilled requisition sets an
+    // item's latest cost (`latestPackCostKobo`, Q25), so the Owner approves
+    // it (₦110,000 is above a Manager's limit).
+    vendorId = (
+      (
+        await request(server())
+          .post('/api/v1/staff/vendors')
+          .set(as('storekeeper'))
+          .set('Idempotency-Key', randomUUID())
+          .send({ name: 'Waste Foods', service: 'Food', phone: '08000000020' })
+          .expect(201)
+      ).body as { id: string }
+    ).id;
 
-    await request(server())
-      .post('/api/v1/staff/purchases')
-      .set(as('storekeeper'))
-      .set('Idempotency-Key', randomUUID())
-      .send({
-        vendorId: vendor.id,
-        lines: [
-          { stockItemId: rice.id, qty: 1, costKobo: RICE_BAG_KOBO },
-          { stockItemId: steak.id, qty: 1, costKobo: STEAK_KOBO },
-        ],
-      })
-      .expect(201);
+    await approvedCosts([
+      { stockItemId: rice.id, qty: 1, costKobo: RICE_BAG_KOBO },
+      { stockItemId: steak.id, qty: 1, costKobo: STEAK_KOBO },
+    ]);
 
     const barItem = await prisma.stockItem.findFirstOrThrow({
       where: { kind: StockKind.BAR, menuItemId: { not: null } },
@@ -255,6 +261,30 @@ describe('Waste (e2e)', () => {
       .expect(201);
 
     return response.body as { id: string; name: string };
+  }
+
+  /**
+   * A requisition the Storekeeper raises and the Owner approves, so its
+   * lines set their items' pack costs (Q25: only Approved or Fulfilled
+   * purchases do).
+   */
+  async function approvedCosts(
+    lines: { stockItemId: string; qty: number; costKobo: number }[],
+  ): Promise<void> {
+    const raised = (
+      await request(server())
+        .post('/api/v1/staff/purchases')
+        .set(as('storekeeper'))
+        .set('Idempotency-Key', randomUUID())
+        .send({ vendorId, lines })
+        .expect(201)
+    ).body as { id: string; version: number };
+
+    await request(server())
+      .post(`/api/v1/staff/purchases/${raised.id}/approve`)
+      .set(as('owner'))
+      .send({ version: raised.version })
+      .expect(200);
   }
 
   const create = (
@@ -420,7 +450,7 @@ describe('Waste (e2e)', () => {
   });
 
   describe('waste.create', () => {
-    it('logs a Pending entry at each role’s own location, valued by the coded formula (Q25), and moves no stock', async () => {
+    it('logs a Pending entry at each role’s own location, valued as the location holds it (Q25), and moves no stock', async () => {
       const kitchenBefore = await balance(rice.id, StockLocation.KITCHEN);
       const storeBefore = await balance(rice.id, StockLocation.STORE);
 
@@ -446,10 +476,10 @@ describe('Waste (e2e)', () => {
       });
       expect(kitchen.number).toMatch(/^W-\d{6}$/);
 
-      // Q25's own example: one bag of rice at ₦70,000 is ₦1,400 until the
-      // founder answers it.
+      // Q25's own example, as the founder answered it: the Store's bag of
+      // rice at ₦70,000 is valued per pack, ₦70,000, not ₦1,400.
       const store = await log('storekeeper', StockLocation.STORE, rice.id, 1);
-      expect(store).toMatchObject({ measure: 'bag', valueKobo: 140_000 });
+      expect(store).toMatchObject({ measure: 'bag', valueKobo: RICE_BAG_KOBO });
 
       const bar = await log('bartender', StockLocation.BAR, drink.id, 3);
       expect(bar.valueKobo).toBe(3 * drink.priceKobo);
@@ -740,8 +770,10 @@ describe('Waste (e2e)', () => {
       entry = (await command('manager', entry, 'approve').expect(200))
         .body as Waste;
 
+      // Two bags are ₦140,000 per pack (Q25), above a Manager's limit, so the
+      // Owner makes this correction.
       entry = (
-        await edit('manager', entry, {
+        await edit('owner', entry, {
           location: 'STORE',
           stockItemId: rice.id,
           qty: 2,
@@ -755,7 +787,7 @@ describe('Waste (e2e)', () => {
         location: StockLocation.STORE,
         measure: 'bag',
         note: 'Two bags, not four portions',
-        valueKobo: 2 * (RICE_BAG_KOBO / 50),
+        valueKobo: 2 * RICE_BAG_KOBO,
       });
       expect(await balance(rice.id, StockLocation.KITCHEN)).toBe(riceBefore);
       expect(await balance(rice.id, StockLocation.STORE)).toBe(storeBefore - 2);
@@ -813,8 +845,8 @@ describe('Waste (e2e)', () => {
       ).expect(404);
       expect(messageOf(missing)).toBe(WASTE_NOT_FOUND_MESSAGE);
 
-      // A correction decides nothing: the Owner's is not limited, and no
-      // manager's is counted toward the day.
+      // A Pending entry's correction decides nothing: the Owner's is not
+      // limited, and no manager's is counted toward the day.
       await edit('owner', entry, {
         ...good,
         location: 'BAR',
@@ -943,6 +975,301 @@ describe('Waste (e2e)', () => {
       ).expect(409);
       expect(messageOf(stale)).toBe(STALE_VERSION_MESSAGE);
       await expectLedgerHolds(rice.id, StockLocation.KITCHEN);
+    });
+  });
+
+  describe('correcting an approved entry (the founder’s decision of 2026-10-22)', () => {
+    /** A Kitchen rice entry of `portions`, logged by `by` and approved by the Owner. */
+    async function approvedRice(
+      portions: number,
+      by: Actor = 'kitchen',
+    ): Promise<Waste> {
+      const entry = await log(by, StockLocation.KITCHEN, rice.id, portions);
+
+      return (await command('owner', entry, 'approve').expect(200))
+        .body as Waste;
+    }
+
+    const toPortions = (portions: number) => ({
+      location: 'KITCHEN',
+      stockItemId: rice.id,
+      qty: portions,
+      wasteReason: 'SPOILED',
+      reason: 'Recount',
+    });
+
+    it('counts the increase toward the editor’s day, nothing for a decrease, and still holds the new value to the Owner Approval Limit', async () => {
+      let entry = await approvedRice(10);
+      const kitchenBefore = await balance(rice.id, StockLocation.KITCHEN);
+
+      entry = (await edit('manager4', entry, toPortions(30)).expect(200))
+        .body as Waste;
+      expect(entry.valueKobo).toBe(30 * RICE_PORTION_KOBO);
+      expect(await ledgerRows('manager4')).toEqual([
+        {
+          amountKobo: 20 * RICE_PORTION_KOBO,
+          action: 'waste.edit',
+          ref: entry.number,
+        },
+      ]);
+      expect(await balance(rice.id, StockLocation.KITCHEN)).toBe(
+        kitchenBefore - 20,
+      );
+
+      // Lowering an approved write-off adds nothing to the day.
+      entry = (await edit('manager4', entry, toPortions(20)).expect(200))
+        .body as Waste;
+      expect(await ledgerRows('manager4')).toHaveLength(1);
+
+      // ₦56,000 is above the per-decision limit, whatever the increase.
+      const over = await edit('manager4', entry, toPortions(40)).expect(403);
+      expect(messageOf(over)).toBe(
+        approvalLimitMessage(LIMITED_DECISIONS.writeOff, 5_000_000),
+      );
+      expect(await stored(entry.id)).toMatchObject({
+        qty: 20,
+        valueKobo: 20 * RICE_PORTION_KOBO,
+      });
+      expect(await ledgerRows('manager4')).toHaveLength(1);
+      expect(await balance(rice.id, StockLocation.KITCHEN)).toBe(
+        kitchenBefore - 10,
+      );
+      await expectLedgerHolds(rice.id, StockLocation.KITCHEN);
+    });
+
+    it('refuses the increase that crosses the Daily Approval Limit, rolling back the stock, and lets the Owner make it', async () => {
+      // manager4's day so far: ₦28,000 from the case above, then three
+      // ₦40,000 approvals, ₦148,000 in all.
+      for (let n = 0; n < 3; n += 1) {
+        const steakEntry = await log(
+          'kitchen',
+          StockLocation.KITCHEN,
+          steak.id,
+          1,
+        );
+        await command('manager4', steakEntry, 'approve').expect(200);
+      }
+
+      const entry = await approvedRice(20);
+      const kitchenBefore = await balance(rice.id, StockLocation.KITCHEN);
+
+      // +₦14,000 takes the day to ₦162,000.
+      const crossing = await edit('manager4', entry, toPortions(30)).expect(
+        403,
+      );
+      expect(messageOf(crossing)).toBe(
+        dailyLimitMessage(16_200_000, 15_000_000),
+      );
+      expect(await stored(entry.id)).toMatchObject({
+        qty: 20,
+        version: entry.version,
+      });
+      expect(await balance(rice.id, StockLocation.KITCHEN)).toBe(kitchenBefore);
+      expect(
+        await prisma.approvalLedger.count({
+          where: { ref: entry.number, action: 'waste.edit' },
+        }),
+      ).toBe(0);
+
+      // A decrease decides nothing new, so it passes at the limit.
+      await edit('manager4', entry, toPortions(15)).expect(200);
+
+      // The Owner has no limit and is never recorded.
+      await edit(
+        'owner',
+        { ...entry, version: entry.version + 1 },
+        toPortions(30),
+      ).expect(200);
+      expect(await ledgerRows('owner')).toEqual([]);
+    });
+
+    it('refuses a manager correcting an approved entry they logged, either way; another manager, the Owner on their own, and a Pending entry pass', async () => {
+      const mine = await approvedRice(4, 'manager2');
+      const kitchenBefore = await balance(rice.id, StockLocation.KITCHEN);
+
+      for (const portions of [6, 2]) {
+        const refused = await edit(
+          'manager2',
+          mine,
+          toPortions(portions),
+        ).expect(403);
+        expect(messageOf(refused)).toBe(
+          ownRecordCorrectionMessage(OWN_RECORD_KINDS.wasteEntry),
+        );
+        expect(messageOf(refused)).toBe(
+          'You cannot change an approved waste entry you created. The Owner or another manager must change it.',
+        );
+      }
+
+      expect(await stored(mine.id)).toMatchObject({ qty: 4 });
+      expect(await balance(rice.id, StockLocation.KITCHEN)).toBe(kitchenBefore);
+      expect(
+        await prisma.approvalLedger.count({ where: { ref: mine.number } }),
+      ).toBe(0);
+
+      // The limit comes before the own-record rule, as on an approval.
+      const overOwn = await edit('manager2', mine, toPortions(40)).expect(403);
+      expect(messageOf(overOwn)).toBe(
+        approvalLimitMessage(LIMITED_DECISIONS.writeOff, 5_000_000),
+      );
+
+      await edit('manager3', mine, toPortions(2)).expect(200);
+
+      const ownersOwn = await approvedRice(2, 'owner');
+      await edit('owner', ownersOwn, toPortions(3)).expect(200);
+
+      const pending = await log('manager2', StockLocation.KITCHEN, rice.id, 2);
+      await edit('manager2', pending, toPortions(3)).expect(200);
+    });
+
+    it('lets two increases by one manager racing past the day’s limit through one at a time: one passes, the other is refused', async () => {
+      // manager5's day: three ₦40,000 approvals, ₦120,000.
+      for (let n = 0; n < 3; n += 1) {
+        const steakEntry = await log(
+          'kitchen',
+          StockLocation.KITCHEN,
+          steak.id,
+          1,
+        );
+        await command('manager5', steakEntry, 'approve').expect(200);
+      }
+
+      const first = await approvedRice(10);
+      const second = await approvedRice(10);
+
+      // Each +₦28,000 fits alone (₦148,000); both would be ₦176,000.
+      const results = await Promise.all([
+        edit('manager5', first, toPortions(30)),
+        edit('manager5', second, toPortions(30)),
+      ]);
+
+      expect(results.map((response) => response.status).sort()).toEqual([
+        200, 403,
+      ]);
+      expect(
+        messageOf(results.find((response) => response.status === 403)!),
+      ).toBe(dailyLimitMessage(17_600_000, 15_000_000));
+
+      const edits = (await ledgerRows('manager5')).filter(
+        (row) => row.action === 'waste.edit',
+      );
+      expect(edits).toEqual([
+        expect.objectContaining({ amountKobo: 20 * RICE_PORTION_KOBO }),
+      ]);
+      await expectLedgerHolds(rice.id, StockLocation.KITCHEN);
+    });
+
+    it('lets one of two managers correcting one approved entry at once win, counting the increase once', async () => {
+      const entry = await approvedRice(2);
+
+      const results = await Promise.all([
+        edit('manager', entry, toPortions(4)),
+        edit('manager3', entry, toPortions(4)),
+      ]);
+
+      expect(results.map((response) => response.status).sort()).toEqual([
+        200, 409,
+      ]);
+      expect(
+        messageOf(results.find((response) => response.status === 409)!),
+      ).toBe(STALE_VERSION_MESSAGE);
+      expect(
+        await prisma.approvalLedger.findMany({
+          where: { ref: entry.number, action: 'waste.edit' },
+          select: { amountKobo: true },
+        }),
+      ).toEqual([{ amountKobo: 2 * RICE_PORTION_KOBO }]);
+      await expectLedgerHolds(rice.id, StockLocation.KITCHEN);
+    });
+  });
+
+  describe('Q25: Store waste per pack, priced by approved purchases', () => {
+    it('values a Store write-off and a Store count of the same goods the same', async () => {
+      // Salt: ₦30,000 a sack of 10, under a Manager's limit per sack.
+      const salt = await kitchenItem('Waste Salt', 'sack', 10);
+      await approvedCosts([
+        { stockItemId: salt.id, qty: 1, costKobo: 3_000_000 },
+      ]);
+      await prisma.$transaction((tx) =>
+        ledger.move(tx, {
+          stockItemId: salt.id,
+          location: StockLocation.STORE,
+          qty: 5,
+          type: StockMovementType.STOCK_COUNT,
+          ref: 'Opening balance',
+          staffId: null,
+        }),
+      );
+
+      // One sack short on the count.
+      await request(server())
+        .post('/api/v1/staff/stock/counts')
+        .set(as('storekeeper'))
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          location: 'STORE',
+          counts: [{ stockItemId: salt.id, counted: 4 }],
+        })
+        .expect(201);
+      const counted = await prisma.approvalLedger.findFirstOrThrow({
+        where: { staffId: staffId.storekeeper, action: 'stock.count' },
+        orderBy: { createdAt: 'desc' },
+        select: { amountKobo: true },
+      });
+
+      // One sack written off.
+      const written = await log('storekeeper', StockLocation.STORE, salt.id, 1);
+
+      expect(counted.amountKobo).toBe(3_000_000);
+      expect(written.valueKobo).toBe(3_000_000);
+    });
+
+    it('ignores a Pending or Rejected requisition’s cost, and takes an approved one’s', async () => {
+      const oil = await kitchenItem('Waste Oil', 'tin', 10);
+      await approvedCosts([
+        { stockItemId: oil.id, qty: 1, costKobo: 1_000_000 },
+      ]);
+
+      // The Storekeeper raises a cheaper requisition: it sets nothing yet.
+      const pending = (
+        await request(server())
+          .post('/api/v1/staff/purchases')
+          .set(as('storekeeper'))
+          .set('Idempotency-Key', randomUUID())
+          .send({
+            vendorId,
+            lines: [{ stockItemId: oil.id, qty: 1, costKobo: 100_000 }],
+          })
+          .expect(201)
+      ).body as { id: string; version: number };
+
+      const whilePending = await log(
+        'storekeeper',
+        StockLocation.STORE,
+        oil.id,
+        2,
+      );
+      expect(whilePending.valueKobo).toBe(2_000_000);
+
+      await request(server())
+        .post(`/api/v1/staff/purchases/${pending.id}/reject`)
+        .set(as('manager'))
+        .send({ version: pending.version, reason: 'Too cheap to be real' })
+        .expect(200);
+      expect(
+        (await log('storekeeper', StockLocation.STORE, oil.id, 2)).valueKobo,
+      ).toBe(2_000_000);
+
+      await approvedCosts([
+        { stockItemId: oil.id, qty: 1, costKobo: 1_200_000 },
+      ]);
+      expect(
+        (await log('storekeeper', StockLocation.STORE, oil.id, 2)).valueKobo,
+      ).toBe(2_400_000);
+      // The Kitchen values the same cost per portion.
+      expect(
+        (await log('kitchen', StockLocation.KITCHEN, oil.id, 5)).valueKobo,
+      ).toBe(600_000);
     });
   });
 

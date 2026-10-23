@@ -25,6 +25,25 @@ export const CLOSED_PURCHASE_STATUSES: readonly PurchaseStatus[] = [
   PurchaseStatus.CANCELLED,
 ];
 
+/**
+ * The statuses of a purchase a manager or the Owner has approved: Approved,
+ * and Fulfilled (approved, then received; receiving is all at once, D39,
+ * so there is no partly received status). Two rules read it, so they
+ * cannot disagree on what "approved" means (the founder's decisions of
+ * 2026-10-22): only these purchases set the pack cost stock is valued at
+ * (Q25, `latestPackCostKobo`), and a correction of one counts its increase
+ * toward the day and refuses the manager who raised it (`purchase.edit`).
+ */
+export const APPROVED_PURCHASE_STATUSES: readonly PurchaseStatus[] = [
+  PurchaseStatus.APPROVED,
+  PurchaseStatus.FULFILLED,
+];
+
+/** Whether a purchase in `status` was approved ({@link APPROVED_PURCHASE_STATUSES}). */
+export function isApprovedPurchase(status: PurchaseStatus): boolean {
+  return APPROVED_PURCHASE_STATUSES.includes(status);
+}
+
 /** The demo's `purchaseTotal`: packs × cost per pack over every line, in kobo. */
 export function purchaseTotalKobo(
   lines: readonly { qtyPacks: number; costKobo: number }[],

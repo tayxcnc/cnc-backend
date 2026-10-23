@@ -14,6 +14,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
+import { OutboundMessagesService } from '../mail/outbound-messages.service';
+import { ReservationRemindersService } from '../reception/reservation-reminders.service';
+import { MessagesSweepResponse } from './dto/messages-sweep.response';
+import { RemindersSweepResponse } from './dto/reminders-sweep.response';
 import { TokensSweepResponse } from './dto/tokens-sweep.response';
 import { SWEEP_TOKEN_HEADER, SweepTokenGuard } from './sweep-token.guard';
 import { TokensSweepService } from './tokens-sweep.service';
@@ -21,8 +25,10 @@ import { TokensSweepService } from './tokens-sweep.service';
 /**
  * The housekeeping sweeps, as routes Cloud Scheduler calls (plan §5.5),
  * copied from TAY's `SweepsController` (§11). C3-9 adds the tokens sweep;
- * the messages and reminders sweeps arrive with C6-8, and the checkouts
- * and payments sweeps with C7-5, each with its Scheduler job.
+ * C6-1 the messages sweep (the outbound queue's retry, built with the first
+ * email CNC sends); C6-8 the reminders sweep; the checkouts and payments
+ * sweeps arrive with C7-5. Each has its Scheduler job (*Infrastructure* in
+ * `docs/conventions.md` lists them).
  *
  * ## Housekeeping, not correctness
  *
@@ -46,7 +52,11 @@ import { TokensSweepService } from './tokens-sweep.service';
 export class SweepsController {
   private readonly logger = new Logger(SweepsController.name);
 
-  constructor(private readonly tokens: TokensSweepService) {}
+  constructor(
+    private readonly tokens: TokensSweepService,
+    private readonly messages: OutboundMessagesService,
+    private readonly reminders: ReservationRemindersService,
+  ) {}
 
   @Post('tokens')
   @HttpCode(HttpStatus.OK)
@@ -81,6 +91,74 @@ export class SweepsController {
         `${result.passwordResetTokens} password-reset token(s), ` +
         `${result.otpCodes} one-time code(s) and ` +
         `${result.idempotencyKeys} idempotency key(s).`,
+    );
+
+    return result;
+  }
+
+  @Post('messages')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'sweepMessages',
+    summary: 'Retry outbound email that has not gone',
+    description:
+      'Every 5 minutes (cnc-staging-sweep-messages). Gives up on messages ' +
+      'past their expiry, then retries waiting and failed messages, ' +
+      'oldest first, 50 a run, 3 attempts each, a failed one only after ' +
+      'its backoff (5 minutes, then 30). While mail is not configured a ' +
+      'message waits without spending an attempt.',
+  })
+  @ApiHeader({
+    name: SWEEP_TOKEN_HEADER,
+    description: 'The shared secret, `CNC_SWEEP_TOKEN`.',
+    required: true,
+  })
+  @ApiResponse({ status: 200, type: MessagesSweepResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'The token is absent, wrong, or not configured.',
+    type: ApiErrorResponse,
+  })
+  async messagesSweep(): Promise<MessagesSweepResponse> {
+    const result = await this.messages.sweep(new Date());
+
+    this.logger.log(
+      `Sweep messages sent ${result.sent}, failed ${result.failed}, left ` +
+        `${result.waiting} waiting and gave up ${result.expired}.`,
+    );
+
+    return result;
+  }
+
+  @Post('reminders')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'sweepReminders',
+    summary: 'Send the booking reminders that are due',
+    description:
+      'Every 15 minutes (cnc-staging-sweep-reminders). Q32: each Confirmed ' +
+      'booking is reminded once, 24 hours before it starts; none for a ' +
+      'booking made or moved under 24 hours ahead; guests by email; a ' +
+      'customer who switched reminders off gets the in-app item only. ' +
+      'Stamps reminderSentAt.',
+  })
+  @ApiHeader({
+    name: SWEEP_TOKEN_HEADER,
+    description: 'The shared secret, `CNC_SWEEP_TOKEN`.',
+    required: true,
+  })
+  @ApiResponse({ status: 200, type: RemindersSweepResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'The token is absent, wrong, or not configured.',
+    type: ApiErrorResponse,
+  })
+  async remindersSweep(): Promise<RemindersSweepResponse> {
+    const result = await this.reminders.sweep(new Date());
+
+    this.logger.log(
+      `Sweep reminders reminded ${result.reminded} booking(s): ` +
+        `${result.emailed} emailed, ${result.switchedOff} switched off.`,
     );
 
     return result;

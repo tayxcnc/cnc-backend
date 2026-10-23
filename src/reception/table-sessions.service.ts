@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 import {
   Department,
-  OrderStatus,
   type Prisma,
   ReservationStatus,
   StaffRole,
@@ -18,6 +17,7 @@ import type { StaffPrincipal } from '../auth/staff-principal';
 import { ROLE_REFUSED_MESSAGE, isManager } from '../auth/staff-roles';
 import { formatIsoDate, parseIsoDate } from '../common/calendar-date';
 import { watToday } from '../common/wat';
+import { UNSETTLED_ORDER_STATUSES } from '../orders/order-rules';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import type {
@@ -54,18 +54,14 @@ import {
   readTable,
   sessionResponse,
 } from './reception-records';
-import { clockText, floorStatus, tableRef } from './reservation-rules';
+import {
+  HOLDING_STATUSES,
+  clockText,
+  floorStatus,
+  tableRef,
+} from './reservation-rules';
 
 type Tx = Prisma.TransactionClient;
-
-/** The bill states that keep a table from being freed (plan §7.1 step 6). */
-const UNSETTLED: OrderStatus[] = [OrderStatus.OPEN, OrderStatus.PAYMENT];
-
-/** The booking states the floor shows on a table for its date (plan §7.5). */
-const HOLDING: ReservationStatus[] = [
-  ReservationStatus.CONFIRMED,
-  ReservationStatus.CHECKED_IN,
-];
 
 /**
  * Table sessions (plan §4.5, §7.5; card C4-7): `table.allocate` (seat
@@ -221,7 +217,7 @@ export class TableSessionsService {
         select: SESSION_COLUMNS,
       });
       const unsettled = await tx.order.count({
-        where: { tableId, status: { in: UNSETTLED } },
+        where: { tableId, status: { in: UNSETTLED_ORDER_STATUSES } },
       });
 
       if (unsettled > 0) throw new ConflictException(UNSETTLED_ORDERS_MESSAGE);
@@ -338,14 +334,14 @@ export class TableSessionsService {
       where: {
         tableId: { in: tableIds },
         businessDate: parseIsoDate(date)!,
-        status: { in: HOLDING },
+        status: { in: HOLDING_STATUSES },
       },
       orderBy: [{ startMinutes: 'asc' }, { createdAt: 'asc' }],
     });
     const orders = await this.prisma.order.findMany({
       where: {
         tableId: { in: tableIds },
-        status: { in: UNSETTLED },
+        status: { in: UNSETTLED_ORDER_STATUSES },
         ...(actor.role === StaffRole.BARTENDER
           ? { department: Department.BAR }
           : {}),

@@ -114,15 +114,37 @@ export const LIMITED_DECISIONS = {
   stockCount: 'This stock count',
 } as const;
 
-/** What `notOwn` names, word for word from the demo's call sites. */
+/**
+ * What `notOwn` names, word for word from the demo's call sites; also what
+ * `notOwnCorrection` names.
+ */
 export const OWN_RECORD_KINDS = {
   /** `request.issue`. */
   stockRequest: 'stock request',
-  /** `purchase.approve`, `purchase.status` to Approved. */
+  /**
+   * `purchase.approve`, `purchase.status` to Approved; `purchase.edit` of an
+   * approved purchase (`notOwnCorrection`).
+   */
   purchase: 'purchase',
-  /** `waste.approve`, `waste.status` to Approved. */
+  /**
+   * `waste.approve`, `waste.status` to Approved; `waste.edit` of an approved
+   * entry (`notOwnCorrection`).
+   */
   wasteEntry: 'waste entry',
 } as const;
+
+/**
+ * What a correction of an approved record adds to it, in kobo: the new
+ * value less the old when that is positive, else nothing. `order.discount`
+ * counts this toward the Daily Approval Limit ("the increase only"), and
+ * by the founder's decision of 2026-10-22 so do `waste.edit` and
+ * `purchase.edit` of an approved record: lowering a decision already
+ * counted adds nothing to the day, and raising it is a fresh decision of
+ * the difference.
+ */
+export function increaseKobo(beforeKobo: number, afterKobo: number): number {
+  return Math.max(0, afterKobo - beforeKobo);
+}
 
 /** The per-decision refusal, as the demo words it. */
 export function approvalLimitMessage(what: string, limitKobo: number): string {
@@ -152,6 +174,20 @@ export function ownRecordMessage(what: string): string {
   );
 }
 
+/**
+ * The refusal of a manager correcting an approved record they created
+ * (`waste.edit`, `purchase.edit`). New, by the founder's decision of
+ * 2026-10-22: the demo let a correction through on the limit alone, so a
+ * manager could raise their own write-off or requisition once a colleague
+ * had approved it. The sentence follows the own-record sentence's form.
+ */
+export function ownRecordCorrectionMessage(what: string): string {
+  return (
+    `You cannot change an approved ${what} you created. ` +
+    `The Owner or another manager must change it.`
+  );
+}
+
 /** One money decision checked by {@link MoneyControlService.withinLimit}. */
 export interface LimitedDecision {
   /**
@@ -163,14 +199,15 @@ export interface LimitedDecision {
   what: string;
   /**
    * True when the decision counts toward the Daily Approval Limit (the
-   * demo's `count`): an approval, a discount, an online correction. An edit
-   * of a pending record is checked against the per-decision limit only.
+   * demo's `count`): an approval, a discount, an online correction, a
+   * correction of an approved write-off or purchase. An edit of a pending
+   * record is checked against the per-decision limit only.
    */
   count?: boolean;
   /**
    * The amount that counts toward the day, when it differs from
-   * `amountKobo`: a discount counts only its increase. Defaults to
-   * `amountKobo`.
+   * `amountKobo`: a discount, or a correction of an approved record, counts
+   * only its increase ({@link increaseKobo}). Defaults to `amountKobo`.
    */
   countedKobo?: number;
   /** The command, for the ledger row: `waste.approve`. */
@@ -365,10 +402,35 @@ export class MoneyControlService {
     createdById: string | null | undefined,
     what: string,
   ): void {
+    this.refuseOwn(actor, createdById, ownRecordMessage(what));
+  }
+
+  /**
+   * `notOwn` for a correction of an approved record (the founder's decision
+   * of 2026-10-22): a manager may not change an approved write-off or
+   * purchase they created, in either direction, with
+   * {@link ownRecordCorrectionMessage}. The Owner is exempt and a record
+   * with no creator passes, as `notOwn` has them. A record still Pending
+   * is not checked: it awaits someone else's approval anyway.
+   */
+  notOwnCorrection(
+    actor: MoneyActor,
+    createdById: string | null | undefined,
+    what: string,
+  ): void {
+    this.refuseOwn(actor, createdById, ownRecordCorrectionMessage(what));
+  }
+
+  /** The own-record rule both commands share: by staff id, the Owner exempt. */
+  private refuseOwn(
+    actor: MoneyActor,
+    createdById: string | null | undefined,
+    message: string,
+  ): void {
     if (isOwner(actor.role)) return;
 
     if (createdById != null && createdById === actor.id) {
-      throw new ForbiddenException(ownRecordMessage(what));
+      throw new ForbiddenException(message);
     }
   }
 

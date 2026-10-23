@@ -35,6 +35,19 @@ export const NIGERIAN_PHONE = /^(\+234|0)[789][01]\d{8}$/;
  * for it: the DTO has already validated the value, so reaching here with
  * another is a route that skipped the check.
  */
+/**
+ * A stored number as the website shows it: `08022188797` becomes
+ * `0802 218 8797` (`cnc-frontend/lib/site.ts`, `phoneDisplay`), so an email
+ * prints CNC's number the way the site does and a guest reads and dials it
+ * the same. Anything not in the stored form (`0` plus 10 digits) comes back
+ * unchanged rather than guessed at.
+ */
+export function phoneForDisplay(stored: string): string {
+  const match = /^(0\d{3})(\d{3})(\d{4})$/.exec(stored);
+
+  return match === null ? stored : `${match[1]} ${match[2]} ${match[3]}`;
+}
+
 export function canonicalNigerianPhone(value: string): string {
   if (!NIGERIAN_PHONE.test(value)) {
     throw new Error(

@@ -29,8 +29,10 @@ export class WasteResponse {
   status!: WasteStatus;
   @ApiProperty({
     description:
-      'What the write-off is worth, in kobo, by the coded formula (Q25): ' +
-      'set when it is logged, corrected or approved.',
+      'What the write-off is worth, in kobo, as its location holds it ' +
+      '(Q25: Store waste per pack, at the latest approved pack cost; the ' +
+      'Kitchen per portion; the Bar at menu price): set when it is logged, ' +
+      'corrected or approved.',
     example: 140000,
   })
   valueKobo!: number;

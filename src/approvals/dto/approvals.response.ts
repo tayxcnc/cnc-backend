@@ -23,7 +23,8 @@ export class ApprovalAwaitingResponse {
   @ApiProperty({
     description:
       'What the approval would be judged on now, in kobo: a requisition’s ' +
-      'total, or a waste entry valued afresh by the coded formula (Q25).',
+      'total, or a waste entry valued afresh as its location holds it ' +
+      '(Q25: Store waste per pack, at the latest approved pack cost).',
     example: 4000000,
   })
   valueKobo!: number;

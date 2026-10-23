@@ -160,6 +160,75 @@ export const CHANGE_CONFIRMED_MESSAGE =
  */
 export const VENUE_MESSAGE = 'Choose a venue.';
 
+/**
+ * `GET /venues/:venue/availability` naming a room that does not exist
+ * (404). New, in the form of "Table not found.": a path names one thing.
+ */
+export const VENUE_NOT_FOUND_MESSAGE = 'Venue not found.';
+
+/**
+ * Availability asked for a date before today in Jos (400). New: the
+ * website's date picker starts at today, so only a hand-made request or a
+ * page left open overnight meets it.
+ */
+export const PAST_DATE_MESSAGE = 'Choose today or a later date.';
+
+/**
+ * The website's booking form (`components/booking/TableBooking.tsx`
+ * `confirm`), byte for byte, for `POST /reservations` (C6-5): the guest's
+ * name, a Nigerian phone and an email, each its own sentence (400).
+ */
+export const WEB_GUEST_NAME_MESSAGE = 'Please add a name for the reservation.';
+export const WEB_GUEST_PHONE_MESSAGE =
+  'Please add a Nigerian phone number, for example 0803 123 4567.';
+export const WEB_GUEST_EMAIL_MESSAGE =
+  'Please add a valid email address so we can send your confirmation.';
+
+/**
+ * A customer's change or cancel of a booking less than 24 hours away
+ * (409, Q6): the account app's own words (`components/account/panels.tsx`),
+ * which the plan names as the server's refusal.
+ */
+export const LATE_CHANGE_MESSAGE =
+  'Your reservation is less than 24 hours away. Nothing is charged, but please call CNC if you can no longer come.';
+
+/**
+ * A booking id that is not the signed-in customer's own, or not one at all
+ * (404): the account app's `updateReservation` and `cancelReservation`
+ * sentence. One sentence for both, so a customer cannot learn that someone
+ * else's booking exists.
+ */
+export const CUSTOMER_RESERVATION_NOT_FOUND_MESSAGE =
+  'We could not find that reservation.';
+
+/**
+ * A customer's change to an arrival the online rules refuse (400): the
+ * account app's sentence for a time off its list. A closed day keeps
+ * `CLOSED_DAY_MESSAGE`, which the app never met (it had no opening hours).
+ */
+export const CUSTOMER_ARRIVAL_MESSAGE =
+  'Choose an arrival time that is still open.';
+
+/**
+ * A customer's change to a party the table cannot seat (400): the account
+ * app's sentence, with the table's own name and places.
+ */
+export function customerCapacityMessage(
+  tableName: string,
+  capacity: number,
+): string {
+  return `${tableName} seats up to ${capacity}. For a larger party, book a bigger table.`;
+}
+
+/**
+ * A customer's change to a date on which the table is held (409): the
+ * account app's sentence. Another booking, a lock and guests seated are all
+ * "taken" to a customer, who never sees why.
+ */
+export function customerTakenMessage(tableName: string): string {
+  return `${tableName} is already taken at that time. Try another time.`;
+}
+
 /** The longest guest name, phone and email a booking keeps. */
 export const GUEST_NAME_MAX_LENGTH = 120;
 export const GUEST_PHONE_MAX_LENGTH = 40;

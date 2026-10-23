@@ -779,6 +779,330 @@ They are here so the first card that builds it starts from the rule.
   `CNC_ENV=staging`, so a check on `cncEnv` would drop `Secure` on staging
   while every e2e suite (`NODE_ENV=test`) still passed; the getter's spec
   fails if it moves.
+- **Customers sign in by email only** (Q5's default; from C6): `POST
+  /auth/code` mails a 6-digit code, `POST /auth/verify` checks it, creates
+  the customer on first use and starts the session, `POST /auth/refresh`
+  restores it from `cnc_refresh_token`, `POST /auth/sign-out` ends every
+  customer session. A phone number at `/auth/code` is refused with the
+  sign-in screen's own sentence, "Enter your email address."; SMS sign-in
+  waits for an SMS provider (Q5, Q19).
+- **The customer realm is `CncCustomerGuard` and `@CurrentCustomer()`
+  (`src/auth/`), the mirror of the staff guard: a `CUSTOMER` token whose row
+  still exists.** A staff token on a customer route is `403` ("This route
+  is for customers. The token presented is a staff token."), a customer
+  whose row is gone `401`. Each realm's refresh redeems only its own
+  `SubjectType`, and a token of the other realm is refused without being
+  spent, so a customer cookie sent to the staff route signs nobody out.
+- **The code is issued and checked only by `OtpService`
+  (`src/customers/otp.service.ts`), purpose-generic so the email change
+  (C6-3) shares its caps and sentences.** One-time code rules, with the
+  numbers in `src/customers/one-time-code.ts`:
+  - 6 digits from `crypto.randomInt`, stored as a keyed digest
+    (`codeHash`: HMAC-SHA256 under a key derived by HKDF from
+    `CNC_JWT_SECRET` with its own label, `otpCodeHash`, `deriveKey`),
+    10 minutes, 5 tries (A15); the code is in no response and no log line.
+    **Never a bare SHA-256** (from the C6 review): six digits are a million
+    values, so anyone who read an unkeyed digest from the database (a
+    backup, a support query, a dump) would recover a live code by hashing
+    them all in under a second and sign in as that customer. Codes stored
+    before the change expire within ten minutes, so it needed no migration.
+  - **A long cap on wrong tries (from the C6 review): no new code for an
+    email whose codes took 25 wrong tries in 24 hours**
+    (`OTP_DAILY_FAILED_LIMIT`, counted on the stored rows, any purpose;
+    429 "Too many attempts…"). The fifteen-minute caps alone let a patient
+    guesser make about 2,400 guesses a day (some 7% a month at one in a
+    million each); with it about 30 a day. The window sits inside the day
+    the tokens sweep keeps the rows (`one-time-code.spec.ts`).
+  - **Known and accepted: a stranger who knows an email can hold its
+    sign-in back** by asking for codes and spending their tries, whatever
+    the numbers, because every per-email cap counts requests anyone can
+    make. A cap per requesting address instead would let a script on many
+    addresses fill a stranger's inbox, which the per-email cap exists to
+    stop; the inbox wins. The owner is told "Too many attempts…" and can
+    still book as a guest.
+  - **Caps count the stored `OtpCode` rows, not memory**: another code for
+    the same email only after 30 s ("Please wait N seconds before asking
+    for a new code.", 429, the account app's sentence); at most 5 codes per
+    email and 30 per client address in 15 minutes ("Too many attempts. Wait
+    a few minutes and try again.", 429). Rows hold across instances and
+    restarts, where A18's in-memory throttler is per instance; the tokens
+    sweep keeps them a day for this. 5 per email holds what a stranger can
+    push into someone's inbox to twenty an hour; 30 per address leaves room
+    for a mobile carrier's NAT or the venue's Wi-Fi.
+  - Issuance for one email runs under `pg_advisory_xact_lock` on
+    `cnc:otp:<purpose>:<email>`, so requests arriving together cannot both
+    pass a cap (seen failing without it).
+  - **Only the email's newest code counts**; a new one supersedes the old,
+    as in the account app. The sentences are the app's, byte for byte: "Ask
+    for a new code.", "That code has expired. Ask for a new one.", "That
+    code is not right. N tries left." ("1 try left."), "Too many attempts.
+    Ask for a new code.", all 400; a malformed code is "Enter the 6 digit
+    code." (the screen's sentence with the server's six).
+  - A wrong code spends a try by one conditional increment; the right one is
+    spent by one conditional update (`consumedAt IS NULL`, unexpired, tries
+    left) inside the transaction that creates the customer, so two verifies
+    of one code cannot both sign in (seen failing without the condition),
+    and a failure after it leaves the code unspent.
+  - The in-memory throttles are the first line only: `/auth/code` counts the
+    address (100), `/auth/verify` uses `SignInThrottle` (the email at an
+    address 10, the email anywhere 30, the address 100), `/auth/refresh`
+    `RefreshThrottle`. Every route runs against the one `ThrottlerModule`
+    `CncAuthModule` registers: that module is `@Global`, so a second
+    `forRoot` would replace these counts for every route instead of adding
+    its own.
+- **A customer is created only by `CustomerService.findOrCreateVerified`,
+  under `pg_advisory_xact_lock` on `cnc:customer-email:<email>`**, drawing
+  the member number only when it creates. Two first sign-ins with one email
+  (or, from C7, a sign-in racing checkout's "Save my details") make one
+  customer, never a unique-index 500, and returning customers burn no
+  numbers. A new customer's name is empty, and `isNew` is "no name yet"
+  (the account app's `isNew || !name`), so a person who closed the name
+  step is asked again.
+- **Customer sign-in writes no audit row**, as staff sign-in writes none:
+  it is not a command in the staff app's record. The code row keeps who
+  verified (`customerId`), from which address and when.
+- **Customer sign-out ends every customer session, as TAY's member
+  sign-out does**: a refresh token carries no id a client could name, so
+  one-device sign-out would be a token-service change.
+
+## Mail and the outbound queue *(from C6)*
+
+- **Every email goes through `OutboundMessagesService` (`src/mail/`):
+  `enqueue(tx, …)` writes an `OutboundMessage` in the command's own
+  transaction, and `dispatch(id)` sends it after the commit.** A failed
+  send never rolls back a command and never fails a customer's request
+  (plan §4.8): the message waits for `POST /internal/sweeps/messages`.
+  `dedupeKey` (`otp:<OtpCode.id>`, later `reservation:<id>:confirmed` and
+  the like) is inserted with `ON CONFLICT DO NOTHING`, because a P2002
+  inside the caller's transaction would abort the command.
+- **The row stores the template's name and its parameters, sealed, never a
+  rendered body** (`payload`, AES-256-GCM under a key derived by HKDF from
+  `CNC_JWT_SECRET` with its own label, `MessageSeal`). The queue must be
+  able to re-send a sign-in code, so the code is stored until then; in
+  clear, a database read would yield a working code and undo `codeHash`.
+  The payload is cleared once the message is sent or given up. A new secret
+  was not added: it would need a Secret Manager entry and deploy change on
+  every environment, for a value only this service must hold. Rotating the
+  JWT secret makes waiting payloads unreadable, and the queue gives those
+  messages up.
+- **A template is rendered at send time, and its parameters are checked
+  by a guard when read back** (`mail-templates.ts`); `enqueue` renders once
+  and discards, so a misfit fails the command at once, not silently in a
+  sweep. Every caller-supplied value goes through `escapeHtml`.
+- **Every message has an `expiresAt`; past it the sweep gives up**
+  (`FAILED`, "Expired before it could be sent."). A code's email expires
+  with the code; others default to 24 hours. A confirmation days late is
+  worse than none, and a staging service without a key would otherwise
+  send its whole backlog the day the key is set.
+- **Three attempts, claimed by a conditional increment of `attempts`
+  before each send**, so the request's dispatch and a sweep at the same
+  moment cannot both send one message. **While mail is not configured, a
+  message waits `PENDING` without spending an attempt** (`lastError` "Mail
+  is not configured.").
+- **The claim is a lease (from the C6 review): it also moves `retryAfter`
+  `MESSAGE_SEND_LEASE_MS` (2 minutes) ahead**, so a sweep that starts
+  while the request's own send is still in flight skips the row; the
+  claim alone did not cover that, and the sweep claimed the next attempt
+  and sent a second copy (`customer-messages` races the two with a slow
+  transport, `RecordingMailTransport.hold`; seen failing without the
+  lease). A process that dies mid-send leaves the lease to run out and the
+  sweep tries again. **A failure is written only by the claim that made it
+  (`attempts` still the claimed value) and never over `SENT`; a success is
+  written whichever claim made it.**
+- **Every send carries the message's row id as Resend's idempotency key
+  (`OutgoingMail.idempotencyKey`) and gives up after `MAIL_SEND_TIMEOUT_MS`
+  (20 s)**, shorter than the lease. A hung provider would otherwise hold a
+  customer's request (`POST /auth/code` dispatches after its commit) for as
+  long as it hangs, and a retry after a lost answer is then recognised by
+  the provider instead of delivered twice.
+- **The transport is chosen once by `CNC_ENV`** (`mailTransportFor`):
+  locally, and in every test, `RecordingMailTransport` sends nothing and
+  writes the text, code included, to the local log, so a local walk reads
+  the code from the server's output and no local run can send real mail
+  even with a real key. Staging and production use `ResendMailTransport`
+  with CNC's own key, which logs the recipient and the outcome only, never
+  a subject or body (TAY's rule: a body in a log line is a credential in a
+  log line). A built container refuses `CNC_ENV=local`, so the logging
+  transport cannot reach a deployed service.
+- **`CncConfigService.resendApiKey` and `mailFrom` read a placeholder
+  (`PLACEHOLDER_NOT_SET`, `CHANGE_ME`) as unset.** Staging carries the
+  placeholder until the founder's Resend steps; handed to Resend it would
+  make every send a failure that burns a retry.
+- **The e2e harness replaces the transport with a `RecordingMailTransport`
+  that logs nothing; a suite reads mail with `sentMail(app)`** and takes a
+  code from the email's text, as a customer would. Its `configured` and
+  `failWith` switches stand in for an unconfigured or failing provider.
+- **The mail frame is `cnc-mail-frame.ts`: TAY's table structure, CNC's
+  colours (`cnc-frontend/app/globals.css`), the wordmark "CHEF NORO
+  CULINARY" and the site's icon from `buildWebUrl('/icons/icon-192.png')`**
+  (plan §9.2). With no web URL it shows the wordmark alone.
+
+- **Every email carries Reply-To `CNC_CONTACT_EMAIL`** (from C6-3,
+  `OutboundMessagesService`). The sender `cnc@tayxcnc.com` only sends
+  (Q19), so a customer's reply would otherwise reach no inbox; the
+  founder's 2026-10-22 note asked for it.
+- **A template may name its own Reply-To (`RenderedMail.replyTo`); only the
+  enquiry emails do, with the sender's address** (from C6-7). They go to
+  CNC's inbox, so the default would make Reply answer CNC itself; with the
+  sender's address CNC answers by pressing Reply (TAY's contact mail). A
+  large-group request without an email keeps the default.
+- **A failed send waits before its next attempt: 5 minutes after the
+  first, 30 after the second (`MESSAGE_RETRY_BACKOFF_MS`,
+  `OutboundMessage.retryAfter`)** (from C6-8). The sweep runs every five
+  minutes, so without a wait one short provider outage would spend all
+  three attempts in a quarter of an hour and give the message up; with it
+  the three span more than half an hour, well inside a message's day.
+  Every dispatch honours the wait, a replayed command's included. The wait
+  is cleared once the message is sent or its last attempt is spent. An
+  unconfigured transport sets no wait and spends no attempt, as before.
+- **The messages sweep and the reminders sweep are the queue's only
+  timers, and both are Cloud Scheduler jobs** (*Infrastructure*): nothing
+  in the service retries on its own clock, because Cloud Run scales to
+  zero and an in-process timer dies with the instance.
+
+## The customer's account *(from C6)*
+
+- **`PATCH /me` takes the name, the phone, the whole address and the
+  preferences, each only when sent; never the email or the photo**
+  (plan §5.2), which have their own routes because one needs a code and
+  the other is a file. It runs in one transaction on the customer's row
+  locked `FOR UPDATE` (`CustomerService.lockLive`), so a rule spanning two
+  fields (keep a phone or an email) holds when two of the customer's
+  devices save at once.
+- **The sentences are the account app's where it has one**
+  (`lib/account/api.ts`, `components/account/panels.tsx`), byte for byte:
+  "Enter a Nigerian phone number, for example 0803 123 4567.", "Keep at
+  least a phone number or an email.", "Add the street, area and town.",
+  "Add an email address in Your Details to receive updates by email.".
+  Each new one is marked new in `profile-rules.ts` with its reason.
+- **A phone is stored as `0` plus 10 digits however it was typed**
+  (`customerPhone`, the app's `normalisePhone`); null or blank removes it.
+  `Customer.phone` is unique, so the second account to save a number gets
+  409 "This phone number is already on another CNC account." rather than a
+  500.
+- **`PATCH /me` is counted per customer: 30 saves in 15 minutes
+  (`ProfileSaveThrottle`, `signedInCustomerTracker`, listed after the
+  controller's `CncCustomerGuard`)** (from the C6 review). The 409 above
+  says whether a number is a CNC customer's, so without a number one
+  account could test a list of them. Thirty covers a person flipping every
+  Notifications switch twice. **Still open, for the founder:** an
+  unverified number saved first blocks its real owner, because the plan
+  makes `Customer.phone` unique (§4.2) and phones are never verified while
+  there is no SMS (Q5, Q19). Unique only among verified phones would end
+  that; it waits for phone verification, with the SMS provider.
+- **A delivery address is one shape for the profile and checkout:
+  `src/common/delivery-address.ts`** (zone `JOS`/`PLATEAU`, street, area,
+  town, landmark; the landmark required by D53, each line at most 120
+  characters). C7's checkout uses the same module, so a saved address is
+  always one checkout accepts. The address is sent whole, or null to
+  remove it; it is checked with one sentence per screen (`@Checked`),
+  never nested validation, whose messages carry a field path.
+- **Offers stay off and SMS stays unavailable until the founder turns them
+  on** (plan §4.2; Q5 and Q19's defaults): `offers: true` and `channel:
+  SMS` are refused with their own sentences rather than stored as promises
+  nobody keeps. A switch is judged only when sent, so a screen that sends
+  every switch with offers off is never refused for it.
+- **The email changes in two steps: `POST /me/email/code` mails a code to
+  the new address, `POST /me/email/verify` checks it and moves the
+  account.** The account keeps its email until then, so a typo locks
+  nobody out. The code is `OtpService`'s with purpose `CHANGE_EMAIL` and
+  the sign-in's caps, tries and sentences; it is issued for the asking
+  customer and only that customer can verify it (`customerId` on
+  `OtpService.verify`; seen failing without it). Whether another account
+  holds the address is said only at verify, after the code proves the
+  inbox (409), so the route cannot be used to learn which emails have
+  accounts. The verify takes the email's advisory lock, as a first
+  sign-in does. The old address is told, with the new one masked;
+  sessions are kept.
+- **The customer's photo is a 256-pixel square** (A17, `PHOTO_SHAPES`),
+  through `PhotoStore` in the staff photo's order: stored before the
+  transaction, the old object removed after the commit, the new one
+  removed if the write fails. `POST /me/photo` carries no `version`:
+  `Customer` has none (A8 does not list it; only its holder edits it).
+- **Every `/me` answer is `Cache-Control: no-store`**: personal data must
+  not outlive a sign-out in a shared cache or the back button.
+- **Deleting an account (`DELETE /me`, Q36) anonymises, never erases.**
+  The row stays with `deletedAt` set, because bookings, bills and the
+  audit log point at it and money records are never deleted. In one
+  transaction: the name, email, phone, address, photo and preferences are
+  cleared; the account's bookings become "Deleted customer" with no
+  phone, email or note, and its bills' guest name likewise (their
+  `version` moves, so an open screen is told to refresh); its
+  notifications, codes and stored idempotent answers are deleted; every
+  waiting email to it is given up; every session is revoked and the
+  cookie cleared. A CHECK (`Customer_deleted_check`) refuses a deleted
+  row that keeps or regains a contact or an address. The guard, the
+  refresh and every `CustomerService` read treat a deleted account as
+  gone (401). The same email then signs in to a new, empty account. **It
+  is refused (409) while a booking the customer made in the app (`APP`)
+  holds a table on a date from today on, or a linked bill is open**: an
+  anonymised upcoming booking would leave Reception a table held for
+  nobody. The audit log keeps what it recorded (A13).
+- **An upcoming website or Reception booking linked to the account by its
+  email or phone (Q35) does not refuse a deletion: it is unlinked and kept
+  as the guest booking it was made as** (from the C6 review). Anyone can
+  type someone's email into the website's form, and a booking under 24
+  hours away cannot be cancelled online (Q6), so counting those let a
+  stranger block a person's deletion every day. Unlinked, it keeps the
+  name and number Reception greets and calls.
+- **Deletion forgets the account's messages too
+  (`OutboundMessagesService.forget`): every `OutboundMessage` to its
+  address, and every one whose dedupe key names its bookings
+  (`reservation:<id>:…`) or its codes (`otp:<id>`, `email-changed:<id>`),
+  loses its recipient and payload; those still waiting are given up**
+  (from the C6 review). A sent message's `to` beside a booking id in its
+  key named the person an anonymised booking belonged to, which undid
+  Q36; the key match also reaches addresses the account had before an
+  email change. The codes are read before they are deleted, for this.
+  Both booking notes are cleared (`note`, `guestNote`).
+- **"Holding" and "unsettled" are one list each:
+  `HOLDING_STATUSES` (`reservation-rules.ts`) and
+  `UNSETTLED_ORDER_STATUSES` (`order-rules.ts`)**, read by the booking
+  command, the floor, the public availability, the table release and
+  account deletion, so no two of them disagree about what holds a table
+  or keeps a bill open.
+
+## The public reads *(from C6)*
+
+- **`GET /menu`, `/business`, `/opening-hours`, `/venues`,
+  `/venues/:venue/availability`, `/ordering/config` and `/ordering/slots`
+  need no sign-in and expose nothing internal**: no row ids, versions,
+  staff names or labels, stock, costs, approval limits, guests, lock
+  reasons or bills. Each answers its own public DTO, never the staff
+  response with fields removed, so a field added to a staff read cannot
+  leak. The e2e suite asserts each body's exact keys.
+- **Caching: `PublicCache()` (`public, max-age=60`) for what changes only
+  when staff change it** (the menu, business, hours, rooms, ordering
+  config); **`no-store` for what depends on the minute** (availability,
+  slots), because a cached "available" is a table someone has just booked
+  and the gate asks for the website to follow Reception within one
+  refresh. A minute keeps an Owner's price change on the site within a
+  minute of the page's own revalidation (gate step 8). The public menu
+  signs photo links for an hour (`PUBLIC_PHOTO_LINK_TTL_MS`), because a
+  cached page outlives the storage's ten-minute default.
+- **The menu shows only items that are Available for Sale and Show
+  Online** (Q37's default: an unavailable dish is hidden, no "Sold out"
+  state), in the customer categories' order; a category with nothing to
+  show is left out.
+- **A table's public state is Reception's floor rule (`floorStatus`) on
+  the same rows**, with Locked named `BLOCKED` (plan §7.5; the site shows
+  it as Unavailable). The arrival times offered are built by running
+  `arrivalProblem` (the booking command's own check) over the grid
+  (`arrivalTimes`), so every time offered is one the booking accepts.
+  Inactive tables are not listed. Availability defaults to today in Jos
+  and refuses an earlier date.
+- **The ordering times are `src/ordering/ordering-times.ts`, pure, read
+  from the settings and the opening hours** (plan §8.3, the website's
+  `leadFor`, `asapOpen` and `laterSlots`): lead by pickup or zone; ASAP
+  only while open now and now plus the lead is at most the last order
+  slot; scheduled times on the grid from the day's opening, at least the
+  lead after `max(now, opening)` today, every slot tomorrow, nothing past
+  closing or the last slot. C7's checkout must judge a chosen time with
+  these functions, so what is offered is what is accepted.
+- **The public reads are not throttled.** They are cheap reads, the
+  cacheable ones are served from caches, and the venue's Wi-Fi puts many
+  guests behind one address, which an in-memory per-address limit (A18)
+  would lock out together.
 
 ## Money controls and the audit log *(from C3)*
 
@@ -787,10 +1111,17 @@ They are here so the first card that builds it starts from the rule.
   exported constants there, never retyped** (plan §6.2). `ownerOnly` with
   `OWNER_ONLY_ACTIONS`, `requireOwner` with the price, new-item and
   settings sentences, `withinLimit` with `LIMITED_DECISIONS`, `notOwn` with
-  `OWN_RECORD_KINDS`, `mayChangeAccount` and `keepsAnActiveOwner` for staff
+  `OWN_RECORD_KINDS` (and `notOwnCorrection` for a correction of an
+  approved record), `mayChangeAccount` and `keepsAnActiveOwner` for staff
   accounts. The screens show these refusals verbatim (A7); one home per
   sentence is the only way two commands applying the same rule print it the
   same way.
+- **A correction that raises an already-counted decision counts only its
+  increase, through `increaseKobo` passed as `withinLimit`'s
+  `countedKobo`, while `amountKobo` stays the whole new value for the
+  per-decision limit** (`order.discount`, and from 2026-10-22 `waste.edit`
+  and `purchase.edit` of an approved record). One helper, so "the increase
+  only" is computed the same way wherever the founder has applied it.
 - **A figure inside a ported sentence is formatted with `formatKoboShort`**
   (`src/common/money.ts`): whole naira with no decimals, otherwise two, as
   the staff app's `money()` prints. "…above the Owner Approval Limit of
@@ -951,7 +1282,7 @@ They are here so the first card that builds it starts from the rule.
   otherwise be counted over; the id order means two counts over the same
   items cannot deadlock each other.
 - **A stock count follows Q28's default: its differences are valued by
-  `stockValueKobo` (`src/stock/stock-value.ts`) and passed to
+  `stockValueAtKobo` (`src/stock/stock-value.ts`) and passed to
   `MoneyControlService.withinLimit` as `LIMITED_DECISIONS.stockCount`,
   counted toward the day** (the plan places the limit "if Q28 says so"; Q28
   is unanswered, and its stated default is "yes to both"). Above the Owner
@@ -961,15 +1292,17 @@ They are here so the first card that builds it starts from the rule.
   advisory lock after the count has locked its balances; a waste approval
   (C5) takes them the other way round, so the two by one manager on one
   item at one moment can deadlock, which Postgres breaks by failing one.
-- **`stockValueKobo` is the demo's coded `wasteValue` until Q25 is
-  answered, and waste (C5) uses the same function** (plan §4.6, §7.8): a
-  Bar item at menu price × quantity at any location; a Kitchen item at the
-  latest purchase cost ÷ the pack's units × quantity, zero when no cost is
-  known. Purchases are C5's schema, so until C5 fills in
-  `latestPackCostKobo` every Kitchen item values at zero, exactly as the
-  demo does with no purchases (C5-1 has filled it in: see the C5 schema
-  section). One function, so a count and a write-off of the same stock can
-  never be valued two ways.
+- **Stock is valued as its location holds it, by one function,
+  `stockValueAtKobo`, which a count and a write-off both call** (plan
+  §4.6, §7.8; Q25 answered by the founder on 2026-10-22). The Kitchen and
+  the Bar hold units, valued by `stockValueKobo` (the demo's `wasteValue`):
+  a Bar item at menu price × quantity, a Kitchen item at the latest pack
+  cost ÷ the pack's units × quantity, rounded to the kobo. The Store holds
+  packs, valued per pack: a Kitchen item at packs × the latest pack cost
+  exactly, a Bar item at packs × How Many in One × its menu price. Zero when
+  no cost is known, as in the demo. One function, so a count and a
+  write-off of the same stock can never be valued two ways; Q25's answer
+  is that they must agree.
 - **A direct issue and a Correct Balance take an `Idempotency-Key`; a count
   and a new stock item do not** (the *Idempotency* rule for creates). A
   retried issue or correction would move stock twice; a retried count finds
@@ -986,15 +1319,14 @@ They are here so the first card that builds it starts from the rule.
   rule.** A8 does not list it, and a rule is replaced, not edited, so the
   last save wins; the lock stops two saves interleaving their portions. The
   rule never fills in a kitchen entry or moves stock.
-- **A Store count's difference is valued in units: packs × the item's
-  `factor`, then `stockValueKobo`; a Kitchen or Bar count's difference is
-  already in units** (from the C4 review). The Store holds packs and
-  `stockValueKobo` values units, so a Store count of nine batches of a
-  ₦5,000 drink (108 servings) was valued at ₦45,000 and slipped under the
-  ₦50,000 Owner Approval Limit. Any later caller valuing Store stock
-  converts the same way, **except a write-off**: Q25 keeps waste on the
-  coded formula, which values a Store entry's packs as units, until the
-  founder answers it (see *Waste*).
+- **A Store count's difference is valued per pack, through
+  `stockValueAtKobo`; a Kitchen or Bar count's difference is in units**
+  (from the C4 review, kept by Q25's answer). Valued as units, a Store
+  count of nine batches of a ₦5,000 drink (108 servings) was ₦45,000 and
+  slipped under the ₦50,000 Owner Approval Limit. Every caller valuing
+  stock at a location goes through `stockValueAtKobo`, a write-off included
+  (see *Waste*); calling `stockValueKobo` on Store packs is the bug the C4
+  review found.
 - **`stock.count` takes an `Idempotency-Key` after all; this replaces the
   count half of the rule above that a count needs none** (from the C4
   review). A count writes `counted − recorded` as read at retry time, so a
@@ -1037,13 +1369,19 @@ They are here so the first card that builds it starts from the rule.
   `stockItemId`).** A cuid or a timestamp is no order a requisition can be
   read back in, and the demo's duplicate rule ("Combine duplicate items
   into one quantity.") already allows one line per item.
-- **`latestPackCostKobo` (`src/stock/stock-value.ts`) is the demo's
-  `wasteValue` cost: the line for the item on the most recently raised
-  purchase that is not Rejected or Cancelled** (C5-1 fills in C4's null).
-  One query whose relation filter and order are joins, so it is safe inside
-  a transaction. Every stock count, and from C5-4 every write-off, is
-  valued through it; Q25 asks whether "latest" should mean the latest
-  received line instead, and until it is answered this is the rule.
+- **`latestPackCostKobo` (`src/stock/stock-value.ts`) is the line for the
+  item on the most recently raised purchase that is Approved or Fulfilled
+  (`APPROVED_PURCHASE_STATUSES`, `src/purchasing/purchase-rules.ts`), never
+  Pending, Rejected or Cancelled** (C5-1 filled in C4's null; Q25 answered
+  by the founder on 2026-10-22: "pack cost comes only from Approved or
+  received purchases"). A Pending requisition is a cost nobody has agreed:
+  whoever raised it would set the value their own write-offs, the approvals
+  prediction and the Q28 count limit are judged on, before any manager
+  reviewed it (the C5 review). Receiving is all at once (D39), so
+  "received" is Fulfilled; there is no partly received status. "Latest"
+  stays the most recently raised costing purchase: the decision names which
+  purchases count, not a new order. One query whose relation filter and
+  order are joins, so it is safe inside a transaction.
 
 ## Stock requests *(from C5)*
 
@@ -1129,9 +1467,23 @@ They are here so the first card that builds it starts from the rule.
   L, D, N"). The limit sentence before the own-record one is the demo's
   order, so a manager approving their own ₦140,000 purchase is told about
   the limit. A rejection spends nothing: a manager may reject their own,
-  and nothing is counted. `purchase.edit` holds both the old and the new
-  total to the Owner Approval Limit without counting either: an edit
-  decides nothing.
+  and nothing is counted.
+- **`purchase.edit` holds both the old and the new total to the Owner
+  Approval Limit. On an approved purchase (Approved or Fulfilled,
+  `isApprovedPurchase`) the increase of the total (`increaseKobo`) also
+  counts toward the editor's Daily Approval Limit, and a manager may not
+  correct a purchase they raised (`notOwnCorrection`, 403 "You cannot
+  change an approved purchase you created. The Owner or another manager
+  must change it."); the Owner is exempt from all of it** (the founder's
+  decision of 2026-10-22, amending plan §6.2's "L on the old and new
+  totals"). Raising an approved total is a fresh decision of the
+  difference, counted as `order.discount` counts "the increase only";
+  without it a manager could take an approved purchase past the day's
+  limit, or raise their own once a colleague had approved it. A decrease
+  adds nothing to the day, and a Pending requisition's correction counts
+  nothing because its approval will. The checks run in the approval's
+  order (limit, day, own record), and a refusal rolls back the ledger row
+  and any Store correction with the command.
 - **The automatic tasks are raised and closed only through
   `src/tasks/automatic-tasks.ts` (`raiseAutomaticTask`, `closeOpenTasks`,
   `managerForTask`, `storekeeperForTask`), in the command's transaction**
@@ -1252,15 +1604,19 @@ They are here so the first card that builds it starts from the rule.
   `WASTE_CORRECTION_DEDUCTION`), as the demo moves them. A location that
   cannot cover the approval refuses it with the ledger's "Insufficient …
   stock for …." and the approval, its ledger row included, rolls back.
-- **The value is the coded formula until Q25 is answered: `stockValueKobo`
-  on the entry's quantity as it stands, at any location, so a Store entry's
-  packs are valued as units (one bag of rice at ₦70,000 a bag of 50 is
-  ₦1,400)** (plan §4.6, §7.8; card C5-4). This is Q25's own
-  description of the current rule, which the plan ports until the founder
-  answers; it departs from the C4 count rule that converts Store packs
-  first, because that conversion is exactly the change Q25 asks the founder
-  to approve. Answering Q25 changes `WasteService`'s valuation, not the
-  shared function.
+- **The value is Q25's, as the founder answered it on 2026-10-22:
+  `stockValueAtKobo` on the entry's quantity as its location holds it, so
+  Store waste is valued per pack (one bag of rice at ₦70,000 is ₦70,000),
+  Kitchen waste at the pack cost ÷ How Many in One × units, and Bar waste
+  at menu price × quantity; the pack cost comes only from Approved or
+  Fulfilled purchases (`latestPackCostKobo`)** (plan §4.6, §7.8; card
+  C5-4). Valued as units, as the coded formula did, one bag was ₦1,400,
+  which kept most Store write-offs under a Manager's ₦50,000 limit, and a
+  Store count of the same bag was valued at ₦70,000: the founder's answer
+  is that the two agree and the Owner approves a write-off worth more than
+  the limit. The count and the write-off share the one function, so they
+  cannot drift apart again. Entries stored before the answer keep the
+  value they were logged at until they are corrected or approved.
 - **The value is stored on the row when the entry is logged and corrected,
   and valued afresh when it is approved (by `waste.approve` or by
   `waste.status` to Approved), which stores the new value** (plan §4.6
@@ -1279,39 +1635,49 @@ They are here so the first card that builds it starts from the rule.
   before the limits because the Owner is exempt from them; it is a 409
   because the request is sound and the entry's state is what blocks it (a
   price raised after the entry was logged is the only way there).
-- **Two money-control points raised in the C5 review wait on the founder,
-  not on code** (recorded so they are not mistaken for oversights):
-  - *The pack cost comes from any requisition that is not Rejected or
-    Cancelled, Pending included* (`latestPackCostKobo`, the demo's
-    `wasteValue`). Whoever raises a requisition therefore sets the cost
-    that waste, the approvals prediction and the Q28 count limit are judged
-    on, before any manager has reviewed it; with Store waste valued per
-    unit, that is a way under the Owner Approval Limit. Q25's own default
-    ("latest cost would mean the most recently received line", Store waste
-    per pack) closes both, and the plan ports the coded formula until Q25
-    is answered; changing it is a pricing rule, not an implementation
-    choice. Answering Q25 changes `COSTLESS_PURCHASES` to an allow-list
-    (received lines, or Approved and Fulfilled purchases).
-  - *A correction of an approved entry (`waste.edit`, and `purchase.edit`
-    of an Approved requisition) is held to the Owner Approval Limit only*
-    (plan §6.2 "edit: L"; the demo's `withinLimit` without counting), so a
-    manager can raise an approved value past the Daily Approval Limit, or
-    raise their own record after a colleague approved it. Counting the
-    increase toward the day and applying the own-record rule (as
-    `order.discount` counts "the increase only"), or sending a raised
-    approved record back to Pending, is a change to the approved rule
-    table and needs the founder's agreement, as §17's corrections had.
+- **The two money-control points the C5 review left for the founder are
+  decided (2026-10-22) and built** (recorded so the history of the rule is
+  in one place):
+  - *The pack cost came from any requisition not Rejected or Cancelled,
+    Pending included*, so whoever raised one set the cost their write-offs
+    and counts were judged on. Decided: only Approved or Fulfilled
+    purchases set it (see the C5 schema section).
+  - *A correction of an approved record was held to the Owner Approval
+    Limit only* (plan §6.2 "edit: L"), so a manager could raise an
+    approved value past the Daily Approval Limit, or raise their own record
+    after a colleague approved it. Decided: the increase counts toward the
+    day and the own-record rule applies (the `waste.edit` rule below, and
+    `purchase.edit` under *Purchasing and vendors*). This amends plan
+    §6.2's `waste.edit` and `purchase.edit` rows.
 - **An approval (`waste.approve`, and `waste.status` to Approved from any
   other status) runs `MoneyControlService.withinLimit` with
   `LIMITED_DECISIONS.writeOff`, counted toward the day, then `notOwn` with
-  `OWN_RECORD_KINDS.wasteEntry`, in the demo's order; a correction holds the
-  new value to the Owner Approval Limit without counting it** (plan §6.2
-  "approve: L, D, N; edit: L"). The C5 gate's steps 5 and 6 are the
+  `OWN_RECORD_KINDS.wasteEntry`, in the demo's order** (plan §6.2
+  "approve: L, D, N"). The C5 gate's steps 5 and 6 are the
   own-record refusal and the fourth ₦40,000 approval refused at ₦160,000.
   A rejection writes nothing off: a manager may reject their own entry, and
   nothing is counted. The approval takes the limit's advisory lock before
   the ledger's balance row; a stock count takes them the other way round
   (see *Stock*).
+- **`waste.edit` holds the new value to the Owner Approval Limit; on an
+  Approved entry the increase over the stored value (`increaseKobo`) also
+  counts toward the editor's Daily Approval Limit, and a manager may not
+  correct an entry they logged, up or down (`notOwnCorrection`, 403 "You
+  cannot change an approved waste entry you created. The Owner or another
+  manager must change it."); the Owner is exempt from all of it** (the
+  founder's decision of 2026-10-22, amending plan §6.2's "edit: L"; new
+  sentence, in the own-record sentence's form, because the demo had none).
+  Raising an approved write-off is a fresh decision of the difference,
+  counted as `order.discount` counts "the increase only", so the day's
+  limit cannot be walked round by approving small and correcting upward.
+  The old value is the stored one, the value the approval or the last
+  correction was judged on. A decrease adds nothing; a Pending entry's
+  correction counts nothing, because its approval will. The checks run in
+  the approval's order (limit, day, own record) before any stock moves, so
+  a refusal moves nothing and leaves no ledger row; two increases by one
+  manager racing past the limit are serialised by the ledger's advisory
+  lock and the second is refused (`test/waste.e2e-spec.ts`,
+  `test/purchasing.e2e-spec.ts`).
 - **`waste.create` takes an Idempotency-Key; every other waste command does
   not** (the *Idempotency* rule for creates): a retried create would log the
   loss twice, and every other command names a version the first attempt
@@ -1872,8 +2238,8 @@ They are here so the first card that builds it starts from the rule.
   `ReservationsService.book` (`src/reception/reservations.service.ts`);
   the booking's `source` decides which arrival rules bind it and in whose
   words a clash is answered** (plan §7.5: "Website, app and Reception all
-  run one command"). Reception's route calls it now and the website's and
-  the app's (C6-5) will; two booking paths would be two sets of checks that
+  run one command"). Reception's route calls it, and so do the website's
+  and the app's (`POST /reservations`, C6-5); two booking paths would be two sets of checks that
   drift, and a race between a web booking and a Reception booking for one
   table must meet the same lock and the same index.
 - **The arrival rules are `arrivalProblem` (`src/reception/reservation-rules.ts`),
@@ -1955,6 +2321,254 @@ They are here so the first card that builds it starts from the rule.
   reminder time, which every suite shares, and asserts on the whole floor
   and the whole bell. Bookings already past their time and guests seated
   hours ago are written directly, since the routes refuse to make them now.
+
+## Bookings from the website and the app *(from C6)*
+
+- **`POST /reservations` is the website's and the app's booking, and it
+  runs `ReservationsService.book`, the command Reception's route runs**
+  (`CustomerReservationsService.book`, plan §7.5). So the table lock, the
+  checks and the partial unique index decide a race between any two
+  channels; `test/customer-reservations.e2e-spec.ts` races five website
+  bookings for one table and date (one 201) and a website booking against
+  Reception's (one wins, each refused in its own words).
+- **The route is public or customer (`OptionalCustomerGuard`,
+  `@MaybeCustomer()`).** No `Authorization` header is a guest: source
+  `WEB`. A customer token makes the booking source `APP` and the
+  customer's own. A header that fails is 401 and a staff token 403, never
+  a silent guest booking, so an app whose token expired refreshes and
+  retries instead of making a booking that is not in the account. The
+  source is decided by the server from the session, not sent by the
+  client; the website and the app have the same rules (Q30), so the label
+  only says where a booking came from.
+- **The table is named as the public floor plan names it: `venue` (slug)
+  and `table` (code)**, never a row id (*The public reads*). A room or
+  table that does not exist is the command's "Choose a position with
+  enough capacity." (400), its answer to "no such table".
+- **The guest's details are checked with the website form's sentences**
+  (`TableBooking.tsx`): "Please add a name for the reservation.", "Please
+  add a Nigerian phone number, for example 0803 123 4567.", "Please add a
+  valid email address so we can send your confirmation.". The phone must
+  be Nigerian, as the form requires (Reception may still take a foreign
+  number), and is stored as `0` plus 10 digits through `customerPhone`, so
+  `234…` without the plus, which the form accepts, is accepted too.
+- **To a website or app guest every hold on a table is "Someone has just
+  taken this place for that time. Go back to the floor plan and choose
+  another."** (`holdMessages`): another booking, a lock and guests seated
+  alike. The floor plan showed the table free, so it is the same race, and
+  why a table is locked is staff knowledge. Reception keeps the demo's
+  three sentences.
+- **`POST /reservations` takes an Idempotency-Key (A9), scoped to the
+  customer or, for a guest, to the hashed address**; a guest's retry comes
+  from the same address. It is limited to 30 bookings per address in 15
+  minutes in memory (`BookingThrottle`, 429 "Too many attempts…"), the
+  first line only: it needs no sign-in, holds a table for a whole date
+  and sends an email.
+- **The real limits are stored caps on website and app bookings (from the
+  C6 review): 20 a day per client address (`Reservation.ipHash`, the
+  address hashed by `hashClientAddress`) and 10 a day per email, from any
+  address (`assertOnlineBookingCaps`, `booking-throttle.ts`), 429 "Too many
+  attempts…".** The in-memory count is per instance and forgotten on a
+  restart, and allowed one address some 2,880 table-dates a day: enough
+  to hold every table for weeks, or mail a stranger 120 confirmations an
+  hour from CNC's sender. Counted under advisory locks on the address and
+  the email (keys only this check takes, in a fixed order, before the
+  table's lock, so they cannot deadlock with the table or email locks),
+  against `createdAt` written on the service's clock (A11). Reception's
+  bookings are never counted. **No cap per phone**: CNC sends no SMS, made-up
+  numbers cost a script nothing, and a cap would refuse a family booking
+  under one number. **Still open, for the founder:** how far ahead a guest
+  may book. The website offers any future date and the plan sets no
+  horizon, so the server sets none; a horizon (for example 60 days) would
+  bound what the address cap still allows, and is a business rule, not
+  this build's to set.
+- **Linking a booking to a customer is one module, `customer-link.ts`,
+  both ways, on an exact verified match only, never creating an account**
+  (Q35, A15). A booking made without a session (Reception's, a website
+  guest's) links to the customer holding its verified email, else its
+  verified phone. A customer who proves an email with a code (the first or
+  any sign-in, an email change) collects the unlinked bookings under it,
+  which is what the website's done screen promises ("Sign in with the
+  phone number or email you gave"). A linked booking is never moved. Both
+  directions take the email's advisory lock (`lockCustomerEmail`), so a
+  booking and a first sign-in for one address at once still end linked.
+  The link does not move a booking's `version`: no screen edits it.
+- **The locks are always taken in one order: the table's, then the
+  email's, then the booking's row** (from the C6 review). A first sign-in
+  holds the email's lock and then updates the email's unlinked bookings'
+  rows, so Reception's change of an unlinked booking takes the email's
+  lock (for the email it will link by) after the table's and before it
+  claims the booking's version, which locks the row; the other order could
+  deadlock the two, a 500 for Reception or the guest. `customer-reservations`
+  holds the email's lock and checks the row stays free while the change
+  waits (seen failing with the old order).
+- **A customer sees only the note they wrote (`guestNote`), never
+  Reception's (`note`)** (from the C6 review). Reception's note is staff
+  writing to staff ("ask for card up front"), and Q35 links phone bookings
+  to accounts, so `GET /me/reservations` showed it to the guest. An online
+  booking writes the guest's "Anything we should know?" into both
+  columns, so Reception still reads it and may add to `note` without the
+  guest seeing that; a Reception booking's `guestNote` is blank. The C6
+  review migration copied an online booking's existing note across.
+- **`GET /me/reservations`, `PATCH /me/reservations/:id` and `POST
+  /me/reservations/:id/cancel` touch only the customer's own bookings
+  (`customerId`); another customer's booking, or none, is 404 "We could
+  not find that reservation."** (the account app's sentence), checked
+  before the version is claimed, so a stranger's request cannot learn
+  that a booking exists or move its version. Seen failing with the
+  `customerId` condition removed.
+- **The 24-hour rule (Q6) is enforced on the server for change and
+  cancel: allowed while the booking starts at least 24 hours from now,
+  refused after with 409 and the app's words** ("Your reservation is less
+  than 24 hours away. Nothing is charged, but please call CNC if you can
+  no longer come."). Exactly 24 hours is allowed ("≥ 24 h"; `insideChangeWindow`,
+  unit-tested at the millisecond); the e2e suite moves the faked clock a
+  minute either side. It judges the booking as it stands, not the new
+  time: a booking may be moved closer than 24 hours, after which it can
+  no longer be changed online, as the demo's `updateReservation` allowed.
+  Staff are not bound by it. Each booking in the list carries
+  `changeableUntil` and `changeable` from the server's clock (A11), so the
+  app disables its buttons without trusting the phone's clock.
+- **A customer's change keeps the table and changes only the date, the
+  time and the party** (the app's form; for another table it says cancel
+  and book again), and checks what it touches with the online rules: the
+  large-party note, then "<Table> seats up to <n>. For a larger party,
+  book a bigger table.", the arrival on the grid ("Choose an arrival time
+  that is still open."; a closed day keeps "CNC is closed on that date."),
+  and on a new date the table's holds ("<Table> is already taken at that
+  time. Try another time."), the index answering a race in the same words.
+  Change and cancel name the booking's `version` (A8).
+- **Every booking emails its guest: the confirmation on any channel's
+  create, and a notice on a cancel (the customer's or Reception's) and on
+  a change of the table, date, time or party** (`ReservationMail`, plan
+  §9.2). Confirmations always go to the email given (Q31's default). Each
+  is queued in the command's transaction and sent after the commit; the
+  dedupe key is the booking and the event, a change's carrying the new
+  `version`, so a replayed create sends nothing more
+  (`OutboundMessagesService.dispatchByKey`). A booking with no email (an
+  anonymised one) is sent nothing. Reception's cancel and change are
+  pinned by `customer-messages` (the email, its row reaching `SENT`, the
+  in-app item; seen failing with either enqueue removed).
+- **CNC's phone goes into an email as the website shows it, `0802 218
+  8797`, never the stored digits** (`phoneForDisplay`,
+  `common/nigerian-phone.ts`; the site's `phoneDisplay`; Q6 says the
+  number is shown formatted) (from the C6 review). The guest reads and
+  dials the same number on the site and in the email.
+- **Audit: a customer's create, change and cancel are `CUSTOMER` rows;
+  a website guest's create is a `SYSTEM` row named "Website guest
+  <name>"**, the `AuditLog_actor_check` allowing no customer without an
+  id. Online rows carry the channel (`WEB`/`APP`); Reception's rows are
+  unchanged.
+
+## The customer's in-app list and booking reminders *(from C6)*
+
+- **`GET /me/notifications` and `POST /me/notifications/read` are the
+  account app's inbox; the items are written by the same events that send
+  email, in the event's own transaction** (plan §9.2, card C6-8;
+  `CustomerNotificationsService.record`). Today: the welcome when a
+  customer is created, and a booking made, changed, cancelled and
+  reminded. C7 adds orders through the same service. The item's
+  `dedupeKey` is the email's, inserted with `ON CONFLICT DO NOTHING`, so a
+  replay writes nothing and a repeat never aborts the command. A deleted
+  account (Q36) gets nothing.
+- **The words are the account app's demo's** (`lib/account/api.ts`
+  `listNotifications`): "Welcome to CNC", "Table reserved", "Reservation
+  cancelled", "See you soon", and the body "<table>, <room>, <date> at
+  <time>.". "Reservation changed" is new, and the reminder names the
+  booking's date and time where the demo, building items on read, said
+  "today or tomorrow". `customer-notification-texts.ts` holds them, pinned
+  by its spec. `link` is a path under the site's base (`/account#reservations`),
+  never a full URL, so a stored item does not go stale with a domain.
+- **Booking items are written by `ReservationMail`, beside the booking's
+  email, for a booking that belongs to a customer**: whatever channel made
+  it, a Reception booking linked by Q35 included. A guest's booking writes
+  no item: there is nobody to show it to.
+- **The list is a history, not a message: preferences do not gate it**
+  (D62). What a customer switched off by email still appears here, because
+  nothing here interrupts anyone.
+- **Unread is "created after `Customer.notificationsReadAt`"** (plan §4.2),
+  and both instants are the service's clock (A11): `record` writes
+  `createdAt` itself rather than taking the database's default, so a
+  difference between two clocks cannot make a new item read. `markRead`
+  never moves the instant back. The page is the standard
+  `{data,page,pageSize,total}` plus `unread` (all pages) and
+  `notificationsReadAt`; each item says `unread`. `no-store`, as every
+  `/me` answer.
+- **Reminders (Q32's default) are the reminders sweep's
+  (`ReservationRemindersService`, `POST /internal/sweeps/reminders`, every
+  15 minutes)**: a Confirmed booking is reminded once, 24 hours before it
+  starts (`REMINDER_LEAD_MS`, its own constant beside Q6's
+  `CHANGE_WINDOW_MS`, because the founder answers them apart), until it
+  starts; guests by email; a customer who switched Reservation Reminders
+  off (`prefBookingReminders`) gets the in-app item and no email.
+- **"None for bookings made less than 24 hours ahead" is decided when the
+  booking is made or moved, not by the sweep**: the booking command and
+  both change commands set `reminderSentAt` to now when the (new) start is
+  under 24 hours away, and to null otherwise (`initialReminderStamp`). One
+  rule then covers a booking made late, a booking moved closer (no
+  reminder of a time just chosen) and a reminded booking moved further out
+  (it gets a reminder for the new time; its dedupe key carries the
+  `version`). Exactly 24 hours ahead still gets one, as Q6 still allows a
+  change then.
+- **Bookings made before C6 were stamped by the C6 review migration by the
+  same rule** (`20261022215055_c6_review_fixes`): a Confirmed booking whose
+  start (its date and arrival in Jos) was under 24 hours after its
+  `createdAt` gets `reminderSentAt = createdAt`. Nothing before C6 wrote the
+  column, so without it the first reminders sweep on staging would have
+  reminded C4 and C5 bookings made late, which Q32 excludes. A booking made
+  a day or more ahead keeps null and is reminded, as Q32 asks. Checked on
+  the boundary (exactly 24 hours ahead is not stamped) before it was
+  applied.
+- **Each reminder is claimed by one conditional update (`reminderSentAt IS
+  NULL`, still Confirmed) in the transaction that writes its messages**,
+  and the email's dedupe key is the booking, the event and the version, so
+  two sweeps at once remind once (the e2e suite races two, three rounds)
+  and a booking cancelled first is not reminded. One booking's failure is
+  logged by id and left unclaimed for the next run.
+- **The reminder is the one sweep whose work is a feature, and still no
+  other behaviour depends on it** (*Auth*: no behaviour may depend on a
+  sweep having run): if the job does not run, reminders are late or
+  missed, a courtesy lost, while bookings, changes and the 24-hour rule
+  are unaffected. A booking whose start has passed is never reminded late.
+
+## Enquiries *(from C6)*
+
+- **`POST /enquiries` (the Contact page) and `POST /group-enquiries` (the
+  booking page's large-party callback) store an `Enquiry` and email it to
+  `CNC_CONTACT_EMAIL`; there is no staff list** (Q20's default; plan §5.1,
+  D50). The row is written and the email queued in one transaction, and
+  sent after the commit: the enquiry is the thing of value, so a provider
+  outage costs delivery time, never the person's message, and they are not
+  told of CNC's mail trouble (204 either way). With no inbox configured
+  (only possible locally; production refuses to boot) the row is kept and
+  the log names its id, never its content.
+- **Both answer 204 with no body, and a filled honeypot gets the same 204
+  with nothing stored, sent or logged** (`company`, the forms' hidden
+  field; TAY's rule). An error would tell a script which field to leave
+  alone, and a log line would carry whatever it sent. The field is
+  declared with `@Allow()` so the whitelist passes it to the service, and
+  any value but absent, null or blank text counts as filled.
+- **Two limits, apart, so defeating one does not defeat both**: at most 5
+  stored enquiries per address an hour across both forms, counted on the
+  rows (`ipHash`, the address hashed by `hashClientAddress`) under an
+  advisory lock on the address, so a burst cannot slip past (seen failing
+  without the lock); and 20 requests per address per form in fifteen
+  minutes in memory (`EnquiryThrottle`), which also counts refused bodies
+  and honeypot hits. Both are 429 "Too many attempts. Wait a few minutes
+  and try again.". Each accepted enquiry is an email into CNC's one inbox;
+  a person writes once or twice.
+- **The sentences are the website's where it has them**
+  (`lib/enquiries.ts`): "Please add your name, your email and a message."
+  (said once, whichever is missing), "Please add your name.", "Please add
+  a phone number we can call you back on, for example 0803 123 4567.".
+  The rest are new and marked so in `enquiry-messages.ts`. The callback's
+  phone must be Nigerian and is stored as `0` plus 10 digits
+  (`customerPhone`); its email is optional; its room is the slug, as
+  `POST /reservations` names it; its date is today or later in Jos.
+- **An enquiry's email may wait a week (`ENQUIRY_MAIL_TTL_MS`), not the
+  queue's default day**: with no staff list the email is how CNC reads it,
+  so a late one beats none.
+- **No audit row**: an enquiry is not a command in the staff app's record.
+  Q36's twelve-month retention of enquiries is C8-5's.
 
 ## CORS
 
@@ -2095,6 +2709,28 @@ They are here so the first card that builds it starts from the rule.
   route, not before.** A job pointed at a route that does not exist yet
   fails on every run, and a scheduler log full of expected 404s hides the
   failure that matters.
+- **The sweep jobs, all `POST`, `Africa/Lagos`, `europe-west1`, header
+  `x-sweep-token` from `CNC_SWEEP_TOKEN` plus `Content-Length=0`, URI
+  `https://api-cnc-staging.tayxcnc.com/api/v1/internal/sweeps/<name>`**
+  (plan §5.5). Production has the same jobs with `cnc-prod-` names when
+  C9 provisions it.
+
+  | Job | Schedule | Route | Card | Why this often |
+  | :--- | :--- | :--- | :--- | :--- |
+  | `cnc-staging-sweep-tokens` | `0 3 * * *` | `tokens` | C3-9 (exists) | housekeeping; nothing reads expired rows |
+  | `cnc-staging-sweep-messages` | `*/5 * * * *` | `messages` | C6-8 | a sign-in code lives 10 minutes, so a queued one must go within minutes; the backoff (5, then 30) is counted in these runs |
+  | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
+
+  Create the two C6 jobs **after the C6 deploy is live** (the rule
+  above), each with `gcloud scheduler jobs create http <job> --location
+  europe-west1 --project tayxcnc-staging --schedule "<schedule>"
+  --time-zone "Africa/Lagos" --uri "<uri>" --http-method POST --headers
+  "x-sweep-token=<value>,Content-Length=0" --format="value(name)"`, the
+  token read from Secret Manager into a shell variable, never typed or
+  printed. Then force one run of each and read its one log line ("Sweep
+  messages sent …", "Sweep reminders reminded …"). A `POST` without
+  `Content-Length` is refused by Google's front end with 411 before it
+  reaches the guard (TAY's runbook).
 - **Production provisioning runs from Google Cloud Shell, not a development
   machine.** Production credentials never sit on a machine where an agent has
   a shell.
@@ -2304,6 +2940,23 @@ here.
   requisition or entry, and an approval racing a rejection, each over
   several rounds, asserting that the day's ledger counts only a winning
   approval.
+- **The C6 gate walk (`test/c6-gate.e2e-spec.ts`) follows the same form,
+  and walks only the backend's half of each step** (from C6). The pages
+  under `/cnc`, the real inbox and the Resend delivery are the founder's
+  walk on staging; here "the email arrives" means the recording transport
+  was handed it and its `OutboundMessage` row is `SENT`, because no test may
+  reach a real mail provider. The walk's own `CNC_CONTACT_EMAIL` is set at
+  the top of the file, as the enquiries suite does, so step 7 does not
+  depend on a developer's `.env`. Step 2's website booking is a guest
+  booking under the signed-in customer's email, so the walk also proves the
+  A15 link the site's done screen promises; step 4 frees the table the way
+  Reception does on the night (check in, then release), not by cancelling,
+  because releasing is the path that ends a seating and completes the
+  booking (plan §7.5). Step 5 books a second table from the app and moves
+  the clock to 23 hours before it, refreshing the session there as the app
+  would, so the refusal is judged on the server's clock (A11). The
+  sentence is asserted as a literal string as well as the constant, so a
+  change to the constant that broke the app's wording fails the gate.
 - **Every C4 race test was seen failing with its guard removed** (from C4):
   the conditional decrement (the shortfall test), a read-then-write balance
   update in place of `qty = qty + delta` (all four stock races), the

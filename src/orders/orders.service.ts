@@ -54,6 +54,7 @@ import {
   assertEditable,
   isEditable,
   lineProblem,
+  UNSETTLED_ORDER_STATUSES,
 } from './order-rules';
 import { balanceDueKobo, orderTotals } from './order-totals';
 
@@ -99,9 +100,6 @@ const LINE_COLUMNS = {
 } satisfies Prisma.OrderLineSelect;
 
 type LineRow = Prisma.OrderLineGetPayload<{ select: typeof LINE_COLUMNS }>;
-
-/** The bills the till works on: open or awaiting payment. */
-const ACTIVE_STATUSES = [OrderStatus.OPEN, OrderStatus.PAYMENT];
 
 /** A bill something has been paid against (the demo's `paidSoFar > 0`). */
 const PART_PAID: Prisma.OrderWhereInput = {
@@ -851,7 +849,7 @@ export class OrdersService {
 function stateWhere(state: OrderListState): Prisma.OrderWhereInput {
   switch (state) {
     case OrderListState.ACTIVE:
-      return { status: { in: ACTIVE_STATUSES } };
+      return { status: { in: UNSETTLED_ORDER_STATUSES } };
     case OrderListState.SETTLED:
       return { status: OrderStatus.SETTLED };
     case OrderListState.CANCELLED:

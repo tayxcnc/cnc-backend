@@ -20,6 +20,7 @@ import {
 } from '../common/dto/pagination.query';
 import { sentId } from '../common/sent-id';
 import {
+  increaseKobo,
   LIMITED_DECISIONS,
   MoneyControlService,
   OWN_RECORD_KINDS,
@@ -54,6 +55,7 @@ import {
   CLOSED_PURCHASE_STATUSES,
   correctionMoves,
   hasReceived,
+  isApprovedPurchase,
   isLineCost,
   purchaseTotalKobo,
   receivedValueKobo,
@@ -344,10 +346,15 @@ export class PurchasesService {
   /**
    * `purchase.edit`: a manager corrects a requisition that is not archived,
    * with a reason. Both the old and the new totals are held to the Owner
-   * Approval Limit (an edit decides nothing, so neither counts toward the
-   * day). On a purchase with received goods the Store moves by each item's
-   * new quantity less what was received (`PURCHASE_CORRECTION`), and the
-   * new lines count as received in full.
+   * Approval Limit. On an approved purchase (Approved or Fulfilled; the
+   * founder's decision of 2026-10-22, amending plan §6.2's "L on the old
+   * and new totals") the increase of the total counts toward the editor's
+   * Daily Approval Limit, as `order.discount` counts its increase, and a
+   * manager may not correct a purchase they raised (`notOwnCorrection`;
+   * the Owner is exempt). A Pending requisition's correction counts
+   * nothing: its approval will. On a purchase with received goods the
+   * Store moves by each item's new quantity less what was received
+   * (`PURCHASE_CORRECTION`), and the new lines count as received in full.
    */
   async edit(
     actor: StaffPrincipal,
@@ -366,17 +373,34 @@ export class PurchasesService {
         vendorFirst: false,
       });
       const oldLines = await this.linesOf(tx, id);
+      const oldTotalKobo = purchaseTotalKobo(oldLines);
+      const newTotalKobo = purchaseTotalKobo(lines);
+      const approved = isApprovedPurchase(current.status);
 
-      for (const amountKobo of [
-        purchaseTotalKobo(oldLines),
-        purchaseTotalKobo(lines),
-      ]) {
-        await this.money.withinLimit(tx, actor, {
-          amountKobo,
-          what: LIMITED_DECISIONS.purchase,
-          action: 'purchase.edit',
-          ref: current.number,
-        });
+      await this.money.withinLimit(tx, actor, {
+        amountKobo: oldTotalKobo,
+        what: LIMITED_DECISIONS.purchase,
+        action: 'purchase.edit',
+        ref: current.number,
+      });
+      // An approved purchase's increase is a fresh decision of the
+      // difference (the founder's decision of 2026-10-22, as
+      // `order.discount` counts it); a Pending one decides nothing yet.
+      await this.money.withinLimit(tx, actor, {
+        amountKobo: newTotalKobo,
+        what: LIMITED_DECISIONS.purchase,
+        count: approved,
+        countedKobo: increaseKobo(oldTotalKobo, newTotalKobo),
+        action: 'purchase.edit',
+        ref: current.number,
+      });
+
+      if (approved) {
+        this.money.notOwnCorrection(
+          actor,
+          current.createdById,
+          OWN_RECORD_KINDS.purchase,
+        );
       }
 
       const received = hasReceived(oldLines);

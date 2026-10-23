@@ -20,6 +20,7 @@ import {
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
 import {
+  increaseKobo,
   LIMITED_DECISIONS,
   MoneyControlService,
   OWN_RECORD_KINDS,
@@ -29,7 +30,7 @@ import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
 import { StockLedgerService } from '../stock/stock-ledger.service';
 import { locationHolds } from '../stock/stock-locations';
-import { stockValueKobo } from '../stock/stock-value';
+import { stockValueAtKobo } from '../stock/stock-value';
 import type {
   ApproveWasteRequest,
   CreateWasteRequest,
@@ -150,13 +151,14 @@ function auditFields(
  * the old quantity and takes the new (`WASTE_CORRECTION_RETURN`,
  * `WASTE_CORRECTION_DEDUCTION`).
  *
- * **The value is the coded formula until Q25 is answered**
- * (`stockValueKobo`, the demo's `wasteValue`): the entry's quantity valued
- * as it stands, at whatever location, so a Store write-off of one bag of
- * rice at ₦70,000 a bag of 50 portions is ₦1,400, as Q25 describes. It is
- * stored on the row when the entry is logged and corrected, and valued
- * afresh when it is approved (the demo values the decision as it is made),
- * so the row holds the value the decision was judged on.
+ * **The value is Q25's, as the founder answered it on 2026-10-22**
+ * (`stockValueAtKobo`, shared with the stock count): the entry's quantity
+ * valued as its location holds it, so a Store write-off is per pack (one
+ * bag of rice at ₦70,000 a bag is ₦70,000), and the pack cost comes only
+ * from Approved or received purchases. It is stored on the row when the
+ * entry is logged and corrected, and valued afresh when it is approved
+ * (the demo values the decision as it is made), so the row holds the value
+ * the decision was judged on.
  *
  * Every command after the create claims the entry's `version` first (A8)
  * and writes its audit row in the same transaction.
@@ -261,7 +263,7 @@ export class WasteService {
     // `qtyReasonProblem` has proved a whole quantity and a waste reason.
     const qty = request.qty as number;
     const reason = request.reason as WasteReason;
-    const valueKobo = await stockValueKobo(tx, item, qty);
+    const valueKobo = await stockValueAtKobo(tx, item, location, qty);
 
     if (!fitsValueColumn(valueKobo)) {
       throw new BadRequestException(CREATE_QTY_REASON_MESSAGE);
@@ -299,9 +301,14 @@ export class WasteService {
    * `waste.edit`: a manager corrects an entry's location, item, quantity,
    * reason and note, with a reason, in the demo's order: the entry, the
    * location and item, the quantity and reason, then the new value against
-   * the Owner Approval Limit (a correction decides nothing, so it does not
-   * count toward the day). On an approved entry the old quantity returns to
-   * its location and the new quantity leaves the new one.
+   * the Owner Approval Limit. On an approved entry (the founder's decision
+   * of 2026-10-22, amending plan §6.2's "edit: L") the increase over the
+   * stored value counts toward the editor's Daily Approval Limit, as
+   * `order.discount` counts its increase, and a manager may not correct an
+   * entry they logged (`notOwnCorrection`; the Owner is exempt); then the
+   * old quantity returns to its location and the new quantity leaves the
+   * new one. A Pending entry's correction decides nothing and counts
+   * nothing: its approval will.
    */
   async edit(
     actor: StaffPrincipal,
@@ -331,20 +338,33 @@ export class WasteService {
       // `qtyReasonProblem` has proved a whole quantity and a waste reason.
       const qty = request.qty as number;
       const reason = request.wasteReason as WasteReason;
-      const valueKobo = await stockValueKobo(tx, item, qty);
+      const valueKobo = await stockValueAtKobo(tx, item, location, qty);
 
       if (!fitsValueColumn(valueKobo)) {
         throw new BadRequestException(EDIT_QTY_REASON_MESSAGE);
       }
 
+      const approved = current.status === WasteStatus.APPROVED;
+
+      // An approved entry's increase is a fresh decision of the difference
+      // (the founder's decision of 2026-10-22, as `order.discount` counts
+      // it); a Pending entry's correction decides nothing yet.
       await this.money.withinLimit(tx, actor, {
         amountKobo: valueKobo,
         what: LIMITED_DECISIONS.writeOff,
+        count: approved,
+        countedKobo: increaseKobo(current.valueKobo, valueKobo),
         action: 'waste.edit',
         ref: current.number,
       });
 
-      if (current.status === WasteStatus.APPROVED) {
+      if (approved) {
+        this.money.notOwnCorrection(
+          actor,
+          current.createdById,
+          OWN_RECORD_KINDS.wasteEntry,
+        );
+
         await this.ledger.move(tx, {
           stockItemId: current.stockItemId,
           location: current.location,
@@ -572,20 +592,20 @@ export class WasteService {
 
   /**
    * What an approval of the entry would be judged on now: its quantity
-   * valued afresh by the coded formula (Q25), as `approvalRules` values it.
-   * The approvals read (C5-8) shows the same figure, so the screen's
+   * valued afresh as its location holds it (Q25), as `approvalRules` values
+   * it. The approvals read (C5-8) shows the same figure, so the screen's
    * prediction and the command never value one entry two ways.
    */
   async decisionValueKobo(
     client: ValueReader,
-    entry: Pick<WasteRow, 'stockItemId' | 'qty'>,
+    entry: Pick<WasteRow, 'stockItemId' | 'location' | 'qty'>,
   ): Promise<number> {
     const item = await client.stockItem.findUniqueOrThrow({
       where: { id: entry.stockItemId },
       select: ITEM_COLUMNS,
     });
 
-    return stockValueKobo(client, item, entry.qty);
+    return stockValueAtKobo(client, item, entry.location, entry.qty);
   }
 
   /**

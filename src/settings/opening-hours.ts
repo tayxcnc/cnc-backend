@@ -178,6 +178,28 @@ export function toOpeningHours(
   };
 }
 
+/**
+ * The hours of the week day `calendarDate` falls on (a `@db.Date`-shaped
+ * value, read with `getUTCDay`). A week that is not set, or a day missing
+ * from it, is closed: a day nobody entered is not a day CNC promises to be
+ * open.
+ */
+export function hoursOn(
+  days: OpeningHoursDayValue[] | null,
+  calendarDate: Date,
+): OpeningHoursDayValue {
+  const dayOfWeek = calendarDate.getUTCDay();
+
+  return (
+    days?.find((day) => day.dayOfWeek === dayOfWeek) ?? {
+      dayOfWeek,
+      isClosed: true,
+      opensAtMinutes: null,
+      closesAtMinutes: null,
+    }
+  );
+}
+
 /** `570` → `09:30`; `1440` → `24:00` (midnight at the end of the day). */
 export function minutesLabel(minutes: number): string {
   const hours = Math.floor(minutes / 60);

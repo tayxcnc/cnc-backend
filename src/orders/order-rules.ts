@@ -17,6 +17,16 @@ import {
  */
 
 /**
+ * The bills still being worked on: open, or awaiting payment. One list for
+ * the till's Unsettled filter, Reception's release rule (plan §7.1 step 6)
+ * and account deletion's check, so "unsettled" means one thing.
+ */
+export const UNSETTLED_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.OPEN,
+  OrderStatus.PAYMENT,
+];
+
+/**
  * The demo's `order()` Bartender rule: a Bartender works the Bar POS only,
  * so a Restaurant order (or department) is refused with 403 and its
  * sentence. Every other role passes; their route's `@Roles` decided the

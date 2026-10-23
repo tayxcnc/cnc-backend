@@ -193,8 +193,11 @@ export class PurchasesController {
     summary: 'Correct a requisition (purchase.edit)',
     description:
       'Managers, with a reason. The old and new totals are held to the ' +
-      'Owner Approval Limit. On a requisition with received goods the Store ' +
-      'moves by the difference.',
+      'Owner Approval Limit. On an Approved or Fulfilled requisition the ' +
+      'increase of the total counts toward the editor’s Daily Approval ' +
+      'Limit, and a manager may not correct one they raised (the Owner ' +
+      'may). On a requisition with received goods the Store moves by the ' +
+      'difference.',
   })
   @ApiResponse({ status: 200, type: PurchaseResponse })
   @ApiResponse({
@@ -209,9 +212,11 @@ export class PurchasesController {
   @ApiResponse({
     status: 403,
     description:
-      '"Your current staff role cannot perform this action.", or "This ' +
+      '"Your current staff role cannot perform this action.", "This ' +
       'purchase is above the Owner Approval Limit of …. The Owner must ' +
-      'approve it."',
+      'approve it.", the daily limit sentence, or "You cannot change an ' +
+      'approved purchase you created. The Owner or another manager must ' +
+      'change it."',
     type: ApiErrorResponse,
   })
   @ApiResponse(NOT_FOUND)

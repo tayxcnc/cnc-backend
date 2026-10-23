@@ -1,5 +1,13 @@
-import { PurchaseStatus, StockKind } from '../../generated/cnc-client';
-import { latestPackCostKobo, stockValueKobo } from './stock-value';
+import {
+  PurchaseStatus,
+  StockKind,
+  StockLocation,
+} from '../../generated/cnc-client';
+import {
+  latestPackCostKobo,
+  stockValueAtKobo,
+  stockValueKobo,
+} from './stock-value';
 
 /** A reader that knows one menu price and one latest pack cost. */
 function reader(priceKobo: number | null, packCostKobo: number | null = null) {
@@ -75,8 +83,67 @@ describe('stockValueKobo (the demo wasteValue)', () => {
   });
 });
 
+describe('stockValueAtKobo (Q25: as the location holds it)', () => {
+  const bar = { id: 's1', kind: StockKind.BAR, factor: 12, menuItemId: 'm1' };
+
+  it('values the Kitchen and the Bar in units, as stockValueKobo does', async () => {
+    const { reader: tx } = reader(350000, 7000000);
+
+    await expect(
+      stockValueAtKobo(tx, kitchenItem, StockLocation.KITCHEN, 2),
+    ).resolves.toBe(280000);
+    await expect(
+      stockValueAtKobo(tx, bar, StockLocation.BAR, -3),
+    ).resolves.toBe(1050000);
+  });
+
+  it('values Store stock per pack: one bag of rice at ₦70,000 is ₦70,000, not ₦1,400', async () => {
+    const { reader: tx } = reader(null, 7000000);
+
+    await expect(
+      stockValueAtKobo(tx, kitchenItem, StockLocation.STORE, 1),
+    ).resolves.toBe(7000000);
+    await expect(
+      stockValueAtKobo(tx, kitchenItem, StockLocation.STORE, -3),
+    ).resolves.toBe(21000000);
+    // Exactly packs × cost, with no division to round.
+    await expect(
+      stockValueAtKobo(
+        tx,
+        { ...kitchenItem, factor: 3 },
+        StockLocation.STORE,
+        1,
+      ),
+    ).resolves.toBe(7000000);
+  });
+
+  it('values a Store pack of a Bar item at How Many in One servings at the menu price', async () => {
+    const { reader: tx, findFirst } = reader(500000, 999999);
+
+    // The C4 review's nine batches of a ₦5,000 drink, twelve to a batch.
+    await expect(
+      stockValueAtKobo(tx, bar, StockLocation.STORE, 9),
+    ).resolves.toBe(54000000);
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+
+  it('values a Store item with no known cost, and nothing, at zero', async () => {
+    const { reader: tx, findUnique, findFirst } = reader(null, null);
+
+    await expect(
+      stockValueAtKobo(tx, kitchenItem, StockLocation.STORE, 4),
+    ).resolves.toBe(0);
+    findFirst.mockClear();
+    await expect(
+      stockValueAtKobo(tx, kitchenItem, StockLocation.STORE, 0),
+    ).resolves.toBe(0);
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+});
+
 describe('latestPackCostKobo', () => {
-  it('reads the newest line for the item on a purchase that was not rejected or cancelled', async () => {
+  it('reads the newest line for the item on an Approved or Fulfilled purchase only (Q25)', async () => {
     const { reader: tx, findFirst } = reader(null, 450000);
 
     await expect(latestPackCostKobo(tx, 's9')).resolves.toBe(450000);
@@ -85,7 +152,7 @@ describe('latestPackCostKobo', () => {
         stockItemId: 's9',
         purchase: {
           status: {
-            notIn: [PurchaseStatus.REJECTED, PurchaseStatus.CANCELLED],
+            in: [PurchaseStatus.APPROVED, PurchaseStatus.FULFILLED],
           },
         },
       },
