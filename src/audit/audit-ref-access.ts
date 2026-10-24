@@ -24,8 +24,9 @@ export interface AuditRefReader {
  * the record's own module answers that through an {@link AuditRefReader}
  * registered here, typically in its `onModuleInit`.
  *
- * **It fails closed.** A ref no reader owns is unreadable, so until the C4
- * modules register theirs, a non-manager can read no record's history.
+ * **It fails closed.** A ref no reader owns is unreadable, so a record
+ * whose module registers no reader (attendance, by plan §4.8) has no
+ * history a non-manager can read.
  * Managers and the Owner never come here; their rule is the actor filter.
  */
 @Injectable()

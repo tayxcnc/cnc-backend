@@ -53,9 +53,11 @@ const TEMPORARY_PASSWORD_BYTES = 10;
  * (C3-3), and for a new account (C3-6). The holder must replace it at first
  * sign-in (`mustChangePassword`).
  *
- * TAY emails its generated password; CNC has no mail until C6, so the
- * password is shown once to the manager who reset the account and handed
- * over in person. It is therefore shorter than TAY's 32 hex characters and
+ * TAY emails its generated password; CNC shows it once to the manager who
+ * reset the account, who hands it over in person. C3 built it so before
+ * CNC had mail, and it stays so (C8-5): a staff member who forgot their
+ * password is at the venue, and a password in an inbox outlives its first
+ * use. It is therefore shorter than TAY's 32 hex characters and
  * grouped for reading aloud: 20 lower-case hex characters in five groups of
  * four (`3f9a-07c2-…`). Hex has no case to get wrong and no look-alike
  * letters. 80 bits is far beyond reach of a sign-in route that allows ten

@@ -3,9 +3,9 @@ import { ApiProperty } from '@nestjs/swagger';
 /**
  * Body of `POST /api/v1/staff/people/:id/reset-password`.
  *
- * The one place a password leaves this service, and only because CNC has no
- * mail until C6: TAY emails the same value instead. It is shown once to the
- * manager who reset the account, who hands it over in person. It is never
+ * The one place a password leaves this service; TAY emails the same value
+ * instead. It is shown once to the manager who reset the account, who hands
+ * it over in person (`generateTemporaryPassword` says why). It is never
  * stored in plain text, logged or written to an audit row, and the holder
  * must replace it at first sign-in.
  */

@@ -3,7 +3,11 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
-import { type Prisma, StaffRole } from '../../generated/cnc-client';
+import {
+  AuditActorKind,
+  type Prisma,
+  StaffRole,
+} from '../../generated/cnc-client';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import { ROLE_REFUSED_MESSAGE, isManager, isOwner } from '../auth/staff-roles';
 import { parseIsoDate } from '../common/calendar-date';
@@ -12,6 +16,7 @@ import {
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
 import { watDayBounds } from '../common/wat';
+import { DELETED_CUSTOMER_NAME } from '../customers/customer-deletion.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { AuditRefAccess } from './audit-ref-access';
 import { actionLabel, describeChange } from './audit-sentences';
@@ -29,6 +34,7 @@ const AUDIT_SELECT = {
   at: true,
   actorKind: true,
   staffId: true,
+  customerId: true,
   actorName: true,
   actorRole: true,
   action: true,
@@ -91,7 +97,93 @@ export class AuditQueryService {
       this.prisma.auditLog.count({ where }),
     ]);
 
-    return { data: rows.map(toResponse), page, pageSize, total };
+    const withheld = await this.deletedCustomersRows(rows);
+
+    return {
+      data: rows.map((row) => toResponse(row, withheld.has(row.id))),
+      page,
+      pageSize,
+      total,
+    };
+  }
+
+  /**
+   * The rows on this page about a customer who deleted their account (Q36,
+   * card C8-5): written by that customer, or about a booking, a bill or a
+   * checkout that deletion anonymised. The audit log keeps what it recorded
+   * (A13, append-only by trigger), so the person is taken out at the read:
+   * the actor shows as "Deleted customer" and the guest's fields are
+   * described without their values. A booking or a web order anonymised
+   * because it carried the account's email shows the deletion's name, which
+   * is how it is found here.
+   *
+   * At most four queries per page, each on a unique or indexed column.
+   */
+  private async deletedCustomersRows(rows: AuditRow[]): Promise<Set<string>> {
+    const refs = [
+      ...new Set(rows.flatMap((row) => (row.ref === null ? [] : [row.ref]))),
+    ];
+    const actors = [
+      ...new Set(
+        rows.flatMap((row) =>
+          row.customerId === null ? [] : [row.customerId],
+        ),
+      ),
+    ];
+    const gone = new Set<string>();
+
+    if (actors.length > 0) {
+      const deleted = await this.prisma.customer.findMany({
+        where: { id: { in: actors }, deletedAt: { not: null } },
+        select: { id: true },
+      });
+
+      for (const { id } of deleted) gone.add(`customer:${id}`);
+    }
+
+    if (refs.length > 0) {
+      const anonymised = { not: null };
+      const bookings = await this.prisma.reservation.findMany({
+        where: {
+          number: { in: refs },
+          OR: [
+            { customer: { deletedAt: anonymised } },
+            { name: DELETED_CUSTOMER_NAME },
+          ],
+        },
+        select: { number: true },
+      });
+      const bills = await this.prisma.order.findMany({
+        where: {
+          number: { in: refs },
+          OR: [
+            { customer: { deletedAt: anonymised } },
+            { onlineOrder: { contactName: DELETED_CUSTOMER_NAME } },
+          ],
+        },
+        select: { number: true },
+      });
+      const checkouts = await this.prisma.checkout.findMany({
+        where: { reference: { in: refs }, contactName: DELETED_CUSTOMER_NAME },
+        select: { reference: true },
+      });
+
+      for (const { number } of [...bookings, ...bills]) {
+        gone.add(`ref:${number}`);
+      }
+      for (const { reference } of checkouts) gone.add(`ref:${reference}`);
+    }
+
+    return new Set(
+      rows
+        .filter(
+          (row) =>
+            (row.customerId !== null &&
+              gone.has(`customer:${row.customerId}`)) ||
+            (row.ref !== null && gone.has(`ref:${row.ref}`)),
+        )
+        .map((row) => row.id),
+    );
   }
 
   /**
@@ -177,20 +269,28 @@ export class AuditQueryService {
   }
 }
 
-/** Field by field, so `before` and `after` can never ride along. */
-function toResponse(row: AuditRow): AuditEntryResponse {
+/**
+ * Field by field, so `before` and `after` can never ride along. `withheld`:
+ * the row is about a deleted customer (`deletedCustomersRows`).
+ */
+function toResponse(row: AuditRow, withheld: boolean): AuditEntryResponse {
   return {
     id: row.id,
     at: row.at,
     actorKind: row.actorKind,
     staffId: row.staffId,
-    actorName: row.actorName,
+    actorName:
+      withheld && row.actorKind === AuditActorKind.CUSTOMER
+        ? DELETED_CUSTOMER_NAME
+        : row.actorName,
     actorRole: (row.actorRole as StaffRole | null) ?? null,
     action: row.action,
     actionLabel: actionLabel(row.action),
     module: row.module,
     ref: row.ref,
     reason: row.reason,
-    changes: describeChange(row.before, row.after),
+    changes: describeChange(row.before, row.after, {
+      withholdContacts: withheld,
+    }),
   };
 }

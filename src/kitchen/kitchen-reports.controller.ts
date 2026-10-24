@@ -15,8 +15,8 @@ import { KitchenCrosscheckService } from './kitchen-crosscheck.service';
 /**
  * Reports → Kitchen Crosscheck (plan §5.4, §7.10, §10; card C4-6), managers
  * only (the Cashier's reports are payments, cash and transfers). Built here
- * with the kitchen entries it reads; C8's other reports join it under
- * `staff/reports`.
+ * with the kitchen entries it reads; the other reports sit beside it under
+ * `staff/reports` (`src/reports`, C8-1).
  */
 @ApiTags('Reports')
 @ApiBearerAuth()

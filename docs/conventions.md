@@ -638,8 +638,10 @@ They are here so the first card that builds it starts from the rule.
 - **The admin reset (`POST /staff/people/:id/reset-password`) sets a
   temporary password from `generateTemporaryPassword`, forces a change at
   first sign-in, ends every session, and returns the password once in the
-  response.** TAY emails it; CNC has no mail until C6, so the manager hands
-  it over in person, and C6 may move it to email. It is never stored in
+  response.** TAY emails it; CNC had no mail until C6, so the manager hands
+  it over in person. *Settled in C8-5: it stays in person after C6, because
+  a staff member who forgot their password is at the venue, and a password
+  in an inbox outlives its first use.* It is never stored in
   plain text, logged or written to an audit row. Managers only; a Manager or
   Owner account only by the Owner ("Only the Owner can create or change
   Manager and Owner accounts.", the demo's `staff.save` rule); never one's
@@ -1148,7 +1150,10 @@ They are here so the first card that builds it starts from the rule.
   is refused (409) while a booking the customer made in the app (`APP`)
   holds a table on a date from today on, or a linked bill is open**: an
   anonymised upcoming booking would leave Reception a table held for
-  nobody. The audit log keeps what it recorded (A13).
+  nobody. The audit log keeps what it recorded (A13). *From C8-5: what
+  carries the verified email unlinked is forgotten too, stored answers
+  naming the records are removed, and the audit read withholds the guest's
+  values; see* Data retention and account deletion.
 - **An upcoming website or Reception booking linked to the account by its
   email or phone (Q35) does not refuse a deletion: it is unlinked and kept
   as the guest booking it was made as** (from the C6 review). Anyone can
@@ -1172,6 +1177,72 @@ They are here so the first card that builds it starts from the rule.
   command, the floor, the public availability, the table release and
   account deletion, so no two of them disagree about what holds a table
   or keeps a bill open.
+
+## Data retention and account deletion *(from C8-5)*
+
+- **Q36's periods are the founder's standing default: enquiries are kept
+  12 months, attendance 2 years** (`ENQUIRY_RETENTION_MONTHS`,
+  `ATTENDANCE_RETENTION_YEARS` in `src/internal/retention-sweep.service.ts`,
+  the one place they are written). The Nigeria Data Protection Act 2023
+  asks for a stated retention, and a number written twice drifts.
+- **`POST /internal/sweeps/retention` (`RetentionSweepService`, behind
+  `SweepTokenGuard`) deletes enquiries made before the start of the same
+  Lagos date 12 months ago, and finished shifts dated before the same date
+  2 years ago, with their corrections.** Lagos dates, because every period
+  a person reads here is a Jos day. A date the earlier year lacks (29
+  February) rolls forward, so a row is kept a day longer, never deleted a
+  day early.
+- **What references the rows was checked before any delete:** nothing
+  references an `Enquiry` (its email to CNC's inbox keeps only CNC's own
+  address once sent); an `AttendanceRecord` is referenced only by its
+  `AttendanceCorrection` rows, which cascade with it; the audit log names a
+  scan or correction by the person's staff number, never by the record, so
+  every audit read stays whole. **The audit log is append-only and is never
+  swept** (A13), and neither is any money record.
+- **An open shift is never deleted, however old.** It is the state the
+  person's next scan acts on (it closes it), and the partial unique index
+  allows one per person; deleting it would change what a scan does.
+- **Batches of 500, at most 20 a table a run, each selecting ids and then
+  deleting them with the cutoff repeated; idempotent; one sentence a run**
+  ("Sweep retention deleted N enquiry(ies) and M attendance record(s).",
+  plus "; more remain for the next run." at the cap). A run's request
+  stays short on a shared instance, a row written meanwhile can never be
+  caught, and a second run the same day deletes nothing. Its Scheduler
+  job's proposed schedule is in *Infrastructure*; the job waits for the
+  founder.
+- **Deleting an account (`DELETE /me`) also forgets what carries the
+  account's verified email without being linked to it**
+  (`CustomerDeletionService.forgetUnlinked`): its enquiries are deleted,
+  and its finished guest checkouts and web orders (placed before the email
+  was verified, or without saving details) lose the person as linked ones
+  do. The email was proved with a code, so these are the person's; a phone
+  is never matched, because phones are not verified while there is no SMS
+  (Q5). A guest order still active, or a checkout still waiting for or
+  holding a payment, is left as it is and refuses nothing: anyone can type
+  an email at checkout.
+- **Deletion also removes stored Idempotency-Key answers that carry the
+  account's email or name one of its records** (a Reception booking's
+  create, an Online Orders edit, kept 7 days). The cost is only the replay
+  of a request about a record that no longer names anyone; a retry comes
+  within seconds, not after a deletion.
+- **The audit log keeps what it recorded, so the read withholds it**
+  (`AuditQueryService`): a row written by a deleted customer, or about a
+  booking, a bill or a checkout that deletion anonymised, shows its
+  customer actor as "Deleted customer" and each guest field
+  (`CONTACT_FIELDS`: name, phone, email, notes, address, a bill's guest, a
+  transfer's sender) as "<Field> not shown: the customer deleted their
+  account." or "<Field> changed, not shown: …" (new sentences). The staff
+  app's describeChange printed every value, so a manager reading a
+  deleted guest's booking history would otherwise read their number. Free
+  text a person typed into a `reason` cannot be told apart and is shown.
+- **What still holds a deleted person's details, by decision:** the audit
+  log's rows (append-only, withheld at the read, above); a web docket's
+  note (a docket revision is never changed; the founder's standing
+  default); CNC's own inbox, where enquiries and held-payment alerts were
+  emailed; and the rate-limit counts' keys, which are SHA-256 hashes and
+  end with their window. `test/account-deletion.e2e-spec.ts` searches every
+  other table for the person's email, phones, name and address after a
+  deletion and finds none.
 
 ## The public reads *(from C6)*
 
@@ -2990,7 +3061,8 @@ They are here so the first card that builds it starts from the rule.
   queue's default day**: with no staff list the email is how CNC reads it,
   so a late one beats none.
 - **No audit row**: an enquiry is not a command in the staff app's record.
-  Q36's twelve-month retention of enquiries is C8-5's.
+  Q36's twelve-month retention of enquiries is C8-5's: *built*, see *Data
+  retention* below.
 
 ## Online checkout and Paystack *(from C7)*
 
@@ -3599,9 +3671,11 @@ They are here so the first card that builds it starts from the rule.
 - **A placeholder secret is literally `PLACEHOLDER_NOT_SET`.** Never format
   one to resemble the real thing: a placeholder Resend key beginning `re_`
   passed every check, deployed cleanly and failed silently at the first send.
-  On staging only `CNC_PAYSTACK_SECRET_KEY` (until C7), `CNC_RESEND_API_KEY`
-  and `CNC_MAIL_FROM` (until C6) may hold it; every other secret is real from
-  the start.
+  On staging only `CNC_PAYSTACK_SECRET_KEY` (until the founder stores CNC's
+  test key, Q18), `CNC_RESEND_API_KEY` and `CNC_MAIL_FROM` (until C6) may
+  hold it; every other secret is real from the start. *Corrected in C8-5:
+  this said "until C7"; the payment routes shipped in C7 and answer 503
+  while the key is the placeholder.*
 - **Secrets are created with `printf`, never `echo`** (see *Local
   environment*).
 - **The Artifact Registry repository `tayxcnc-cnc` must exist before the
@@ -3651,9 +3725,12 @@ They are here so the first card that builds it starts from the rule.
   | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
   | `cnc-staging-sweep-checkouts` | `*/10 * * * *` | `checkouts` | C7-5 | plan §5.5; a checkout lives 30 minutes, so an abandoned one is expired, or a paid one whose webhook was lost gets its order, within 40 |
   | `cnc-staging-sweep-payments` | `*/15 * * * *` | `payments` | C7-5 | plan §5.5; a delivery is handled within seconds, so one still unprocessed after 5 minutes failed, and 15 bounds how long a paid order can wait on a verify outage |
+  | `cnc-staging-sweep-retention` | `30 3 * * *` | `retention` | C8-5 (**proposed; the founder is asked before it is created**) | Q36: periods counted in months and years need a daily run at most; 03:30, after the tokens sweep and far from service, so its deletes never meet the till's pool |
 
   The two C7 jobs are created after the C7 deploy is live, as the C6 ones
-  were.
+  were. The retention job is created only on the founder's go-ahead, after
+  the C8 deploy is live: it deletes personal data, and nothing depends on
+  it having run.
 
   Create the two C6 jobs **after the C6 deploy is live** (the rule
   above), each with `gcloud scheduler jobs create http <job> --location

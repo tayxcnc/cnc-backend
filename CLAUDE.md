@@ -46,6 +46,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `POST /enquiries`, `POST /group-enquiries`: honeypot, the two limits, the inbox email (Q20) | Enquiries |
 | The Cloud Scheduler sweep jobs, their schedules and how to create them | Infrastructure |
 | `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
+| Q36's periods, `POST /internal/sweeps/retention`, what deletion also forgets (unlinked records under the email, stored answers), the audit read withholding a deleted guest's values, what still holds a deleted person's details | Data retention and account deletion |
 | Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | Release rows: a refused card refund given back to the Daily Approval Limit (C8-0) | Money controls and the audit log; Staff Online Orders |
@@ -139,7 +140,8 @@ src/
   idempotency/       Idempotency-Key: the service, decorator and scopes
   internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens
                      sweep (which also deletes ended rate-limit counts),
-                     messages and reminders sweeps
+                     messages and reminders sweeps, the retention sweep
+                     (RetentionSweepService, Q36, C8-5)
   customers/         the customer email-code sign-in (/auth/code, verify, refresh,
                      sign-out), the account (/me: profile, email change, photo,
                      DELETE); CustomerService (the one creator of customers),
@@ -280,7 +282,11 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      staff-bell: every role's bell, each alert switch,
                      the paging, items leaving; rate-limits: the stored
                      counts across instances, each write's limit, the
-                     webhook's bad-signature count),
+                     webhook's bad-signature count; retention: the Q36
+                     sweep's boundaries, the open shift, batches;
+                     account-deletion: nothing but the audit log keeps
+                     a deleted person's details, and its read withholds
+                     them),
                      paystack-webhooks.ts, staff-bell.ts (readBell),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,

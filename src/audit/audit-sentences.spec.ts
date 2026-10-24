@@ -175,4 +175,44 @@ describe('describeChange', () => {
       describeChange({ staffCategoryId: 'c1' }, { staffCategoryId: 'c2' }),
     ).toEqual(['Staff Category changed from c1 to c2.']);
   });
+
+  it('server (C8-5): withholds a deleted customer’s values, field by field', () => {
+    const withheld = { withholdContacts: true };
+
+    expect(
+      describeChange(
+        null,
+        { party: 2, name: 'Ada Obi', phone: '08031234567', email: 'a@x.ng' },
+        withheld,
+      ),
+    ).toEqual([
+      'Party: 2.',
+      'Name not shown: the customer deleted their account.',
+      'Phone not shown: the customer deleted their account.',
+      'Email not shown: the customer deleted their account.',
+    ]);
+    expect(
+      describeChange(
+        {
+          contactPhone: '08031234567',
+          addressText: '12 Rayfield Road',
+          totalKobo: 100,
+        },
+        {
+          contactPhone: '08039999999',
+          addressText: '12 Rayfield Road',
+          totalKobo: 200,
+        },
+        withheld,
+      ),
+    ).toEqual([
+      'Contact Phone changed, not shown: the customer deleted their account.',
+      'Total changed from ₦1 to ₦2.',
+    ]);
+    // An unchanged field is still not described, and without the option
+    // the values read as before.
+    expect(
+      describeChange({ phone: '08031234567' }, { phone: '08039999999' }),
+    ).toEqual(['Phone changed from 08031234567 to 08039999999.']);
+  });
 });

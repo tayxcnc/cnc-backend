@@ -522,8 +522,9 @@ export class CncConfigService {
    * CNC's Paystack secret key, from CNC's own merchant account.
    *
    * Read lazily, so the failure lands on the first request that needs it
-   * rather than at boot: until C7 there is no payment route, and staging
-   * carries `PLACEHOLDER_NOT_SET`. Production checks it at boot (rule 5).
+   * rather than at boot: staging carries `PLACEHOLDER_NOT_SET` until the
+   * founder stores CNC's test key (Q18). Production checks it at boot
+   * (rule 5).
    *
    * Never logged, never returned, and never sent anywhere but Paystack's own
    * API over TLS. It is also what Paystack signs webhooks with, so anyone

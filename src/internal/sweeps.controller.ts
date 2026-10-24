@@ -21,7 +21,9 @@ import { CheckoutsSweepResponse } from './dto/checkouts-sweep.response';
 import { MessagesSweepResponse } from './dto/messages-sweep.response';
 import { PaymentsSweepResponse } from './dto/payments-sweep.response';
 import { RemindersSweepResponse } from './dto/reminders-sweep.response';
+import { RetentionSweepResponse } from './dto/retention-sweep.response';
 import { TokensSweepResponse } from './dto/tokens-sweep.response';
+import { RetentionSweepService } from './retention-sweep.service';
 import { SWEEP_TOKEN_HEADER, SweepTokenGuard } from './sweep-token.guard';
 import { TokensSweepService } from './tokens-sweep.service';
 
@@ -30,8 +32,10 @@ import { TokensSweepService } from './tokens-sweep.service';
  * copied from TAY's `SweepsController` (§11). C3-9 adds the tokens sweep;
  * C6-1 the messages sweep (the outbound queue's retry, built with the first
  * email CNC sends); C6-8 the reminders sweep; C7-5 the checkouts and
- * payments sweeps (`PaymentSweepsService`). Each has its Scheduler job (*Infrastructure* in
- * `docs/conventions.md` lists them).
+ * payments sweeps (`PaymentSweepsService`); C8-5 the retention sweep
+ * (`RetentionSweepService`, Q36). Each has its Scheduler job (*Infrastructure* in
+ * `docs/conventions.md` lists them; the retention job waits for the
+ * founder's go-ahead).
  *
  * ## Housekeeping, not correctness
  *
@@ -60,6 +64,7 @@ export class SweepsController {
     private readonly messages: OutboundMessagesService,
     private readonly reminders: ReservationRemindersService,
     private readonly payments: PaymentSweepsService,
+    private readonly retention: RetentionSweepService,
   ) {}
 
   @Post('tokens')
@@ -232,6 +237,40 @@ export class SweepsController {
     this.logger.log(
       `Sweep payments redispatched ${result.redispatched} delivery(ies), ` +
         `${result.failed} failed again.`,
+    );
+
+    return result;
+  }
+
+  @Post('retention')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'sweepRetention',
+    summary: 'Delete enquiries and attendance past their retention period',
+    description:
+      'Daily (cnc-staging-sweep-retention, proposed). Q36: enquiries made ' +
+      'more than 12 months ago and finished shifts dated more than 2 years ' +
+      'ago (with their corrections), 500 rows a statement, at most 10,000 ' +
+      'of each a run. An open shift and the audit log are never deleted.',
+  })
+  @ApiHeader({
+    name: SWEEP_TOKEN_HEADER,
+    description: 'The shared secret, `CNC_SWEEP_TOKEN`.',
+    required: true,
+  })
+  @ApiResponse({ status: 200, type: RetentionSweepResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'The token is absent, wrong, or not configured.',
+    type: ApiErrorResponse,
+  })
+  async retentionSweep(): Promise<RetentionSweepResponse> {
+    const result = await this.retention.sweep(new Date());
+
+    this.logger.log(
+      `Sweep retention deleted ${result.enquiries} enquiry(ies) and ` +
+        `${result.attendanceRecords} attendance record(s)` +
+        (result.more ? '; more remain for the next run.' : '.'),
     );
 
     return result;
