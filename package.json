@@ -17,6 +17,7 @@
     "lint": "eslint \"{src,test,prisma,scripts}/**/*.ts\" --fix",
     "lint:ci": "eslint \"{src,test,prisma,scripts}/**/*.ts\"",
     "check:env-names": "ts-node scripts/check-env-names.ts",
+    "load:till": "ts-node scripts/load/till-and-booking.ts",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
