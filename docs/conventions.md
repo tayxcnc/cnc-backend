@@ -3718,7 +3718,11 @@ They are here so the first card that builds it starts from the rule.
   one test per line in the brief's order, on its own database with the
   real seeds**, with the plan's two restatements: line 1 holds
   `docs/demo-tests-map.md` to the specs (107 rows, the suites' counts,
-  every named spec and test title present), and line 3 compares the
+  every named spec present and every mapped title opening a plain `it(`
+  or `test(` call, or an `.each(…)(` one, and no spec under `src`,
+  `test`, `scripts` or `prisma` skipped, left to do or focused; C8
+  review: a title found anywhere in the file passed for a skipped test or
+  a comment, and Jest reports a skip without failing), and line 3 compares the
   public menu, ordering config and quote with the staff menu and settings
   through the API. A test per line makes a failure name the promise that
   broke.
@@ -3726,7 +3730,12 @@ They are here so the first card that builds it starts from the rule.
   (`docs/demo-tests-map.md`): the staff app's browser-storage and file
   tests have no server counterpart and stay in its own suite. Where a demo
   test's assertions are split over several backend tests, the map lists
-  each; no demo test needed a new port in C8-6.
+  each; no demo test needed a new port in C8-6. The bell's two rows
+  (`attendance.test.cjs`) are held by the approvals test, which drives the
+  waste and purchase approvals through their routes and reads the
+  manager's Approval items 2, 1, 0, and by the staff bell's exact per-role
+  bells (C8 review: the map first named tests that read only the
+  approvals screen).
 - **"No API response contains card numbers, sign-in codes or other
   customers' data" is tested by calling every route in the published
   OpenAPI document as two signed-in customers, every staff role and an

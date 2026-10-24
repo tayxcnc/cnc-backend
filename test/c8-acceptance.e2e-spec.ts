@@ -8,7 +8,7 @@ const PAYSTACK_KEY = 'sk_test_cnc_c8_acceptance_e2e_not_a_real_key';
 process.env.CNC_PAYSTACK_SECRET_KEY = PAYSTACK_KEY;
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -555,8 +555,18 @@ describe('C8-6: the Backend Brief’s acceptance list (e2e)', () => {
       ...Array<string>(7).fill('`ux.test.cjs`'),
     ]);
 
-    // Every other row names specs that exist and test titles they hold, so
-    // the map cannot point at a test that was renamed or removed.
+    // Every other row names specs that exist and tests they run: the title
+    // must open a plain `it(` or `test(` call (or an `.each(…)(` one), so
+    // the map cannot point at a test that was renamed or removed, or at a
+    // title left in a comment.
+    const escaped = (text: string) =>
+      text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const opensTest = (bare: string) =>
+      new RegExp(
+        String.raw`\b(?:it|test)(?:\.each\([^)]*\))?\(\s*['"\x60]` +
+          escaped(bare),
+      );
+
     for (const [suite, demo, spec, titles] of rows) {
       if (spec === 'staff app only') continue;
 
@@ -579,10 +589,30 @@ describe('C8-6: the Backend Brief’s acceptance list (e2e)', () => {
           suite,
           demo,
           bare,
-          held: sources.some((source) => source.includes(bare)),
+          held: sources.some((source) => opensTest(bare).test(source)),
         }).toEqual({ suite, demo, bare, held: true });
       }
     }
+
+    // Nothing skipped, left to do or focused anywhere a suite lives: Jest
+    // reports a skipped test without failing the run, so a mapped test
+    // could stop running while this line stayed green, and a focused one
+    // silently skips the rest of its file.
+    const root = join(__dirname, '..');
+    const parked =
+      /\b(?:it|test|describe)\.(?:skip|todo|only)\b|\b(?:xit|xtest|xdescribe|fit|fdescribe)\s*\(/;
+    const specs = ['src', 'test', 'scripts', 'prisma'].flatMap((dir) =>
+      readdirSync(join(root, dir), { recursive: true, encoding: 'utf8' })
+        .filter((file) => /\.(?:e2e-)?spec\.ts$/.test(file))
+        .map((file) => join(dir, file)),
+    );
+
+    expect(specs.length).toBeGreaterThan(100);
+    expect(
+      specs.filter((file) =>
+        parked.test(readFileSync(join(root, file), 'utf8')),
+      ),
+    ).toEqual([]);
   });
 
   it('2. a Manager calling an Owner-only command, or a limited one above the limit, gets 403 and changes nothing; the Owner succeeds', async () => {

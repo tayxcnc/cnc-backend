@@ -29,6 +29,7 @@ import {
   createIsolatedDatabase,
   type IsolatedDatabase,
 } from './isolated-database';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -37,8 +38,8 @@ import { accessTokenFor, createStaffAccount } from './staff-fixtures';
  * answers, the views and search, and the races where two managers decide
  * the same requisition or waste entry at once. The demo's "manager bell
  * contains pending approvals and removes each when it is resolved"
- * (`attendance.test.cjs`) is ported onto this read: the bell item itself
- * belongs to C8-2.
+ * (`attendance.test.cjs`) is ported onto this read and, from C8-2, onto
+ * the bell's Approval items, each command driven through its route.
  *
  * It runs on a database of its own (`createIsolatedDatabase`) because its
  * counts are over every pending record at CNC, and its daily totals need
@@ -282,19 +283,37 @@ describe('Approvals (e2e)', () => {
     }
   }
 
-  it('manager bell contains pending approvals and removes each when it is resolved (attendance.test.cjs, on the approvals read)', async () => {
+  it('manager bell contains pending approvals and removes each when it is resolved (attendance.test.cjs, on the approvals read and the bell)', async () => {
     const waste = await logWaste('kitchen');
     const purchase = await steakPurchase(1);
+    /** The reader's bell items of the demo's `category === 'Approval'`. */
+    const approvalItems = async (actor: Actor) =>
+      (await readBell(server(), as(actor))).data
+        .filter((item) => item.category === 'Approval')
+        .map((item) => item.id);
 
     let desk = await read('manager');
     expect(desk.counts).toEqual({ pendingPurchases: 1, pendingWaste: 1 });
     expect(desk.purchases.data.map((p) => p.number)).toEqual([purchase.number]);
     expect(desk.waste.data.map((w) => w.number)).toEqual([waste.number]);
+    expect(await approvalItems('manager')).toEqual([
+      `purchase:${purchase.id}`,
+      `waste:${waste.id}`,
+    ]);
+
+    // The demo's other half: no other role is asked to approve.
+    for (const actor of ['storekeeper', 'kitchen', 'waiter'] as const) {
+      expect({ actor, items: await approvalItems(actor) }).toEqual({
+        actor,
+        items: [],
+      });
+    }
 
     await decide('manager', 'waste', desk.waste.data[0], 'approve').expect(200);
     desk = await read('manager');
     expect(desk.counts).toEqual({ pendingPurchases: 1, pendingWaste: 0 });
     expect(desk.waste.data).toEqual([]);
+    expect(await approvalItems('manager')).toEqual([`purchase:${purchase.id}`]);
 
     await decide(
       'owner',
@@ -305,6 +324,7 @@ describe('Approvals (e2e)', () => {
     desk = await read('manager');
     expect(desk.counts).toEqual({ pendingPurchases: 0, pendingWaste: 0 });
     expect(desk.purchases.data).toEqual([]);
+    expect(await approvalItems('manager')).toEqual([]);
 
     // Both are now in History, decided, with nothing awaited.
     const history = await read('manager', { view: 'HISTORY' });
