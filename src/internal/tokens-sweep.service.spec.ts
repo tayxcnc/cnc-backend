@@ -1,3 +1,4 @@
+import type { RateLimitStore } from '../common/throttler/rate-limit-store';
 import type { IdempotencyService } from '../idempotency/idempotency.service';
 import type { CncPrismaService } from '../prisma/cnc-prisma.service';
 import {
@@ -22,13 +23,15 @@ describe('TokensSweepService', () => {
       otpCode: { deleteMany: deleteMany('otpCode', 2) },
     };
     const deleteExpired = jest.fn(() => Promise.resolve(4));
+    const deleteEnded = jest.fn(() => Promise.resolve(5));
 
     const service = new TokensSweepService(
       prisma as unknown as CncPrismaService,
       { deleteExpired } as unknown as IdempotencyService,
+      { deleteEnded } as unknown as RateLimitStore,
     );
 
-    return { service, calls, deleteExpired };
+    return { service, calls, deleteExpired, deleteEnded };
   }
 
   it('reports each table’s count', async () => {
@@ -39,7 +42,16 @@ describe('TokensSweepService', () => {
       passwordResetTokens: 1,
       otpCodes: 2,
       idempotencyKeys: 4,
+      rateLimitCounts: 5,
     });
+  });
+
+  it('hands the ended rate-limit counts to RateLimitStore with the same clock', async () => {
+    const { service, deleteEnded } = harness();
+
+    await service.sweep(NOW);
+
+    expect(deleteEnded).toHaveBeenCalledWith(NOW);
   });
 
   it('deletes tokens by expiry alone, never by revocation', async () => {

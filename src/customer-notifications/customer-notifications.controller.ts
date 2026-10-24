@@ -14,11 +14,16 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import {
+  CustomerWriteThrottle,
+  NOTIFICATIONS_READ_LIMIT,
+} from '../auth/auth-throttle';
 import type { CustomerPrincipal } from '../auth/customer-principal';
 import { CurrentCustomer } from '../auth/decorators/current-customer.decorator';
 import { CncCustomerGuard } from '../auth/guards/cnc-customer.guard';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { PaginationQuery } from '../common/dto/pagination.query';
+import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { CustomerNotificationsService } from './customer-notifications.service';
 import {
   CustomerNotificationPageResponse,
@@ -69,6 +74,8 @@ export class CustomerNotificationsController {
 
   @Post('read')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(ClientAddressThrottlerGuard)
+  @CustomerWriteThrottle(NOTIFICATIONS_READ_LIMIT)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({
     operationId: 'markMyNotificationsRead',
@@ -80,6 +87,11 @@ export class CustomerNotificationsController {
   @ApiResponse({ status: 200, type: NotificationsReadResponse })
   @ApiResponse(UNAUTHORISED)
   @ApiResponse(STAFF_TOKEN)
+  @ApiResponse({
+    status: 429,
+    description: 'Too many requests (per customer). The body says what to do.',
+    type: ApiErrorResponse,
+  })
   markRead(
     @CurrentCustomer() customer: CustomerPrincipal,
   ): Promise<NotificationsReadResponse> {

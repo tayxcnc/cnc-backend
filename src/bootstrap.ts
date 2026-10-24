@@ -80,6 +80,13 @@ export const CORS_ALLOWED_HEADERS = [
   'Idempotency-Key',
 ] as const;
 
+/**
+ * The response headers a page on an allowed origin may read beyond the
+ * safelisted ones: `Retry-After`, which every 429 of a rate limit carries
+ * (C8-3), so a screen can say how long to wait.
+ */
+export const CORS_EXPOSED_HEADERS = ['Retry-After'] as const;
+
 /** The one method this needs from the Express instance under the adapter. */
 interface SettableApp {
   set(setting: string, value: unknown): void;
@@ -142,6 +149,9 @@ export function useCors(
     },
     methods: [...CORS_METHODS],
     allowedHeaders: [...CORS_ALLOWED_HEADERS],
+    // `Retry-After` is not a header a page may read cross-origin unless it
+    // is exposed; a refused request (429) carries it (C8-3).
+    exposedHeaders: [...CORS_EXPOSED_HEADERS],
     // Needed for the httpOnly refresh cookie. Safe only because the origin
     // function above is an explicit allowlist. The pattern to refuse, if it
     // is ever proposed, is reflecting the request's own Origin back while

@@ -7,10 +7,13 @@ import {
   HttpStatus,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { AddressThrottle } from '../auth/auth-throttle';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { PublicCache } from '../common/public-cache';
+import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import {
   OrderingConfigResponse,
   OrderingSlotsQuery,
@@ -19,6 +22,16 @@ import {
 import { OrderingService } from './ordering.service';
 import { CheckoutsService } from './checkouts.service';
 import { QuoteRequest, QuoteResponse } from './dto/checkout.dto';
+
+/**
+ * Quotes per client address in fifteen minutes (C8-3). The order page asks
+ * once each time a guest reaches the payment step, so a hundred and twenty
+ * is four times the checkouts a single address may make
+ * (`CHECKOUT_ADDRESS_LIMIT`), with room for the venue's Wi-Fi; a quote
+ * reads the menu and the Bar's stock, so a script pricing carts in a loop
+ * must stop somewhere.
+ */
+export const QUOTE_ADDRESS_LIMIT = 120;
 
 /**
  * The order page's public reads (plan §5.1, C6-4). No sign-in. The config
@@ -72,6 +85,8 @@ export class OrderingController {
 
   @Post('quote')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(ClientAddressThrottlerGuard)
+  @AddressThrottle(QUOTE_ADDRESS_LIMIT)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({
     operationId: 'quoteOrder',
@@ -89,6 +104,14 @@ export class OrderingController {
       '"Your order is empty. Add dishes from the menu.", "Choose delivery ' +
       'or pickup.", "Choose where we are delivering to.", a dish no longer ' +
       'available, or a choice that is not one of the dish’s options.',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse({
+    status: 429,
+    description:
+      '"Too many attempts. Wait a few minutes and try again." More than ' +
+      `${QUOTE_ADDRESS_LIMIT} quotes in fifteen minutes from one address; ` +
+      'with `Retry-After`.',
     type: ApiErrorResponse,
   })
   quote(@Body() request: QuoteRequest): Promise<QuoteResponse> {

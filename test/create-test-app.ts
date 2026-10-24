@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { INestApplication, type Type, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { App } from 'supertest/types';
@@ -8,6 +9,7 @@ import {
   VALIDATION_PIPE_OPTIONS,
 } from '../src/bootstrap';
 import { requestIdMiddleware } from '../src/common/request-id.middleware';
+import { RATE_LIMIT_NAMESPACE } from '../src/common/throttler/rate-limit-store';
 import { CncConfigService } from '../src/config/cnc.config';
 import { MAIL_TRANSPORT } from '../src/mail/mail-transport';
 import { RecordingMailTransport } from '../src/mail/recording-mail-transport';
@@ -43,14 +45,27 @@ export function sentMail(app: INestApplication<App>): RecordingMailTransport {
  * proves a piece of shared infrastructure (optimistic versions, idempotency)
  * through HTTP before any real route uses it. They exist in that suite's app
  * only and never in the service.
+ *
+ * The rate limits are stored in the database (C8-3), so each app gets a
+ * namespace of its own for its counts (`RATE_LIMIT_NAMESPACE`), as if it
+ * were a deployment of its own: suites running side by side on the shared
+ * database, and runs a few minutes apart, would otherwise spend each
+ * other's counts and answer 429 for reasons no test chose. A suite proving
+ * that two instances share one count passes the same `rateLimitNamespace`
+ * to two apps.
  */
 export async function createTestApp(
-  options: { controllers?: Type<unknown>[] } = {},
+  options: {
+    controllers?: Type<unknown>[];
+    rateLimitNamespace?: string;
+  } = {},
 ): Promise<INestApplication<App>> {
   const moduleFixture = await Test.createTestingModule({
     imports: [CncAppModule],
     controllers: options.controllers ?? [],
   })
+    .overrideProvider(RATE_LIMIT_NAMESPACE)
+    .useValue(options.rateLimitNamespace ?? `test-${randomUUID()}`)
     .overrideProvider(MediaStorage)
     .useValue(new FakeMediaStorage())
     .overrideProvider(MAIL_TRANSPORT)

@@ -661,6 +661,8 @@ They are here so the first card that builds it starts from the rule.
   says "Too many attempts. Wait a few minutes and try again.", not the
   throttler's default, which names a class. TAY's Redis fallback storage is
   not copied: with no Redis there is nothing to fall back from.
+  *Corrected in C8-3: the counts are stored in Postgres, not in memory,
+  and a 429 carries `Retry-After` (see* Rate limits*).*
 - **An e2e test that calls a throttled route sends its own
   `X-Forwarded-For` address** (`test/staff-auth.e2e-spec.ts` makes a fresh
   one per call). Every request from the harness otherwise shares one
@@ -864,6 +866,115 @@ They are here so the first card that builds it starts from the rule.
 - **Customer sign-out ends every customer session, as TAY's member
   sign-out does**: a refresh token carries no id a client could name, so
   one-device sign-out would be a token-service change.
+
+## Rate limits *(from C8-3)*
+
+- **Every rate-limit count is stored in Postgres (`RateLimitCount`,
+  written only by `RateLimitStore.hit`), never in memory; this replaces
+  plan A18's in-memory counting.** `RateLimitStore` is the storage of the
+  one `ThrottlerModule` (`cnc-auth.module.ts`), so every `@Throttle`
+  count is stored with no change to the decorators. An in-memory count is
+  per instance: each Cloud Run instance gave a caller the whole number
+  again, and a restart or a scale-to-zero forgot it, so a limit was a
+  number times however many instances happened to run. The stored caps
+  that already counted rows (codes, bookings, enquiries) are unchanged.
+- **One count is one atomic `INSERT … ON CONFLICT DO UPDATE` on the key's
+  row, timed by the database's clock, in a fixed window**: the first
+  request opens a window; the request over the limit is refused and
+  blocks the key for the window; blocked requests are refused and not
+  counted; the next request after the block opens a new window. The
+  row's lock orders requests arriving together on any instance, so none
+  is lost (25 at once against a limit of 10 allow exactly 10, in the
+  e2e suite), and one clock means instances cannot disagree about a
+  window. A fixed window lets a burst at the end of one window and the
+  start of the next through together, at most twice the number; that is
+  still a number, and it needs no second row per key.
+- **The key is a digest: `<namespace>:<sha256>` of the throttler's own
+  key (the route, the named count and who is counted) or of a hand-made
+  key.** No row holds an address or an email in the clear. The namespace
+  is `cnc` for the service (`RATE_LIMIT_NAMESPACE`); the e2e harness
+  gives each test app its own, because the suites share one database and
+  run minutes apart, and a count left by one would refuse another's
+  requests (`createTestApp({ rateLimitNamespace })` makes two apps one
+  deployment, which is how the cross-instance test works).
+- **Cost: each counted request is one more write on the shared pool, so
+  only writes are counted** (and the one read that may call Paystack).
+  The public reads stay unthrottled. There is one row per caller per
+  count per route, so a flood from many addresses is many small rows
+  until the sweep. The tokens sweep deletes rows whose window and block
+  have both ended (`rateLimitCounts` in its answer); an ended row it has
+  not reached is a fresh window, so nothing depends on the sweep. Every
+  venue device refreshing from one address meets on one row, whose lock
+  is held for one statement.
+- **Every 429 from a throttle answers "Too many attempts. Wait a few
+  minutes and try again." and carries a standard `Retry-After` in whole
+  seconds** (`ClientAddressThrottlerGuard`, beside the throttler's own
+  `Retry-After-<count>`; the webhook sets it by hand). CORS exposes it
+  (`CORS_EXPOSED_HEADERS`), so a page on an allowed origin can read it.
+  *Decision:* the stored caps that count rows (the code caps, the daily
+  booking caps, the hourly enquiry cap) keep their 429 without
+  `Retry-After`: their honest wait is when the oldest counted row leaves
+  the window, which they do not compute, and the code's resend gap
+  already says its seconds in the sentence.
+- **The Paystack webhook counts only deliveries with a bad signature,
+  per address, 120 a minute, after the signature is checked; a correctly
+  signed delivery is never counted or refused for volume.** Only Paystack
+  holds the key, a replay of the same bytes changes nothing (the
+  `PaymentEvent` ledger), and the payments and checkouts sweeps re-verify
+  with Paystack, so refusing a signed delivery could only delay a payment.
+  Past the number a bad delivery is answered 429 with `Retry-After` and
+  no log line, so a flood of forgeries cannot fill the log. A throttler
+  guard is not used on the route, because a guard counts before the
+  handler checks the signature.
+- **A signed-in customer's write is counted per customer, after
+  `CncCustomerGuard` (`CustomerWriteThrottle(limit, ttl)`)**, never per
+  address: customers share the venue's Wi-Fi and their carriers' NAT, and
+  counting after the guard means a request without a valid token is
+  refused uncounted and nobody can spend another customer's count. The
+  photo upload is counted by the guard before the upload interceptor
+  reads the file.
+- **The routes and their limits.** Windows are fifteen minutes unless
+  said. "Stored caps" count the records themselves. Staff routes behind
+  `CncStaffGuard` are not limited (a staff command needs a signed-in
+  account, and a global guard would put every staff read under a
+  sign-in limit), except the two credential routes below.
+
+  | Route | Caller | Limits | Why this number |
+  | :--- | :--- | :--- | :--- |
+  | `POST /auth/staff/sign-in` | anyone | the email at one address 10; the email from anywhere 30; the address over every email 100 | per account, not per address: the whole venue is one address (*Auth*) |
+  | `POST /auth/staff/refresh` | anyone with the cookie | the address 600 | a refused refresh signs a real person out; the token cannot be guessed |
+  | `POST /auth/staff/change-password` | staff | the signed-in account 10 | counted after the guard, so nobody spends another's tries |
+  | `POST /staff/people/:id/reset-password` | managers | the signed-in account 10 | as change-password |
+  | `POST /auth/code` | anyone | the address 100; stored caps: 30 s between codes per email, 5 per email and 30 per address, no code after 25 wrong tries in a day | the inbox and the guess rate (*Auth*, codes) |
+  | `POST /auth/verify` | anyone | as staff sign-in (10, 30, 100); 5 tries per code | the guess rate |
+  | `POST /auth/refresh` | anyone with the cookie | the address 600 | as staff refresh |
+  | `POST /auth/sign-out` | customer | the customer 30 (new) | a state-changing route stays a number |
+  | `PATCH /me` | customer | the customer 30 | a phone number cannot be tested as a list |
+  | `POST /me/email/code` | customer | the address 100; the code caps | as `/auth/code` |
+  | `POST /me/email/verify` | customer | as `/auth/verify` | as `/auth/verify` |
+  | `POST /me/photo`, `DELETE /me/photo` | customer | the customer 20 each (new) | decoding and resizing is the dearest thing a customer can ask for |
+  | `DELETE /me` | customer | the customer 10 (new) | it succeeds once; this stops a refused one looping |
+  | `POST /me/notifications/read` | customer | the customer 120 (new) | far above opening the list |
+  | `PATCH /me/reservations/:id`, `POST …/cancel` | customer | the customer 30 each (new) | each emails and takes the table's lock |
+  | `POST /ordering/quote` | anyone | the address 120 (new) | four times the checkouts one address may make |
+  | `POST /checkouts` | anyone or customer | the address 30 | each is a Paystack call on CNC's account |
+  | `GET /checkouts/:reference` | anyone with the reference | the address 300 a minute | a read that may call Paystack's verify |
+  | `POST /reservations` | anyone or customer | the address 30; stored caps: 20 a day per address, 10 a day per email | holds a table for a date and sends an email |
+  | `POST /enquiries`, `POST /group-enquiries` | anyone | the address 20 per form; stored cap: 5 an hour per address across both | each is an email into CNC's inbox |
+  | `POST /payments/webhook` | Paystack | bad signatures per address 120 a minute; signed deliveries never | see above |
+  | `POST /internal/sweeps/*` | Cloud Scheduler | none (`SweepTokenGuard`) | not a person; a wrong token costs a comparison |
+  | `POST /auth/staff/sign-out` | staff | none | staff-authenticated, as every staff command |
+
+- **`test/rate-limits.e2e-spec.ts` proves each new number and the stored
+  behaviour**: two apps on one namespace share a count and a restarted one
+  still refuses; requests together are counted once each; a block ends in
+  a fresh window; every limit above without an earlier test answers 429
+  with the sentence and a `Retry-After` within its window; signed
+  webhook deliveries far past the ceiling are all accepted and recorded
+  once, and a signed delivery lands from an address its bad signatures
+  have blocked; no key holds an address. The older suites keep their own
+  limits' tests (`staff-auth`, `customer-auth`, `customer-account`,
+  `customer-reservations`, `enquiries`).
 
 ## Mail and the outbound queue *(from C6)*
 
@@ -1102,7 +1213,10 @@ They are here so the first card that builds it starts from the rule.
 - **The public reads are not throttled.** They are cheap reads, the
   cacheable ones are served from caches, and the venue's Wi-Fi puts many
   guests behind one address, which an in-memory per-address limit (A18)
-  would lock out together.
+  would lock out together. *From C8-3 the counts are stored, which makes
+  each counted request a database write; the reads stay unthrottled for
+  that reason too. `POST /ordering/quote` is a write by method and now has
+  a limit (see* Rate limits*).*
 
 ## Money controls and the audit log *(from C3)*
 
@@ -2669,7 +2783,7 @@ They are here so the first card that builds it starts from the rule.
   from the same address. It is limited to 30 bookings per address in 15
   minutes in memory (`BookingThrottle`, 429 "Too many attempts…"), the
   first line only: it needs no sign-in, holds a table for a whole date
-  and sends an email.
+  and sends an email. *From C8-3 the count is stored, not in memory.*
 - **The real limits are stored caps on website and app bookings (from the
   C6 review): 20 a day per client address (`Reservation.ipHash`, the
   address hashed by `hashClientAddress`) and 10 a day per email, from any
@@ -2861,7 +2975,8 @@ They are here so the first card that builds it starts from the rule.
   without the lock); and 20 requests per address per form in fifteen
   minutes in memory (`EnquiryThrottle`), which also counts refused bodies
   and honeypot hits. Both are 429 "Too many attempts. Wait a few minutes
-  and try again.". Each accepted enquiry is an email into CNC's one inbox;
+  and try again.". *From C8-3 the second count is stored, not in memory,
+  and its 429 carries `Retry-After`.* Each accepted enquiry is an email into CNC's one inbox;
   a person writes once or twice.
 - **The sentences are the website's where it has them**
   (`lib/enquiries.ts`): "Please add your name, your email and a message."
@@ -2966,6 +3081,9 @@ They are here so the first card that builds it starts from the rule.
   tests), and a 120-a-minute ceiling per address.** Paystack retries a
   slow or non-2xx delivery, so the work cannot sit inside the request, and
   a 429 is a retry too, so the limit is a ceiling, not a budget.
+  *Replaced in C8-3: the ceiling counts only deliveries with a bad
+  signature, after the check; a correctly signed delivery is never
+  counted or refused for volume (see* Rate limits*).*
   *From the C7 review:* **the request waits up to five seconds for its own
   handling (`dispatchWithin`, `WEBHOOK_INLINE_WAIT_MS`) and answers then
   whatever happens; slower work carries on after the answer.** Cloud Run's
@@ -3017,6 +3135,9 @@ They are here so the first card that builds it starts from the rule.
   ttl)` (`src/auth/auth-throttle.ts`)**: the bookings, the enquiries, the
   checkout (30 in fifteen minutes) and the webhook. One decorator names
   the three counts once, so a new route cannot forget to skip one.
+  *From C8-3 the quote uses it too, the webhook does not (it counts its
+  bad signatures by hand, after the check), and a signed-in customer's
+  write uses its mirror, `CustomerWriteThrottle(limit, ttl)`.*
 
 ## Paid web orders and the payment sweeps *(from C7-3, C7-5)*
 

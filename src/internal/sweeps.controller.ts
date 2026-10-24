@@ -93,8 +93,9 @@ export class SweepsController {
     this.logger.log(
       `Sweep tokens deleted ${result.refreshTokens} refresh token(s), ` +
         `${result.passwordResetTokens} password-reset token(s), ` +
-        `${result.otpCodes} one-time code(s) and ` +
-        `${result.idempotencyKeys} idempotency key(s).`,
+        `${result.otpCodes} one-time code(s), ` +
+        `${result.idempotencyKeys} idempotency key(s) and ` +
+        `${result.rateLimitCounts} rate-limit count(s).`,
     );
 
     return result;

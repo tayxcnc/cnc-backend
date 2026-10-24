@@ -78,6 +78,21 @@ describe('CORS (e2e)', () => {
     expect(CORS_ALLOWED_HEADERS.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('lets a page on an allowed origin read Retry-After (C8-3)', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/health')
+      .set('Origin', ALLOWED)
+      .expect(200);
+
+    // Named here for the reason the request headers are named above.
+    expect(
+      String(response.headers['access-control-expose-headers'])
+        .toLowerCase()
+        .split(',')
+        .map((header) => header.trim()),
+    ).toContain('retry-after');
+  });
+
   it('trims the configured list, so an origin after a spaced comma matches', async () => {
     const response = await request(app.getHttpServer())
       .get('/api/v1/health')

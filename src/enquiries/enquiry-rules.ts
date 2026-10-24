@@ -8,13 +8,14 @@ import { AddressThrottle } from '../auth/auth-throttle';
  * 1. **Stored enquiries per client address: at most
  *    `ENQUIRY_ADDRESS_LIMIT` in `ENQUIRY_WINDOW_MS`, both forms together,
  *    counted on the `Enquiry` rows (`ipHash`)** under an advisory lock on
- *    the address. Rows hold across instances and restarts, where A18's
- *    in-memory count is per instance. Each accepted enquiry is an email
+ *    the address. Rows hold across instances and restarts. Each accepted
+ *    enquiry is an email
  *    into CNC's one inbox; a person writes once or twice, so five an hour
  *    leaves room for a correction and a second question, and keeps a
  *    script from burying the inbox.
- * 2. **Requests per address to each form, in memory: `ENQUIRY_REQUEST_LIMIT`
- *    in fifteen minutes** (`EnquiryThrottle`; the throttler keys its counts
+ * 2. **Requests per address to each form: `ENQUIRY_REQUEST_LIMIT` in
+ *    fifteen minutes** (`EnquiryThrottle`, stored from C8-3 like every
+ *    throttle; the throttler keys its counts
  *    by route), the first line, which also counts what stores nothing:
  *    refused bodies and honeypot hits.
  *
@@ -23,7 +24,7 @@ import { AddressThrottle } from '../auth/auth-throttle';
 export const ENQUIRY_ADDRESS_LIMIT = 5;
 export const ENQUIRY_WINDOW_MS = 60 * 60 * 1000;
 
-/** Requests per address in fifteen minutes, counted in memory. */
+/** Requests per address to each form in fifteen minutes. */
 export const ENQUIRY_REQUEST_LIMIT = 20;
 
 /**

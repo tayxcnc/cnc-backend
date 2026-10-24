@@ -37,8 +37,8 @@ export class ReadinessResponse {
 
   @ApiProperty({
     description:
-      'Reported, never decisive. A process without its cache is serving — ' +
-      'rate limits count per instance instead of across them — so this ' +
+      'Reported, never decisive. A process without its cache is serving ' +
+      '(rate limits are stored in the database, not in Redis), so this ' +
       'never changes the status code.',
     enum: ['ok', 'unavailable', 'unconfigured'],
     example: 'unconfigured',

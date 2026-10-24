@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { RateLimitStore } from '../common/throttler/rate-limit-store';
 import { IdempotencyService } from '../idempotency/idempotency.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 
@@ -21,12 +22,15 @@ export interface TokensSweepResult {
   passwordResetTokens: number;
   otpCodes: number;
   idempotencyKeys: number;
+  rateLimitCounts: number;
 }
 
 /**
  * The daily tokens sweep (plan §5.5, C3-9): expired refresh tokens, expired
- * password-reset tokens, one-time codes a day past their expiry, and stored
- * Idempotency-Key responses older than 7 days.
+ * password-reset tokens, one-time codes a day past their expiry, stored
+ * Idempotency-Key responses older than 7 days, and from C8-3 the rate-limit
+ * counts whose window and block have ended (an ended count is already a
+ * fresh window to `RateLimitStore`).
  *
  * **Housekeeping, never the correctness mechanism.** Every one of these is
  * already checked at use: a refresh token is spent by a conditional UPDATE
@@ -49,6 +53,7 @@ export class TokensSweepService {
   constructor(
     private readonly prisma: CncPrismaService,
     private readonly idempotency: IdempotencyService,
+    private readonly rateLimits: RateLimitStore,
   ) {}
 
   async sweep(now: Date): Promise<TokensSweepResult> {
@@ -70,11 +75,14 @@ export class TokensSweepService {
 
     const idempotencyKeys = await this.idempotency.deleteExpired(now);
 
+    const rateLimitCounts = await this.rateLimits.deleteEnded(now);
+
     return {
       refreshTokens: refreshTokens.count,
       passwordResetTokens: passwordResetTokens.count,
       otpCodes: otpCodes.count,
       idempotencyKeys,
+      rateLimitCounts,
     };
   }
 }

@@ -33,6 +33,7 @@ interface TokensSweepBody {
   passwordResetTokens: number;
   otpCodes: number;
   idempotencyKeys: number;
+  rateLimitCounts: number;
 }
 
 /**
@@ -147,7 +148,23 @@ describe('sweeps (e2e)', () => {
       (await prisma.otpCode.findUnique({ where: { id } })) !== null,
     idempotencyKey: async (id: string) =>
       (await prisma.idempotencyKey.findUnique({ where: { id } })) !== null,
+    rateLimitCount: async (key: string) =>
+      (await prisma.rateLimitCount.findUnique({ where: { key } })) !== null,
   };
+
+  /** A stored rate-limit count (C8-3) with the given window and block ends. */
+  async function rateLimitCount(
+    windowEndsAt: Date,
+    blockedUntil: Date | null = null,
+  ): Promise<string> {
+    const key = `sweep-test:${randomUUID()}`;
+
+    await prisma.rateLimitCount.create({
+      data: { key, hits: 1, windowEndsAt, blockedUntil },
+    });
+
+    return key;
+  }
 
   describe('the guard', () => {
     it('answers 401 with no token at all', async () => {
@@ -217,18 +234,38 @@ describe('sweeps (e2e)', () => {
       const oldKey = await idempotencyKey(new Date(now - 8 * DAY_MS));
       const youngKey = await idempotencyKey(new Date(now - 6 * DAY_MS));
 
+      // The database's clock decides a window, so these sit far from now.
+      const endedCount = await rateLimitCount(new Date(now - HOUR_MS));
+      const endedBlock = await rateLimitCount(
+        new Date(now - 2 * HOUR_MS),
+        new Date(now - HOUR_MS),
+      );
+      const liveCount = await rateLimitCount(new Date(now + HOUR_MS));
+      const liveBlock = await rateLimitCount(
+        new Date(now - HOUR_MS),
+        new Date(now + HOUR_MS),
+      );
+
       const body = (await sweep().expect(200)).body as TokensSweepBody;
 
       expect(Object.keys(body).sort()).toEqual([
         'idempotencyKeys',
         'otpCodes',
         'passwordResetTokens',
+        'rateLimitCounts',
         'refreshTokens',
       ]);
       expect(body.refreshTokens).toBeGreaterThanOrEqual(2);
       expect(body.passwordResetTokens).toBeGreaterThanOrEqual(1);
       expect(body.otpCodes).toBeGreaterThanOrEqual(1);
       expect(body.idempotencyKeys).toBeGreaterThanOrEqual(1);
+      expect(body.rateLimitCounts).toBeGreaterThanOrEqual(2);
+
+      expect(await exists.rateLimitCount(endedCount)).toBe(false);
+      expect(await exists.rateLimitCount(endedBlock)).toBe(false);
+      // A window still open, or a window over with its block still on.
+      expect(await exists.rateLimitCount(liveCount)).toBe(true);
+      expect(await exists.rateLimitCount(liveBlock)).toBe(true);
 
       expect(await exists.refreshToken(expiredRefresh)).toBe(false);
       expect(await exists.refreshToken(expiredRevoked)).toBe(false);

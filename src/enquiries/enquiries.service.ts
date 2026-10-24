@@ -54,7 +54,7 @@ interface MailEnvelope {
  * - **The cap**: at most `ENQUIRY_ADDRESS_LIMIT` stored enquiries per
  *   address per hour, counted on the rows under an advisory lock on the
  *   address, so requests arriving together cannot both pass (429). The
- *   in-memory throttle on the route is the first line.
+ *   throttle on the route is the first line.
  * - **The row is written first and the email queued in the same
  *   transaction** (the outbound queue), then sent after the commit. The
  *   enquiry is the thing of value: a provider outage costs delivery time,

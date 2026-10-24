@@ -51,7 +51,7 @@ import { clientAddress } from './staff-sessions';
  * /group-enquiries` (the large-party callback). Each is stored, then
  * emailed to CNC's inbox through the outbound queue with Reply-To set to
  * the sender (Q20: no staff list); the honeypot keeps nothing; the stored
- * cap and the in-memory throttle answer 429.
+ * cap and the route's throttle answer 429.
  *
  * On a database of its own (`createIsolatedDatabase`), seeded with the
  * real rooms, so the per-address counts and the rows are this suite's.
@@ -397,7 +397,7 @@ describe('enquiries (e2e)', () => {
       }
     });
 
-    it(`counts every request to a form in memory, honeypot hits and refused bodies too: the ${ENQUIRY_REQUEST_LIMIT + 1}st is 429`, async () => {
+    it(`counts every request to a form, honeypot hits and refused bodies too: the ${ENQUIRY_REQUEST_LIMIT + 1}st is 429`, async () => {
       const address = clientAddress();
 
       for (let index = 0; index < ENQUIRY_REQUEST_LIMIT; index++) {

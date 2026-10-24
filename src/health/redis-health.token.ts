@@ -3,10 +3,11 @@
  *
  * - `ok`            — configured, connected, and answered a PING.
  * - `unavailable`   — configured but not currently reachable. The service is
- *                     still up; rate limits are counting in memory.
+ *                     still up.
  * - `unconfigured`  — no Redis for this process. The normal state at launch:
- *                     there is no Redis, and rate limits count in memory per
- *                     instance (plan A18).
+ *                     there is no Redis (plan A18). Rate limits do not use
+ *                     it; from C8-3 they are stored in Postgres
+ *                     (`RateLimitStore`), so every instance shares them.
  *
  * None of these changes the HTTP status. The probe answers "is the process
  * up", and a process that has lost its cache is up.

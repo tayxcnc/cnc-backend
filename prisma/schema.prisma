@@ -2155,3 +2155,24 @@ model IdempotencyKey {
   @@unique([scope, key])
   @@index([createdAt])
 }
+
+/// One rate-limit count (card C8-3): how many requests one key (a route,
+/// a named count and who is counted, hashed by the throttler) has made in
+/// the window that ends at `windowEndsAt`, and until when it is refused
+/// (`blockedUntil`), if it went over.
+///
+/// **Stored, so every Cloud Run instance counts against one number.** An
+/// in-memory count (plan A18) is per instance, so each new instance gave a
+/// caller the limit again, and a restart forgot it. Written only by
+/// `RateLimitStore.hit`, one atomic upsert per request. The tokens sweep
+/// deletes rows whose window and block have both ended; an ended row that
+/// is still here is treated as a fresh window, so nothing depends on the
+/// sweep having run. A CHECK holds `hits` at one or more.
+model RateLimitCount {
+  key          String    @id
+  hits         Int
+  windowEndsAt DateTime
+  blockedUntil DateTime?
+
+  @@index([windowEndsAt])
+}

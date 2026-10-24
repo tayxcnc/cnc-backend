@@ -85,8 +85,8 @@ type Tx = Prisma.TransactionClient;
  * key derived from `CNC_JWT_SECRET`: `otpCodeHash`), the queued email holds
  * it sealed (`MessageSeal`), and no response or log line carries it.
  *
- * **Issuance caps count the stored rows**, not memory, so they hold across
- * instances and restarts (A18 leaves the in-memory throttler per instance):
+ * **Issuance caps count the stored rows**, so they hold across instances
+ * and restarts (as the route's throttle does from C8-3, `RateLimitStore`):
  * a new code per email only after `OTP_RESEND_AFTER_MS`, at most
  * `OTP_CONTACT_LIMIT` per email and `OTP_ADDRESS_LIMIT` per address in
  * `OTP_CAP_WINDOW_MS`, and none once the email's codes have taken

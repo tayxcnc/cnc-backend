@@ -21,7 +21,10 @@ import {
 } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import {
+  ACCOUNT_DELETE_LIMIT,
   CodeRequestThrottle,
+  CUSTOMER_PHOTO_LIMIT,
+  CustomerWriteThrottle,
   ProfileSaveThrottle,
   SignInThrottle,
 } from '../auth/auth-throttle';
@@ -239,6 +242,10 @@ export class CustomerMeController {
 
   @Post('photo')
   @HttpCode(HttpStatus.OK)
+  // Guards run before the upload interceptor: a refused request is not
+  // read into memory or decoded.
+  @UseGuards(ClientAddressThrottlerGuard)
+  @CustomerWriteThrottle(CUSTOMER_PHOTO_LIMIT)
   @PhotoUpload({ versioned: false })
   @Header('Cache-Control', 'no-store')
   @ApiOperation({
@@ -269,6 +276,7 @@ export class CustomerMeController {
     description: 'Not a JPEG, PNG or WebP by its bytes.',
     type: ApiErrorResponse,
   })
+  @ApiResponse(tooMany('per customer'))
   replacePhoto(
     @CurrentCustomer() customer: CustomerPrincipal,
     @UploadedFile() photo: UploadedImageFile | undefined,
@@ -277,6 +285,8 @@ export class CustomerMeController {
   }
 
   @Delete('photo')
+  @UseGuards(ClientAddressThrottlerGuard)
+  @CustomerWriteThrottle(CUSTOMER_PHOTO_LIMIT)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({
     operationId: 'removeCustomerPhoto',
@@ -286,6 +296,7 @@ export class CustomerMeController {
   @ApiResponse({ status: 200, type: CustomerProfileResponse })
   @ApiResponse(UNAUTHORISED)
   @ApiResponse(STAFF_TOKEN)
+  @ApiResponse(tooMany('per customer'))
   removePhoto(
     @CurrentCustomer() customer: CustomerPrincipal,
   ): Promise<CustomerProfileResponse> {
@@ -294,6 +305,8 @@ export class CustomerMeController {
 
   @Delete()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(ClientAddressThrottlerGuard)
+  @CustomerWriteThrottle(ACCOUNT_DELETE_LIMIT)
   @ApiOperation({
     operationId: 'deleteCustomerAccount',
     summary: 'Delete your account',
@@ -316,6 +329,7 @@ export class CustomerMeController {
       'Cancel it, or wait until it is complete, then delete your account."',
     type: ApiErrorResponse,
   })
+  @ApiResponse(tooMany('per customer'))
   async deleteAccount(
     @CurrentCustomer() customer: CustomerPrincipal,
     @Res({ passthrough: true }) response: Response,

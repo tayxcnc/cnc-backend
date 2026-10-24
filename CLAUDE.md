@@ -39,6 +39,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `migrate dev` local only; `migrate deploy` by hand before the merge | Data and migrations |
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
+| Every public and customer write's limit (the table), stored counts (`RateLimitStore`, replaces A18's in-memory counts), `Retry-After`, the webhook's bad-signature count, `CustomerWriteThrottle`, the test namespace | Rate limits |
 | Customer email codes: caps, tries, sentences, `OtpService`, `CncCustomerGuard`, creating customers | Auth |
 | Email: the outbound queue, sealed payloads, expiry, the retry backoff, the transports, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
 | `GET /me/notifications`, what writes an item, unread, the booking reminders (Q32) and `reminderSentAt` | The customer's in-app list and booking reminders |
@@ -129,12 +130,15 @@ src/
                      standing() and approvalRefusal() for the approvals read;
                      releaseCounted() for a refused card refund (C8-0)
   common/            money, dates, errors, pagination, request helpers, QR tokens
-                     and their SVG renderer, the client-address throttler guard,
+                     and their SVG renderer, the client-address throttler guard
+                     and the stored rate-limit counts (throttler/: RateLimitStore,
+                     RateLimitModule, C8-3),
                      one-sentence field checks, the admin reason, item lists;
                      the reports' period (report-period.ts, ReportPeriodQuery)
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
-  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens,
+  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens
+                     sweep (which also deletes ended rate-limit counts),
                      messages and reminders sweeps
   customers/         the customer email-code sign-in (/auth/code, verify, refresh,
                      sign-out), the account (/me: profile, email change, photo,
@@ -274,7 +278,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      at 1, 62 and 63 days; money-control: the
                      ledger, its lock, append-only, release rows;
                      staff-bell: every role's bell, each alert switch,
-                     the paging, items leaving),
+                     the paging, items leaving; rate-limits: the stored
+                     counts across instances, each write's limit, the
+                     webhook's bad-signature count),
                      paystack-webhooks.ts, staff-bell.ts (readBell),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,

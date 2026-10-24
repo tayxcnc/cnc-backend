@@ -7,10 +7,10 @@ import {
 
 /**
  * Bookings per client address in the window (fifteen minutes) on
- * `POST /reservations`, counted in memory per instance (A18): the first
- * line only, which turns a burst away before it reaches the database. The
- * real limits are the stored caps below (`assertOnlineBookingCaps`), which
- * hold across instances and restarts. Answered with
+ * `POST /reservations` (stored from C8-3, like every throttle): the first
+ * line only, which turns a burst away before the booking's own locks and
+ * queries. The real limits are the daily caps below
+ * (`assertOnlineBookingCaps`), counted on the bookings. Answered with
  * `TOO_MANY_ATTEMPTS_MESSAGE` (429).
  */
 export const BOOKING_ADDRESS_LIMIT = 30;

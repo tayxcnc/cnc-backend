@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { MailModule } from '../mail/mail.module';
 import { OnlineOrdersModule } from '../online-orders/online-orders.module';
 import { CheckoutPaymentsService } from './checkout-payments.service';
@@ -24,7 +23,6 @@ import { WebhookDispatcherService } from './webhook-dispatcher.service';
     CheckoutPaymentsService,
     WebhookDispatcherService,
     PaymentSweepsService,
-    ClientAddressThrottlerGuard,
   ],
   exports: [
     PaystackClientModule,
