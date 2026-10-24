@@ -2,7 +2,7 @@ const PAYSTACK_KEY = 'sk_test_cnc_rate_limits_e2e_not_a_real_key';
 
 process.env.CNC_PAYSTACK_SECRET_KEY = PAYSTACK_KEY;
 
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
@@ -225,6 +225,46 @@ describe('Rate limits (e2e)', () => {
         blocked: false,
         hits: 1,
       });
+    });
+
+    it('refuse a key this instance saw blocked from memory, with no database write, until the block ends', async () => {
+      const store = app.get(RateLimitStore, { strict: false });
+      const key = `memory:${randomUUID()}`;
+      const digest = createHash('sha256').update(key).digest('hex');
+      const row = async () =>
+        (await prisma.rateLimitCount.findFirst({
+          where: { key: { endsWith: `:${digest}` } },
+        })) ?? undefined;
+
+      await store.hit(key, 1, 1_500);
+      expect(await store.hit(key, 1, 1_500)).toMatchObject({
+        blocked: true,
+        hits: 2,
+        retryAfterSeconds: 2,
+      });
+
+      // The stored row is deleted: a refusal that still went to Postgres
+      // would write it again as a fresh window, and be let through.
+      await prisma.rateLimitCount.delete({
+        where: { key: (await row())!.key },
+      });
+
+      for (let i = 0; i < 5; i += 1) {
+        expect(await store.hit(key, 1, 1_500)).toMatchObject({
+          blocked: true,
+          hits: 2,
+        });
+      }
+      expect(await row()).toBeUndefined();
+
+      // Once the block has ended, the next request is counted again.
+      await new Promise((resolve) => setTimeout(resolve, 1_700));
+
+      expect(await store.hit(key, 1, 1_500)).toMatchObject({
+        blocked: false,
+        hits: 1,
+      });
+      expect((await row())?.hits).toBe(1);
     });
   });
 

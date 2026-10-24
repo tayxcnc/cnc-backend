@@ -919,6 +919,21 @@ They are here so the first card that builds it starts from the rule.
   not reached is a fresh window, so nothing depends on the sweep. Every
   venue device refreshing from one address meets on one row, whose lock
   is held for one statement.
+- **A refusal costs no database round trip once this instance has seen
+  the key blocked: `RateLimitStore` remembers each blocked key until its
+  stored block ends and answers 429 from memory** (C8 review). Without it
+  every request of a flood at a public write (codes, bookings, enquiries,
+  checkouts, the quote, bad webhook signatures) still took one of the
+  three pooled connections the till needs, on the instance shared with
+  TAY, so a limit no longer shed load. The block's end is the database's,
+  carried over as a duration onto the process's monotonic clock
+  (`performance.now()`, which the e2e fake clock leaves real), so a block
+  never ends early on any instance; at most 10,000 keys are remembered
+  (`BLOCKED_KEYS_REMEMBERED`), ended ones first out, and a key past the
+  cap is still refused by its row. *Known limit:* many addresses, each
+  under its limit, are still one write per request; stopping that is the
+  edge's work (a load balancer or Cloud Armor rule), not the
+  application's, and belongs with production's hardening.
 - **Every 429 from a throttle answers "Too many attempts. Wait a few
   minutes and try again." and carries a standard `Retry-After` in whole
   seconds** (`ClientAddressThrottlerGuard`, beside the throttler's own

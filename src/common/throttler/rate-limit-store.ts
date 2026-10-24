@@ -28,6 +28,22 @@ export interface RateLimitHit {
   windowSecondsLeft: number;
 }
 
+/**
+ * The most blocked keys one instance remembers (`RateLimitStore.blocked`).
+ * A flood from many addresses must not grow the process without bound;
+ * a key past the cap is still refused, by its stored row.
+ */
+export const BLOCKED_KEYS_REMEMBERED = 10_000;
+
+/** A key this instance has seen refused, on its own monotonic clock. */
+interface RememberedBlock {
+  /** `performance.now()` when the stored block ends. */
+  until: number;
+  /** `performance.now()` when the stored window ends. */
+  windowEndsAt: number;
+  hits: number;
+}
+
 /** The database's clock, as the columns store it (UTC, no zone). */
 const NOW = Prisma.sql`(now() AT TIME ZONE 'UTC')`;
 
@@ -61,9 +77,24 @@ const FRESH = Prisma.sql`(
  * many instances arriving together are counted one after another by the
  * row's lock, and none is lost. Times are the database's clock, one clock
  * for every instance.
+ *
+ * **A key this instance has seen blocked is refused from memory until its
+ * block ends, with no database round trip** (C8 review). A refusal must
+ * shed load: without this, every request of a flood at a public route
+ * would still take one of the three pooled connections the till needs, on
+ * the instance CNC shares with TAY (plan §19, risk 1). The block's end is
+ * the database's, carried over as a duration onto this process's
+ * monotonic clock, so a block never ends early here; a request counted on
+ * another instance meanwhile is not counted here either, as the stored
+ * semantics say (a blocked key's requests are not counted). Many addresses
+ * each under their limit are still one write per request: that is the
+ * edge's to stop, not the application's.
  */
 @Injectable()
 export class RateLimitStore implements ThrottlerStorage {
+  /** Blocked keys, oldest first (`BLOCKED_KEYS_REMEMBERED`). */
+  private readonly blocked = new Map<string, RememberedBlock>();
+
   constructor(
     private readonly prisma: CncPrismaService,
     @Inject(RATE_LIMIT_NAMESPACE) private readonly namespace: string,
@@ -78,11 +109,36 @@ export class RateLimitStore implements ThrottlerStorage {
   ): Promise<RateLimitHit> {
     // A digest, so no row holds an address or an email in the clear.
     const stored = `${this.namespace}:${createHash('sha256').update(key).digest('hex')}`;
+    const remembered = this.remembered(stored);
+
+    if (remembered !== null) {
+      const now = performance.now();
+
+      return {
+        hits: remembered.hits,
+        blocked: true,
+        retryAfterSeconds: Math.min(
+          Math.ceil((remembered.until - now) / 1000),
+          Math.ceil(blockMs / 1000),
+        ),
+        windowSecondsLeft: Math.min(
+          Math.max(0, Math.ceil((remembered.windowEndsAt - now) / 1000)),
+          Math.ceil(windowMs / 1000),
+        ),
+      };
+    }
+
     const window = Prisma.sql`(${windowMs}::int * interval '1 millisecond')`;
     const block = Prisma.sql`(${blockMs}::int * interval '1 millisecond')`;
 
     const [row] = await this.prisma.$queryRaw<
-      { hits: number; windowLeft: number; blockLeft: number }[]
+      {
+        hits: number;
+        windowLeft: number;
+        blockLeft: number;
+        windowLeftMs: number;
+        blockLeftMs: number;
+      }[]
     >`
       INSERT INTO "RateLimitCount" AS c ("key", "hits", "windowEndsAt", "blockedUntil")
       VALUES (
@@ -110,7 +166,19 @@ export class RateLimitStore implements ThrottlerStorage {
       RETURNING
         "hits",
         GREATEST(0, CEIL(EXTRACT(EPOCH FROM ("windowEndsAt" - ${NOW}))))::int AS "windowLeft",
-        GREATEST(0, COALESCE(CEIL(EXTRACT(EPOCH FROM ("blockedUntil" - ${NOW}))), 0))::int AS "blockLeft"`;
+        GREATEST(0, COALESCE(CEIL(EXTRACT(EPOCH FROM ("blockedUntil" - ${NOW}))), 0))::int AS "blockLeft",
+        GREATEST(0, CEIL(EXTRACT(EPOCH FROM ("windowEndsAt" - ${NOW})) * 1000))::int AS "windowLeftMs",
+        GREATEST(0, COALESCE(CEIL(EXTRACT(EPOCH FROM ("blockedUntil" - ${NOW})) * 1000), 0))::int AS "blockLeftMs"`;
+
+    if (row.blockLeftMs > 0) {
+      const now = performance.now();
+
+      this.remember(stored, {
+        until: now + Math.min(row.blockLeftMs, blockMs),
+        windowEndsAt: now + Math.min(row.windowLeftMs, windowMs),
+        hits: row.hits,
+      });
+    }
 
     // The columns keep milliseconds and the clock microseconds, so a
     // rounded instant can read a second over; never more than was set.
@@ -120,6 +188,39 @@ export class RateLimitStore implements ThrottlerStorage {
       retryAfterSeconds: Math.min(row.blockLeft, Math.ceil(blockMs / 1000)),
       windowSecondsLeft: Math.min(row.windowLeft, Math.ceil(windowMs / 1000)),
     };
+  }
+
+  /** The block this instance remembers for `stored`, while it lasts. */
+  private remembered(stored: string): RememberedBlock | null {
+    const block = this.blocked.get(stored);
+
+    if (block === undefined) return null;
+    if (block.until > performance.now()) return block;
+
+    this.blocked.delete(stored);
+
+    return null;
+  }
+
+  /** Remember a block, dropping ended ones, then the oldest, at the cap. */
+  private remember(stored: string, block: RememberedBlock): void {
+    this.blocked.delete(stored);
+
+    if (this.blocked.size >= BLOCKED_KEYS_REMEMBERED) {
+      const now = performance.now();
+
+      for (const [key, held] of this.blocked) {
+        if (held.until <= now) this.blocked.delete(key);
+      }
+
+      if (this.blocked.size >= BLOCKED_KEYS_REMEMBERED) {
+        const oldest = this.blocked.keys().next();
+
+        if (!oldest.done) this.blocked.delete(oldest.value);
+      }
+    }
+
+    this.blocked.set(stored, block);
   }
 
   /** `ThrottlerStorage`: the throttler's key already names its count. */
