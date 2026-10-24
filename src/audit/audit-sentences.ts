@@ -168,10 +168,11 @@ function words(name: string): string {
  * server's own (`updatedAt`, `version`, `singleton`, the credential
  * columns). A credential should never reach an audit row at all
  * (`AuditService` refuses one); this keeps one that slipped through out of
- * every sentence.
+ * every sentence. `sessionId` is the seating a `table.release` row ended
+ * (C8 review), kept for the audit read's join, not for staff to read.
  */
 const HIDE =
-  /^(id|history|at|createdAt|updatedAt|version|sessionVersion|singleton|qrToken|passwordHash|tokenHash|codeHash|photo|hasPhoto|confirmed|revision|vat|lines|items|seq)$/;
+  /^(id|history|at|createdAt|updatedAt|version|sessionVersion|sessionId|singleton|qrToken|passwordHash|tokenHash|codeHash|photo|hasPhoto|confirmed|revision|vat|lines|items|seq)$/;
 
 /** Money is every `*Kobo` field (A5). */
 const MONEY = /Kobo$/;

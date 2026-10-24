@@ -72,6 +72,7 @@ describe('deleting an account forgets the person (e2e)', () => {
   let orderNumber: string;
   let onlineId: string;
   let bookingNumber: string;
+  let tableRef: string;
 
   beforeAll(async () => {
     database = await createIsolatedDatabase();
@@ -205,17 +206,37 @@ describe('deleting an account forgets the person (e2e)', () => {
         ).body as { version: number }
       ).version;
 
-    // The manager's edit writes the old and new phone into its audit row.
+    // The manager's edit writes the old and new phone into its audit row,
+    // and takes one dish off: a refund is owed.
     await request(server())
       .post(`/api/v1/staff/online-orders/${onlineId}/edit`)
       .set(auth(StaffRole.MANAGER))
       .send({
         version: await version(),
-        lines: [{ menuItemId: food.id, qty: 2 }],
+        lines: [{ menuItemId: food.id, qty: 1 }],
         contactPhone: editedPhone,
         reason: 'Guest called with a new number',
       })
       .expect(200);
+
+    // Refunded by transfer: the payment names the guest as its recipient.
+    await request(server())
+      .post(`/api/v1/staff/online-orders/${onlineId}/balance`)
+      .set(auth(StaffRole.OWNER))
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        version: await version(),
+        method: 'TRANSFER',
+        sender: name,
+        reference: 'TRF-DELETION-1',
+        reason: 'Refund the second dish',
+      })
+      .expect(200);
+    expect(
+      await prisma.payment.count({
+        where: { order: { number: orderNumber }, sender: name },
+      }),
+    ).toBe(1);
 
     for (const status of [
       OnlineFulfilmentStatus.PREPARING,
@@ -281,6 +302,46 @@ describe('deleting an account forgets the person (e2e)', () => {
       .send({ version: booked.version })
       .expect(200);
 
+    // Another, for today: checked in (the seating takes the booking's
+    // name) and the table released, so the booking is Completed and the
+    // release's audit row, under the table's ref, names the guest.
+    const seatAt = await prisma.diningTable.findFirstOrThrow({
+      where: { active: true, id: { not: table.id }, capacity: { gte: 2 } },
+      orderBy: [{ venueId: 'asc' }, { code: 'asc' }],
+    });
+    const tonight = (
+      await request(server())
+        .post('/api/v1/staff/reservations')
+        .set(auth(StaffRole.RECEPTION))
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          tableId: seatAt.id,
+          name,
+          phone: bookingPhone,
+          email,
+          party: 2,
+          businessDate: formatIsoDate(watToday(new Date())),
+          time: '19:00',
+        })
+        .expect(201)
+    ).body as { id: string; number: string; version: number };
+    const seated = (
+      await request(server())
+        .post(`/api/v1/staff/reservations/${tonight.id}/check-in`)
+        .set(auth(StaffRole.RECEPTION))
+        .send({ version: tonight.version })
+        .expect(200)
+    ).body as { session: { id: string; version: number; tableRef: string } };
+
+    expect(seated.session).toMatchObject({ guest: name });
+    tableRef = seated.session.tableRef;
+
+    await request(server())
+      .post(`/api/v1/staff/tables/${seatAt.id}/release`)
+      .set(auth(StaffRole.RECEPTION))
+      .send({ sessionId: seated.session.id, version: seated.session.version })
+      .expect(200);
+
     await request(server())
       .delete('/api/v1/me')
       .set({ Authorization: `Bearer ${accessToken}` })
@@ -304,7 +365,7 @@ describe('deleting an account forgets the person (e2e)', () => {
   });
 
   it('withholds the guest’s values from the audit rows about their records', async () => {
-    for (const ref of [bookingNumber, orderNumber]) {
+    for (const ref of [bookingNumber, orderNumber, tableRef]) {
       const response = await request(server())
         .get(`/api/v1/staff/audit?ref=${ref}`)
         .set(auth(StaffRole.OWNER))
@@ -344,6 +405,22 @@ describe('deleting an account forgets the person (e2e)', () => {
     ).toContain(
       'Contact Phone changed, not shown: the customer deleted their account.',
     );
+
+    // The release is under the table's ref, not the booking's.
+    const table = (
+      await request(server())
+        .get(`/api/v1/staff/audit?ref=${tableRef}`)
+        .set(auth(StaffRole.OWNER))
+        .expect(200)
+    ).body as AuditPage;
+
+    expect(
+      table.data.find((row) => row.action === 'table.release')?.changes,
+    ).toEqual([
+      'Guest changed, not shown: the customer deleted their account.',
+      'Party changed from 2 to blank.',
+      'Status changed from Occupied to Available.',
+    ]);
   });
 
   it('shows staff the anonymised records without the person', async () => {

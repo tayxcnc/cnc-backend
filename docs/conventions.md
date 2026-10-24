@@ -1246,6 +1246,21 @@ They are here so the first card that builds it starts from the rule.
   app's describeChange printed every value, so a manager reading a
   deleted guest's booking history would otherwise read their number. Free
   text a person typed into a `reason` cannot be told apart and is shown.
+- **A checked-in booking's seating is anonymised with it, and its
+  release row is withheld at the read** (C8 review). Check-in copies the
+  booking's name into `TableSession.guest`, and `table.release` writes it
+  into an audit row under the table's ref (`D-B1`), not the booking's, so
+  matching by ref alone missed it. Deletion sets the seating's guest to
+  "Deleted customer"; the release row carries `sessionId` (never
+  described), and the read withholds the row when that seating's booking
+  is anonymised. A release written before the row carried `sessionId`
+  cannot be joined and is shown as recorded: only local and staging test
+  data has one, as production had no guests yet. A transfer's sender (or
+  refund recipient) on the deleted person's bills becomes "Deleted
+  customer" too (*decision*: Daily Transfers still lists the payment, its
+  amount and its bank reference, which is what matching it to the bank
+  statement needs; the name is the guest's). A card payment's brand and
+  last four digits stay: they identify no one without the bank.
 - **What still holds a deleted person's details, by decision:** the audit
   log's rows (append-only, withheld at the read, above); a web docket's
   note (a docket revision is never changed; the founder's standing
@@ -1253,7 +1268,8 @@ They are here so the first card that builds it starts from the rule.
   emailed; and the rate-limit counts' keys, which are SHA-256 hashes and
   end with their window. `test/account-deletion.e2e-spec.ts` searches every
   other table for the person's email, phones, name and address after a
-  deletion and finds none.
+  deletion (a guest web order refunded by transfer, a cancelled booking
+  and a booking checked in and released among them) and finds none.
 
 ## The public reads *(from C6)*
 

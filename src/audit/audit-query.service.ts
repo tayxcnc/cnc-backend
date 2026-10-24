@@ -117,11 +117,27 @@ export class AuditQueryService {
    * because it carried the account's email shows the deletion's name, which
    * is how it is found here.
    *
-   * At most four queries per page, each on a unique or indexed column.
+   * A table's `table.release` row is under the table's ref, not the
+   * booking's, and carries the seated guest's name: it is withheld when
+   * the seating it names (`sessionId`) came from a booking deletion
+   * anonymised. A release written before the row carried its seating
+   * (C8 review; on local and staging test data only, as production had no
+   * guests yet) cannot be joined and is shown as recorded.
+   *
+   * At most five queries per page, each on a unique or indexed column.
    */
   private async deletedCustomersRows(rows: AuditRow[]): Promise<Set<string>> {
     const refs = [
       ...new Set(rows.flatMap((row) => (row.ref === null ? [] : [row.ref]))),
+    ];
+    const seatings = [
+      ...new Set(
+        rows.flatMap((row) => {
+          const sessionId = releasedSession(row);
+
+          return sessionId === null ? [] : [sessionId];
+        }),
+      ),
     ];
     const actors = [
       ...new Set(
@@ -174,14 +190,35 @@ export class AuditQueryService {
       for (const { reference } of checkouts) gone.add(`ref:${reference}`);
     }
 
+    if (seatings.length > 0) {
+      const anonymised = await this.prisma.tableSession.findMany({
+        where: {
+          id: { in: seatings },
+          reservation: {
+            OR: [
+              { customer: { deletedAt: { not: null } } },
+              { name: DELETED_CUSTOMER_NAME },
+            ],
+          },
+        },
+        select: { id: true },
+      });
+
+      for (const { id } of anonymised) gone.add(`session:${id}`);
+    }
+
     return new Set(
       rows
-        .filter(
-          (row) =>
+        .filter((row) => {
+          const sessionId = releasedSession(row);
+
+          return (
             (row.customerId !== null &&
               gone.has(`customer:${row.customerId}`)) ||
-            (row.ref !== null && gone.has(`ref:${row.ref}`)),
-        )
+            (row.ref !== null && gone.has(`ref:${row.ref}`)) ||
+            (sessionId !== null && gone.has(`session:${sessionId}`))
+          );
+        })
         .map((row) => row.id),
     );
   }
@@ -267,6 +304,21 @@ export class AuditQueryService {
           }),
     };
   }
+}
+
+/** The seating a `table.release` row ended, or null (`sessionId`). */
+function releasedSession(row: AuditRow): string | null {
+  if (row.action !== 'table.release') return null;
+
+  const before = row.before;
+
+  if (before === null || typeof before !== 'object' || Array.isArray(before)) {
+    return null;
+  }
+
+  const sessionId = before.sessionId;
+
+  return typeof sessionId === 'string' ? sessionId : null;
 }
 
 /**

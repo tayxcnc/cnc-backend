@@ -80,6 +80,9 @@ const ANONYMOUS_ONLINE_ORDER = {
  * - the name, phone, email and both notes on every booking, and the guest
  *   name on every bill, linked to it (their `version` moves, so a screen
  *   holding the old copy is told to refresh);
+ * - the guest name on every seating a booking of it was checked in to,
+ *   and the sender or recipient of every transfer on its bills (C8
+ *   review);
  * - the in-app notifications, the one-time codes sent to it or for it,
  *   and the stored answers of its idempotent requests;
  * - every session (all refresh tokens revoked; the guard refuses its
@@ -197,6 +200,26 @@ export class CustomerDeletionService {
       await tx.order.updateMany({
         where: { customerId, guest: { not: '' } },
         data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
+      });
+
+      // A booking checked in seated its guest under the booking's name
+      // (`ReservationsService.checkIn`): the seating keeps it after the
+      // release, and the floor and the Free Table Reminder read it.
+      await tx.tableSession.updateMany({
+        where: {
+          reservationId: { in: bookings.map(({ id }) => id) },
+          guest: { not: '' },
+        },
+        data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
+      });
+
+      // A transfer's sender (or a refund's recipient) on its bills is the
+      // guest's bank name, typed by staff: Daily Transfers still lists the
+      // payment, its amount and its bank reference, which is what matching
+      // it to the statement needs (C8 review).
+      await tx.payment.updateMany({
+        where: { order: { customerId }, sender: { not: '' } },
+        data: { sender: DELETED_CUSTOMER_NAME },
       });
 
       const checkouts = await tx.checkout.findMany({
@@ -408,6 +431,10 @@ export class CustomerDeletionService {
     await tx.order.updateMany({
       where: { id: { in: bills }, guest: { not: '' } },
       data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
+    });
+    await tx.payment.updateMany({
+      where: { orderId: { in: bills }, sender: { not: '' } },
+      data: { sender: DELETED_CUSTOMER_NAME },
     });
 
     return { checkouts, onlineOrders, enquiries };

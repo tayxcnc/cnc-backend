@@ -250,14 +250,23 @@ export class TableSessionsService {
           actor: staffActor(actor),
           action: 'table.release',
           ref: table.ref,
+          // `sessionId` (never described, `audit-sentences.ts`) ties the row
+          // to its seating, so the audit read can withhold the guest's name
+          // once the booking it came from belongs to a deleted account
+          // (Q36; `AuditQueryService.deletedCustomersRows`).
           before:
             session.status === TableSessionStatus.OCCUPIED
               ? {
+                  sessionId: open.id,
                   status: session.status,
                   guest: session.guest,
                   party: session.party,
                 }
-              : { status: session.status, note: session.note },
+              : {
+                  sessionId: open.id,
+                  status: session.status,
+                  note: session.note,
+                },
           after: { status: 'Available' },
           ipAddress,
         },
