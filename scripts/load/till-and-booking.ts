@@ -23,11 +23,16 @@
  * never deleted.
  *
  * Reads only `CNC_LOAD_*` settings, never a database URL other than the
- * sampler's, which must be a local database (`databaseTarget`).
+ * sampler's, which must be a local database (`databaseTarget`). Every
+ * base URL must be a backend on this machine, or CNC staging confirmed by
+ * `CNC_LOAD_CONFIRM_STAGING` (`checkLoadTargets`); anything else is
+ * refused before a request is sent. A refused or failed step waits for
+ * the server's `Retry-After`, or a second, before the next (`backoffMs`).
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { databaseTarget } from '../../prisma/local-database';
+import { backoffMs, checkLoadTargets } from './load-targets';
 
 interface Settings {
   baseUrls: string[];
@@ -73,11 +78,20 @@ function readSettings(): Settings {
     throw new Error('CNC_LOAD_DURATION_S must be 1 to 600.');
   }
 
+  const spoofAddresses = process.env.CNC_LOAD_SPOOF_ADDRESSES === 'true';
+
   return {
-    baseUrls: (process.env.CNC_LOAD_BASE_URLS ?? 'http://localhost:3000')
-      .split(',')
-      .map((url) => url.trim().replace(/\/$/, ''))
-      .filter((url) => url !== ''),
+    // Refused unless local, or CNC staging named twice (`load-targets.ts`).
+    baseUrls: checkLoadTargets(
+      (process.env.CNC_LOAD_BASE_URLS ?? 'http://localhost:3000')
+        .split(',')
+        .map((url) => url.trim())
+        .filter((url) => url !== ''),
+      {
+        confirmStaging: process.env.CNC_LOAD_CONFIRM_STAGING,
+        spoofAddresses,
+      },
+    ),
     ownerEmail,
     ownerPassword,
     durationMs: durationS * 1000,
@@ -86,7 +100,7 @@ function readSettings(): Settings {
     guests: integer(process.env.CNC_LOAD_GUESTS, 2),
     pollers: integer(process.env.CNC_LOAD_POLLERS, 4),
     pollMs: integer(process.env.CNC_LOAD_POLL_MS, 1000),
-    spoofAddresses: process.env.CNC_LOAD_SPOOF_ADDRESSES === 'true',
+    spoofAddresses,
     cleanup: process.env.CNC_LOAD_CLEANUP !== 'false',
     samplerUrl: process.env.CNC_LOAD_DB_URL || undefined,
   };
@@ -144,6 +158,9 @@ class Stats {
   unexpected = 0;
   limited = 0;
   failures = 0;
+  /** Waits after a refused or failed step, and their total time. */
+  backoffs = 0;
+  backoffMs = 0;
   readonly examples: string[] = [];
 
   add(kind: string, sample: Sample, expected: readonly number[]): void {
@@ -197,7 +214,7 @@ class Api {
       idempotent?: boolean;
       expected?: readonly number[];
     } = {},
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<Answer> {
     const base =
       this.settings.baseUrls[this.next++ % this.settings.baseUrls.length];
     const headers: Record<string, string> = {};
@@ -231,13 +248,35 @@ class Api {
       return {
         status: response.status,
         body: raw === '' ? null : (JSON.parse(raw) as unknown),
+        retryAfter: response.headers.get('retry-after'),
       };
     } catch {
       this.stats.add(kind, { ms: performance.now() - started, status: 0 }, []);
 
-      return { status: 0, body: null };
+      return { status: 0, body: null, retryAfter: null };
     }
   }
+
+  /**
+   * Wait before the next step after `answer` refused or failed one: the
+   * server's `Retry-After` (a 429, the busy database's 503), else a
+   * second. Counted apart, so the summary shows how much of the run was
+   * spent waiting.
+   */
+  async backOff(answer: Answer): Promise<void> {
+    const ms = backoffMs(answer.retryAfter);
+
+    this.stats.backoffs += 1;
+    this.stats.backoffMs += ms;
+    await sleep(ms);
+  }
+}
+
+/** One response: its status, its parsed body and its `Retry-After`. */
+interface Answer {
+  status: number;
+  body: unknown;
+  retryAfter: string | null;
 }
 
 // ------------------------------------------------------------------ setup
@@ -371,14 +410,17 @@ async function cashier(
       body: { department: 'RESTAURANT' },
     });
 
-    if (opened.status !== 201) continue;
+    if (opened.status !== 201) {
+      await api.backOff(opened);
+      continue;
+    }
 
     const id = text(opened.body, 'id');
     let version = count(opened.body, 'version');
     const lines = 1 + Math.floor(Math.random() * 3);
-    let ok = true;
+    let refused: Answer | undefined;
 
-    for (let i = 0; i < lines && ok; i += 1) {
+    for (let i = 0; i < lines && refused === undefined; i += 1) {
       const dish = dishes[Math.floor(Math.random() * dishes.length)];
       const added = await api.call(
         'till: add line',
@@ -387,11 +429,14 @@ async function cashier(
         { token, body: { version, menuItemId: dish, qty: 1 + i } },
       );
 
-      ok = added.status === 200;
-      if (ok) version = count(added.body, 'version');
+      if (added.status === 200) version = count(added.body, 'version');
+      else refused = added;
     }
 
-    if (!ok) continue;
+    if (refused !== undefined) {
+      await api.backOff(refused);
+      continue;
+    }
 
     const sent = await api.call(
       'till: send to kitchen',
@@ -400,7 +445,10 @@ async function cashier(
       { token, body: { version } },
     );
 
-    if (sent.status !== 200) continue;
+    if (sent.status !== 200) {
+      await api.backOff(sent);
+      continue;
+    }
     version = count(record(sent.body, 'order'), 'version');
 
     const handed = await api.call(
@@ -410,7 +458,10 @@ async function cashier(
       { token, body: { version } },
     );
 
-    if (handed.status !== 200) continue;
+    if (handed.status !== 200) {
+      await api.backOff(handed);
+      continue;
+    }
 
     const due = count(record(handed.body, 'totals'), 'balanceKobo');
     const paid = await api.call(
@@ -428,6 +479,7 @@ async function cashier(
     );
 
     if (paid.status === 200) settled += 1;
+    else await api.backOff(paid);
 
     await api.call(
       'till: open bills',
@@ -486,6 +538,8 @@ async function receptionist(
         id: text(made.body, 'id'),
         version: count(made.body, 'version'),
       });
+    } else {
+      await api.backOff(made);
     }
 
     await api.call(
@@ -526,10 +580,9 @@ async function guest(
       },
     });
 
-    if (made.status === 201) booked.push({ number: text(made.body, 'number') });
-
     // A guest who was refused waits before trying again, as a person would.
-    if (made.status === 429) await sleep(1000);
+    if (made.status === 201) booked.push({ number: text(made.body, 'number') });
+    else await api.backOff(made);
   }
 }
 
@@ -885,6 +938,12 @@ function report(
     `Errors: ${stats.unexpected} unexpected status(es), ${stats.failures} ` +
       `failed connection(s); ${stats.limited} refused by a rate limit (429, ` +
       `expected for the website from one address).`,
+  );
+
+  console.log(
+    `Backoffs: ${stats.backoffs} refused or failed step(s) waited ` +
+      `${(stats.backoffMs / 1000).toFixed(1)} s in all before the next ` +
+      `(Retry-After, else 1 s); the rates above include the retries.`,
   );
 
   for (const example of stats.examples) console.log(`  ${example}`);

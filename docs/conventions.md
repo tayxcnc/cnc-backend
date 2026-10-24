@@ -1052,10 +1052,22 @@ They are here so the first card that builds it starts from the rule.
   (`PLACEHOLDER_NOT_SET`, `CHANGE_ME`) as unset.** Staging carries the
   placeholder until the founder's Resend steps; handed to Resend it would
   make every send a failure that burns a retry.
+- **On a transport that reaches real inboxes (`deliversToInboxes`:
+  Resend), a message to a reserved domain is given up unsent, with no
+  provider call and no attempt spent** (`isReservedMailDomain`:
+  `example.com`, `.net`, `.org` and every `.test`, `.example`, `.invalid`
+  and `.localhost` name, RFC 2606 and 6761; `lastError` "Not sent: the
+  address is at a reserved domain that cannot receive mail."; C8 review).
+  Such an address can only bounce: the load test's guests are
+  `@example.com`, and people trying staging type `test@example.com`, so
+  each send would spend CNC's Resend quota and count as a hard bounce
+  against its sending domain. The recording transport says false, because
+  every suite mails `.test` addresses and reads them back.
 - **The e2e harness replaces the transport with a `RecordingMailTransport`
   that logs nothing; a suite reads mail with `sentMail(app)`** and takes a
-  code from the email's text, as a customer would. Its `configured` and
-  `failWith` switches stand in for an unconfigured or failing provider.
+  code from the email's text, as a customer would. Its `configured`,
+  `failWith` and `deliversToInboxes` switches stand in for an unconfigured,
+  failing or real provider.
 - **The mail frame is `cnc-mail-frame.ts`: TAY's table structure, CNC's
   colours (`cnc-frontend/app/globals.css`), the wordmark "CHEF NORO
   CULINARY" and the site's icon from `buildWebUrl('/icons/icon-192.png')`**
@@ -3612,6 +3624,24 @@ They are here so the first card that builds it starts from the rule.
   `cnc_db` or `cnc_test`, whose rows other work reads; never against
   production. The connection sampler (`CNC_LOAD_DB_URL`) refuses anything
   but a local database (`databaseTarget`).
+- **The script enforces where it runs (`scripts/load/load-targets.ts`,
+  C8 review):** every base URL must be `localhost`, `127.0.0.1` or
+  `[::1]`, or exactly `https://api-cnc-staging.tayxcnc.com` with
+  `CNC_LOAD_CONFIRM_STAGING` set to that host; any other host is refused
+  before a request is sent, and `CNC_LOAD_SPOOF_ADDRESSES` is refused with
+  a staging origin. A host copied from the docs and edited by mistake, with
+  an Owner's password in the shell, would otherwise create staff accounts
+  and settle cash bills that, as money records, are never deleted.
+- **A refused or failed step waits for `Retry-After` (2 s on the busy
+  database's 503, a 429's window), or a second, before the next
+  (`backoffMs`); the summary counts the waits.** Retrying at once would
+  multiply the load on the shared instance at the moment it is slowing,
+  the moment the founder is watching its connections.
+- **The load test sends no email anywhere.** Its guests are
+  `@example.com`, which the outbound queue gives up unsent on Resend
+  (*Mail and the outbound queue*), and locally the recording transport
+  sends nothing; so the local figures include no mail send, and neither
+  will staging's.
 - **The mix is the venue's busy hour, compressed:** cashiers opening,
   filling, sending and settling Restaurant bills in cash; Reception reading
   the floor, booking and reading the day; website guests reading

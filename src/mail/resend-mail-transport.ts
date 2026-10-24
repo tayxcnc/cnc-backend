@@ -32,6 +32,9 @@ export class ResendMailTransport implements MailTransport {
   /** Built on first use; see the class note. */
   private client: Resend | undefined;
 
+  /** Every send is a real delivery, counted against CNC's account. */
+  readonly deliversToInboxes = true;
+
   constructor(
     private readonly config: Pick<
       CncConfigService,

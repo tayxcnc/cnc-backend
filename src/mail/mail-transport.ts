@@ -54,6 +54,14 @@ export interface MailTransport {
    */
   readonly configured: boolean;
 
+  /**
+   * Whether a send reaches a real inbox (Resend), so a message to a
+   * reserved domain is given up unsent (`isReservedMailDomain`, C8
+   * review). False for the recording transport, whose tests use `.test`
+   * addresses.
+   */
+  readonly deliversToInboxes: boolean;
+
   send(mail: OutgoingMail): Promise<void>;
 }
 

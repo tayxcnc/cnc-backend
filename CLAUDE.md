@@ -31,7 +31,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Enums on the wire and the frontend adapters | Contract conventions |
 | Pagination shape | Contract conventions |
 | Error body, messages kept byte for byte, status codes, the database-busy 503 | Errors |
-| `npm run load:till`, where it may run (never staging by an agent), the mix, the generator's pause, the measured figures | Load testing (and `docs/load-testing.md`) |
+| `npm run load:till`, where it may run (never staging by an agent; the host guard), the mix, the backoff, no email, the generator's pause, the measured figures | Load testing (and `docs/load-testing.md`) |
 | The Backend Brief §12 acceptance walk, the 107 demo tests' map (`docs/demo-tests-map.md`), the no-leak sweep over every route | The acceptance list |
 | `version` and the stale-write 409 | Optimistic concurrency |
 | `Idempotency-Key` and its CORS consequence | Idempotency |
@@ -43,7 +43,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
 | Every public and customer write's limit (the table), stored counts (`RateLimitStore`, replaces A18's in-memory counts), `Retry-After`, the webhook's bad-signature count, `CustomerWriteThrottle`, the test namespace | Rate limits |
 | Customer email codes: caps, tries, sentences, `OtpService`, `CncCustomerGuard`, creating customers | Auth |
-| Email: the outbound queue, sealed payloads, expiry, the retry backoff, the transports, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
+| Email: the outbound queue, sealed payloads, expiry, the retry backoff, the transports, reserved domains never sent on Resend, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
 | `GET /me/notifications`, what writes an item, unread, the booking reminders (Q32) and `reminderSentAt` | The customer's in-app list and booking reminders |
 | `POST /enquiries`, `POST /group-enquiries`: honeypot, the two limits, the inbox email (Q20) | Enquiries |
 | The Cloud Scheduler sweep jobs, their schedules and how to create them | Infrastructure |
@@ -173,7 +173,8 @@ src/
   mail/              the outbound queue (OutboundMessagesService, its retry
                      backoff), templates, the CNC mail frame, MessageSeal, the
                      Resend and recording transports; mail-contact.ts (the
-                     greeting's first name and CNC's phone, shared)
+                     greeting's first name and CNC's phone, shared);
+                     reserved-mail-domains.ts (never sent on Resend)
   customer-notifications/  the customer's in-app list (GET /me/notifications,
                      POST /me/notifications/read), CustomerNotificationsService
                      (the one writer), the items' words
@@ -298,7 +299,8 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      fake-media-storage.ts, fake-paystack-client.ts,
                      shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
-                     load:till, C8-4)
+                     load:till, C8-4), load/load-targets.ts (where it may
+                     run, its backoff)
 docs/                conventions.md; load-testing.md (C8-4);
                      demo-tests-map.md (the 107 demo tests, C8-6)
 ```
