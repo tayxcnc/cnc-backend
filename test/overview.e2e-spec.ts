@@ -43,7 +43,7 @@ import { accessTokenFor, createStaffAccount } from './staff-fixtures';
  *
  * On a database of its own with the real seeds, and a fixed clock: the
  * overview sums the whole range, and its "now" figures (open bills,
- * tables, today's bookings, stock, tasks, the crosscheck over every date)
+ * tables, today's bookings, stock, tasks, the crosscheck over the year)
  * cover the whole database, so another suite's row would move them. The
  * seeded tables are retired and the seeded stock items' minimums set to
  * zero, so only this suite's own tables and items count. Records are
@@ -648,10 +648,11 @@ describe('Overview (e2e)', () => {
    * - two requisitions awaiting approval (one approved, one archived
    *   pending: neither counts);
    * - one waste entry awaiting review (one approved);
-   * - the crosscheck over every date: KOT for S1 (no entry), KOT for an
-   *   old 2025 bill (no entry), and two entries no docket explains (one
-   *   on T, one in 2025) are not Matched; KOT for S4 is Matched by its
-   *   rule. Four.
+   * - the crosscheck over the last 366 days: KOT for S1 (no entry), KOT
+   *   for an old 2025 bill (no entry), and two entries no docket explains
+   *   (one on T, one in 2025) are not Matched; KOT for S4 is Matched by
+   *   its rule. Four. A KOT and an unexplained entry dated the day before
+   *   that year began are not counted.
    * - stock requests: Pending at the Bar, Partially Issued in the Kitchen
    *   (Issued and Rejected ones do not count).
    */
@@ -712,8 +713,16 @@ describe('Overview (e2e)', () => {
     ids.old = await bill({
       number: 'CNCR-910050',
       department: Department.RESTAURANT,
-      openedOn: '2025-01-10',
-      createdAt: '2025-01-10T10:00:00.000Z',
+      openedOn: '2025-11-10',
+      createdAt: '2025-11-10T10:00:00.000Z',
+      status: OrderStatus.CANCELLED,
+      lines: [],
+    });
+    ids.ancient = await bill({
+      number: 'CNCR-910051',
+      department: Department.RESTAURANT,
+      openedOn: '2025-10-20',
+      createdAt: '2025-10-20T10:00:00.000Z',
       status: OrderStatus.CANCELLED,
       lines: [],
     });
@@ -767,10 +776,26 @@ describe('Overview (e2e)', () => {
     await prisma.kitchenMapping.create({
       data: { menuItemId: dish.food, stockItemId: kitchenItem.id, qty: 1 },
     });
-    const OLD = '2025-01-10';
+    // Inside the count's year, and the day before it starts (2025-10-21).
+    const OLD = '2025-11-10';
+    const ANCIENT = '2025-10-20';
     const S4_DOCKET_AT = '2026-10-20T20:05:00Z';
 
     await docket(ids.old, 'KOT-CNCR-910050', OLD, 1, `${OLD}T10:05:00Z`);
+    await docket(
+      ids.ancient,
+      'KOT-CNCR-910051',
+      ANCIENT,
+      1,
+      `${ANCIENT}T10:05:00Z`,
+    );
+    await entry(
+      ids.ancient,
+      'KOT-GHOST-ANCIENT',
+      ANCIENT,
+      1,
+      `${ANCIENT}T11:00:00Z`,
+    );
     await docket(ids.s4, 'KOT-CNCR-910004', '2026-10-20', 1, S4_DOCKET_AT);
     await entry(ids.s4, 'KOT-CNCR-910004', T, 1, `${T}T05:00:00Z`);
     await docket(ids.s1, 'KOT-CNCR-910001', T, 2, `${T}T06:35:00Z`);

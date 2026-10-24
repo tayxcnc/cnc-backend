@@ -2639,15 +2639,20 @@ They are here so the first card that builds it starts from the rule.
   Progress (not Done, as Tasks shows them to the reader, `visibleTasks`;
   *decision*: only for roles that open Tasks, so a Waiter or Bartender is
   never sent to a page that refuses them, the bell's rule).
-- **Kitchen Crosscheck counts every date's rows that are not Matched**, as
-  the demo's `crosscheck(s)` runs over its whole store: an exception stays
-  until someone puts it right, and a manager may record an entry for an
-  old date. It reuses the report's loader, never a second copy of the
-  comparison. *Measured (C8-1):* about 50 ms for a month of history
-  (3,100 dockets) and about 520 ms for a year (36,500); it grows with the
-  history. If it ever needs to be cheaper, bound it to the report's 366
-  days or count it in SQL with a parity test against `crosscheck()`; do
-  not hand-copy the rules.
+- **Kitchen Crosscheck counts the rows that are not Matched dated from
+  366 days back (today included) on** (`notMatchedCount`, the report's
+  `REPORT_MAX_DAYS`; later dates too, as a web order's slot may be
+  tomorrow): an exception stays until someone puts it right or it is a
+  year old, and a manager may record an entry for an old date. It reuses
+  the report's loader, never a second copy of the comparison.
+  *Decision* (C8 review): the demo's `crosscheck(s)` ran over its whole
+  store, which a browser kept small; over every date the count read every
+  docket ever written, with its items, on every manager's poll (*measured,
+  C8-1:* about 50 ms for a month of history, 3,100 dockets, and about
+  520 ms for a year, 36,500, growing without end). Bounded, it stops
+  growing after the first year, at about the year's figure. If it must be
+  cheaper still, count it in SQL with a parity test against
+  `crosscheck()`; do not hand-copy the rules.
 - **Settled Sales, the Sales Trend and Restaurant and Bar Sales read the
   bills settled in the range by their Lagos settlement date
   (`settledBills`); departments are each line's (`departmentShares`), as
@@ -2694,7 +2699,7 @@ They are here so the first card that builds it starts from the rule.
 - **`test/overview.e2e-spec.ts` runs on `createIsolatedDatabase` with a
   fixed clock (12:00 in Jos on 21 October 2026) and writes its records
   directly.** Its "now" widgets read the whole database (open bills,
-  tables, stock, tasks, the crosscheck over every date), so another
+  tables, stock, tasks, the crosscheck over the last year), so another
   suite's row would move them; it retires the seeded tables and zeroes the
   seeded stock minimums for the same reason.
 

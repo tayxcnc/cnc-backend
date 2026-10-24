@@ -4,7 +4,9 @@ import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
-import { reportPeriod } from '../common/report-period';
+import { addDays, formatIsoDate } from '../common/calendar-date';
+import { REPORT_MAX_DAYS, reportPeriod } from '../common/report-period';
+import { watToday } from '../common/wat';
 import { parseDocketItems } from '../orders/docket-items';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { readKitchenMappings } from '../stock/kitchen-mapping.service';
@@ -22,8 +24,8 @@ import {
 } from './kitchen-crosscheck';
 import { parseKitchenLines, type KitchenLine } from './kitchen-rules';
 
-/** Business dates as `YYYY-MM-DD`, inclusive; null for every date. */
-type CrosscheckRange = { from: string; to: string } | null;
+/** Business dates as `YYYY-MM-DD`, inclusive; `to` null: no end. */
+type CrosscheckRange = { from: string; to: string | null };
 
 /** A kitchen entry as the crosscheck's raw reads return it. */
 interface EntryRow {
@@ -46,9 +48,10 @@ interface EntryRow {
  * list order), then the unexplained entries in the order they were
  * recorded. The comparison rules are read as they stand now, as the demo
  * reads them. The report screen reads `report`; the overview's Needs
- * Attention count reads `notMatchedCount`, over every date, as the demo's
- * `crosscheck(s)` runs over its whole store (card C8-1). Both go through
- * one loader, so the count is always the report's own `notMatched`.
+ * Attention count reads `notMatchedCount`, over the last year's dates
+ * (card C8-1; the demo ran `crosscheck(s)` over its whole store, which a
+ * browser's store kept small). Both go through one loader, so the count
+ * is always the report's own `notMatched` for that range.
  */
 @Injectable()
 export class KitchenCrosscheckService {
@@ -88,27 +91,33 @@ export class KitchenCrosscheckService {
   }
 
   /**
-   * The overview's Needs Attention "Kitchen Crosscheck" count: the rows of
-   * every date whose result is not Matched (the demo counts
-   * `crosscheck(s)` over its whole store). An exception stays counted
-   * until it is put right, however old: a manager may still record a
-   * kitchen entry for an earlier date.
+   * The overview's Needs Attention "Kitchen Crosscheck" count: the rows
+   * whose result is not Matched, dated from {@link REPORT_MAX_DAYS} days
+   * back (today included) on, a web order's later slot too. An exception
+   * stays counted until it is put right or a year old: a manager may still
+   * record a kitchen entry for an earlier date. *Decision* (C8 review): the
+   * demo counted its whole store; over every date the count read every
+   * docket ever written on every manager's poll (about 520 ms a year of
+   * history, and growing), where a year is the longest range the report
+   * itself reads.
    */
-  async notMatchedCount(): Promise<number> {
-    return notMatched(await this.rows(null));
+  async notMatchedCount(now: Date = new Date()): Promise<number> {
+    const from = formatIsoDate(addDays(watToday(now), 1 - REPORT_MAX_DAYS));
+
+    return notMatched(await this.rows({ from, to: null }));
   }
 
   /**
-   * The crosscheck's rows for a range of business dates, or for every
-   * date. Five reads, whatever the number of dockets: the latest revisions,
-   * the entries under their refs, the entries no docket explains, the
-   * rules, and nothing per row.
+   * The crosscheck's rows for a range of business dates. Five reads,
+   * whatever the number of dockets: the latest revisions, the entries
+   * under their refs, the entries no docket explains, the rules, and
+   * nothing per row.
    */
   private async rows(range: CrosscheckRange): Promise<CrosscheckRow[]> {
     // Bound as `YYYY-MM-DD` text, never a Date (see `DocketsService.list`).
     const docketIn = (alias: string) =>
-      range === null
-        ? Prisma.sql`TRUE`
+      range.to === null
+        ? Prisma.sql`${Prisma.raw(alias)}."businessDate" >= ${range.from}::date`
         : Prisma.sql`${Prisma.raw(alias)}."businessDate" BETWEEN ${range.from}::date AND ${range.to}::date`;
 
     // Every revision of a ref carries its bill's business date, so the

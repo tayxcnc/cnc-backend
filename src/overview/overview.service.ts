@@ -439,8 +439,9 @@ export class OverviewService {
    * Needs Attention: the demo's five lines, each only for a reader whose
    * role opens the line's page, and each counting what that page would
    * show them. Purchase Requisitions and Waste Awaiting Review are the
-   * Approvals screen's (managers); Kitchen Crosscheck is every date's rows
-   * that are not Matched (managers: the report is theirs alone); Open
+   * Approvals screen's (managers); Kitchen Crosscheck is the rows of the
+   * last 366 days that are not Matched (managers: the report is theirs
+   * alone); Open
    * Stock Requests are Pending or Partially Issued, of a Bartender's or
    * Kitchen user's own location; Tasks in Progress are those not Done
    * that the reader sees on Tasks (`visibleTasks`).
