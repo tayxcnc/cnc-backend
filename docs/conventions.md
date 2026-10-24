@@ -3727,8 +3727,13 @@ They are here so the first card that builds it starts from the rule.
   through the API. A test per line makes a failure name the promise that
   broke.
 - **The 107 demo tests are 97 backend tests and 10 browser-only ones**
-  (`docs/demo-tests-map.md`): the staff app's browser-storage and file
-  tests have no server counterpart and stay in its own suite. Where a demo
+  (`docs/demo-tests-map.md`): those ten have no server counterpart. Four
+  (one screen choice and the three file tests) stay in the staff app's own
+  suite; six of the demo's browser storage are marked `retired with the
+  demo store (C8-5)`, because the staff app removed that store and its
+  tests (C8 review: the map still called them the staff app's, and line 1
+  skipped them unchecked, so it passed while six rows named tests that no
+  longer exist anywhere). Line 1 counts both kinds exactly. Where a demo
   test's assertions are split over several backend tests, the map lists
   each; no demo test needed a new port in C8-6. The bell's two rows
   (`attendance.test.cjs`) are held by the approvals test, which drives the
@@ -3913,8 +3918,12 @@ They are here so the first card that builds it starts from the rule.
 
   The two C7 jobs are created after the C7 deploy is live, as the C6 ones
   were. The retention job is created only on the founder's go-ahead, after
-  the C8 deploy is live: it deletes personal data, and nothing depends on
-  it having run.
+  the C8 deploy is live: it deletes personal data, and no code depends on
+  it having run. **The prod job must exist before the site's account page
+  reaches production**: its privacy note (cnc-frontend
+  `components/account/panels.tsx`, Q36) tells customers enquiries are
+  deleted from CNC's records after 12 months, and only this job deletes
+  them (C8 review).
 
   Create the two C6 jobs **after the C6 deploy is live** (the rule
   above), each with `gcloud scheduler jobs create http <job> --location

@@ -18,13 +18,22 @@ assertions are split across two or three backend tests (one command each),
 all of them are listed, joined by `+`. Most ported tests keep the demo's
 title word for word.
 
-**Ten have no server counterpart and stay in the staff app's own suite**
-(`staff app only`): seven `ux.test.cjs` tests of the demo's browser storage
-(saved workspaces, quota, migration and recovery of `localStorage`), and
-the three `exports.test.cjs` tests of the CSV and PDF files, which the
-staff app builds from the API's rows (A20). The server has no browser
+**Ten have no server counterpart.** Four stay in the staff app's own
+suite (`staff app only`): one `ux.test.cjs` test of a screen choice kept in
+the browser, and the three `exports.test.cjs` tests of the CSV and PDF
+files, which the staff app builds from the API's rows (A20). Six
+`ux.test.cjs` tests of the demo's browser storage (saved workspaces,
+quota, migration and recovery of `localStorage`) are `retired with the
+demo store (C8-5)`: the staff app removed that store and its tests with it
+(cnc-frontend `3e5c18b`), so no suite runs them. The server has no browser
 storage to test, and the rules those screens guard (the locations and
 reports a role may use) are refused by the API itself and tested there.
+
+*Departure from plan §14 item 7, recorded for the founder:* the plan kept
+the 107 as the staff app's own unit tests while `domain.ts` validated
+commands in the browser. From C8-5 `domain.ts` no longer runs commands, so
+the staff app kept only the tests of the helpers its screens still use
+(13), and the server's tests named here are the record.
 
 **Where the server deliberately differs**, the backend test asserts the
 server's rule, as the plan decided:
@@ -108,14 +117,14 @@ run.
 | `attendance.test.cjs` | staff notifications are relevant to the role and assigned tasks disappear when done | `test/staff-bell.e2e-spec.ts`, `test/tasks.e2e-spec.ts` | "%s gets exactly its items, in the demo’s order and words" + "staff notifications are relevant to the role and assigned tasks disappear when done" |
 | `ux.test.cjs` | required choices and whitespace report actionable field errors while optional choices remain optional | `test/staff-demo-ports.e2e-spec.ts` | "required choices and whitespace report actionable field errors while optional choices remain optional" |
 | `ux.test.cjs` | numeric fields accept required zero and valid fractional steps while rejecting out of range, nonfinite and fractional portion counts | `test/staff-demo-ports.e2e-spec.ts` | "numeric fields accept required zero and valid fractional steps while rejecting out of range, nonfinite and fractional portion counts" |
-| `ux.test.cjs` | saved demo workspace round trips without losing bill history and absent data alone seeds samples | staff app only | browser storage of the demo workspace; the server keeps the records |
-| `ux.test.cjs` | corrupt, unsupported and incomplete saved records fail visibly instead of resetting silently | staff app only | browser storage of the demo workspace |
+| `ux.test.cjs` | saved demo workspace round trips without losing bill history and absent data alone seeds samples | retired with the demo store (C8-5) | browser storage of the demo workspace; the server keeps the records |
+| `ux.test.cjs` | corrupt, unsupported and incomplete saved records fail visibly instead of resetting silently | retired with the demo store (C8-5) | browser storage of the demo workspace |
 | `ux.test.cjs` | a failed command keeps persisted records untouched and cannot approve under an unauthorised role | `test/staff-demo-ports.e2e-spec.ts` | "a failed command keeps persisted records untouched and cannot approve under an unauthorised role" |
 | `ux.test.cjs` | saved manager choices cannot expose forbidden inventory locations or report types after a role change | staff app only | a screen choice kept in the browser; the server refuses the location or report itself |
-| `ux.test.cjs` | healthy saved records remain readable without a write when the storage quota is exhausted | staff app only | browser storage quota |
-| `ux.test.cjs` | legacy migration persists once and a rejected migration write preserves the original bytes | staff app only | browser storage migration |
-| `ux.test.cjs` | incomplete or duplicate staff identities and malformed nested records require recovery without writes | staff app only | browser storage recovery |
-| `ux.test.cjs` | missing existing records and denied reads cannot silently initialise or replace saved data | staff app only | browser storage reads |
+| `ux.test.cjs` | healthy saved records remain readable without a write when the storage quota is exhausted | retired with the demo store (C8-5) | browser storage quota |
+| `ux.test.cjs` | legacy migration persists once and a rejected migration write preserves the original bytes | retired with the demo store (C8-5) | browser storage migration |
+| `ux.test.cjs` | incomplete or duplicate staff identities and malformed nested records require recovery without writes | retired with the demo store (C8-5) | browser storage recovery |
+| `ux.test.cjs` | missing existing records and denied reads cannot silently initialise or replace saved data | retired with the demo store (C8-5) | browser storage reads |
 | `exports.test.cjs` | CSV keeps negative quantities numeric, escapes unsafe text, quotes delimiters and leaves missing values blank | staff app only | the staff app builds CSV from the API’s rows (A20) |
 | `exports.test.cjs` | attendance PDFs paginate an oversized row into valid pages | staff app only | the staff app builds the PDF from the API’s rows (A20) |
 | `exports.test.cjs` | empty attendance periods still produce a valid one-page PDF | staff app only | the staff app builds the PDF from the API’s rows (A20) |

@@ -121,7 +121,8 @@ const LIMIT_KOBO = 5_000_000;
  *
  * 1. the staff app's 107 domain tests, restated by the plan as the ported
  *    e2e and report specs: `docs/demo-tests-map.md` maps each to the spec
- *    that runs it, and this test holds the map to the specs;
+ *    that runs it (or marks it the staff app's own, or retired with the
+ *    demo store), and this test holds the map to the specs;
  * 2. a Manager calling each Owner-only command, or a limited command above
  *    the limit, gets 403 and changes nothing; the Owner succeeds;
  * 3. `check:consistency`, restated: the menu and the settings the website
@@ -547,13 +548,19 @@ describe('C8-6: the Backend Brief’s acceptance list (e2e)', () => {
       owner: 16,
     });
 
-    // The ten with no server counterpart are the browser's own.
+    // The ten with no server counterpart: four are the staff app's own,
+    // and six tested the demo's browser store, removed with it in C8-5.
+    const RETIRED = 'retired with the demo store (C8-5)';
     const browserOnly = rows.filter(([, , spec]) => spec === 'staff app only');
+    const retired = rows.filter(([, , spec]) => spec === RETIRED);
 
     expect(browserOnly.map(([suite]) => suite).sort()).toEqual([
       ...Array<string>(3).fill('`exports.test.cjs`'),
-      ...Array<string>(7).fill('`ux.test.cjs`'),
+      '`ux.test.cjs`',
     ]);
+    expect(retired.map(([suite]) => suite)).toEqual(
+      Array<string>(6).fill('`ux.test.cjs`'),
+    );
 
     // Every other row names specs that exist and tests they run: the title
     // must open a plain `it(` or `test(` call (or an `.each(…)(` one), so
@@ -568,7 +575,7 @@ describe('C8-6: the Backend Brief’s acceptance list (e2e)', () => {
       );
 
     for (const [suite, demo, spec, titles] of rows) {
-      if (spec === 'staff app only') continue;
+      if (spec === 'staff app only' || spec === RETIRED) continue;
 
       const files = spec.split(', ').map((cell) => cell.replace(/`/g, ''));
       const sources = files.map((file) => {
