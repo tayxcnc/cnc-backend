@@ -3,11 +3,11 @@ import { PaymentMethod, type Prisma } from '../../generated/cnc-client';
 import { AuditService, staffActor } from '../audit/audit.service';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import { formatIsoDate, parseIsoDate } from '../common/calendar-date';
-import { resolveDateRange } from '../common/date-range';
 import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
+import { reportPeriod } from '../common/report-period';
 import { watToday } from '../common/wat';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { INT4_MAX } from '../prisma/int4';
@@ -21,9 +21,6 @@ import type {
 } from './dto/cash-count.dto';
 
 type Tx = Prisma.TransactionClient;
-
-/** The longest range one cash report covers: a year. */
-const CASH_REPORT_MAX_DAYS = 366;
 
 const COUNT_COLUMNS = {
   id: true,
@@ -136,11 +133,7 @@ export class CashCountsService {
   async report(query: CashReportQuery): Promise<CashReportResponse> {
     const page = query.page ?? DEFAULT_PAGE;
     const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
-    const range = resolveDateRange(query, new Date(), {
-      defaultDays: 1,
-      maxDays: CASH_REPORT_MAX_DAYS,
-      subject: 'The cash reconciliation',
-    });
+    const range = reportPeriod(query, 'The cash reconciliation');
     const where: Prisma.CashCountWhereInput = {
       businessDate: { gte: range.from, lte: range.to },
     };
@@ -158,8 +151,8 @@ export class CashCountsService {
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: { differenceKobo: true },
     });
-    const from = formatIsoDate(range.from);
-    const to = formatIsoDate(range.to);
+    const from = range.fromIso;
+    const to = range.toIso;
 
     return {
       data: rows.map(toResponse),

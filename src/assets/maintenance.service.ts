@@ -164,6 +164,34 @@ export class MaintenanceService {
   }
 
   /**
+   * Reports → Maintenance History (C8-1): the repairs reported on a
+   * business date from `from` to `to`, in the order they were logged (the
+   * demo's list), each with its asset, vendor, dates, status, cost and who
+   * handled it (its history). Managers only, through the reports.
+   */
+  async reportPage(
+    reported: { from: Date; to: Date },
+    page: number,
+    pageSize: number,
+  ): Promise<{ data: RepairResponse[]; total: number }> {
+    const where: Prisma.MaintenanceRecordWhereInput = {
+      reportedOn: { gte: reported.from, lte: reported.to },
+    };
+    const rows = await this.prisma.maintenanceRecord.findMany({
+      where,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: REPAIR_COLUMNS,
+    });
+
+    return {
+      data: await this.answerMany(this.prisma, rows),
+      total: await this.prisma.maintenanceRecord.count({ where }),
+    };
+  }
+
+  /**
    * `maintenance.save` logging a repair. Runs inside the idempotency
    * service's transaction: a retry after a lost response replays the
    * first repair instead of logging a second, with a second follow-up.

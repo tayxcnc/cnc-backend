@@ -216,14 +216,18 @@ export class StockService {
 
   /**
    * `GET /staff/stock/movements`: the ledger, newest first (managers and
-   * the Storekeeper, plan §6.1).
+   * the Storekeeper, plan §6.1). With `madeIn`, only the movements made
+   * from `start` up to `end`: Reports → Stock Movements (C8-1), the same
+   * rows in the same order over a range of Jos days.
    */
   async movements(
     query: StockMovementsQuery,
+    madeIn?: { start: Date; end: Date },
   ): Promise<StockMovementPageResponse> {
     const page = query.page ?? DEFAULT_PAGE;
     const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
     const where: Prisma.StockMovementWhereInput = {
+      ...(madeIn ? { createdAt: { gte: madeIn.start, lt: madeIn.end } } : {}),
       ...(query.location ? { location: query.location } : {}),
       ...(query.stockItemId ? { stockItemId: query.stockItemId } : {}),
       ...(query.q

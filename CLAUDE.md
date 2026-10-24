@@ -47,6 +47,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
 | Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
+| Release rows: a refused card refund given back to the Daily Approval Limit (C8-0) | Money controls and the audit log; Staff Online Orders |
+| The nine reports: the shared period, Lagos day bounds, paging, bigint sums, departments by line, Q21's delivery line, who reads which | Reports |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
@@ -122,10 +124,12 @@ src/
                      CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
   money-control/     MoneyControlService: Owner-only rules, approval limits and
                      the daily ledger, own record, Manager/Owner accounts, last Owner;
-                     standing() and approvalRefusal() for the approvals read
+                     standing() and approvalRefusal() for the approvals read;
+                     releaseCounted() for a refused card refund (C8-0)
   common/            money, dates, errors, pagination, request helpers, QR tokens
                      and their SVG renderer, the client-address throttler guard,
-                     one-sentence field checks, the admin reason, item lists
+                     one-sentence field checks, the admin reason, item lists;
+                     the reports' period (report-period.ts, ReportPeriodQuery)
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
   internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens,
@@ -202,6 +206,9 @@ src/
                      the entries and day reads, the Kitchen Crosscheck report
                      (crosscheck(), the demo's function)
   cash/              cash.count and the Cash Reconciliation report
+  reports/           Reports (C8-1): Sales, Payments Received, Daily Transfers,
+                     Stock Movements, Waste, Maintenance History, Vendor Spend
+                     (ReportsService), beside the crosscheck and cash reports
   reception/         Reception: bookings (ReservationsService.book, the one
                      booking command), table sessions, the floor read, the
                      Free Table Reminder; arrival rules in reservation-rules.ts;
@@ -245,11 +252,15 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      webhooks; online-orders: the order a payment writes,
                      the races, the checkouts and payments sweeps;
                      online-orders-staff: the staff commands, the
-                     refunds through the fake Paystack, the limits;
+                     refunds through the fake Paystack, the limits,
+                     the refused refunds' releases (C8-0);
                      online-order-messages: the receipt, stage and
                      refund emails, /me/orders, the online bell items;
                      c7-gate: the C7 gate walk, the backend half of
-                     steps 1 to 6 with the fake Paystack),
+                     steps 1 to 6 with the fake Paystack;
+                     reports: the C8-1 reports' figures, the Lagos
+                     midnight, who reads which; money-control: the
+                     ledger, its lock, append-only, release rows),
                      paystack-webhooks.ts,
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,

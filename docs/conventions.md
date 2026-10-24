@@ -2256,7 +2256,9 @@ They are here so the first card that builds it starts from the rule.
 - **The two reports built with these cards sit under `staff/reports` and
   take `from`/`to` through `resolveDateRange` (today when absent, at most
   366 days).** C8's other reports join them there with the same range rule,
-  so every report answers a bad range in the same words.
+  so every report answers a bad range in the same words. *From C8-1:* all
+  nine share `ReportPeriodQuery` (`src/common/dto/report-period.query.ts`)
+  and `reportPeriod` (`src/common/report-period.ts`); see *Reports*.
 - **A suite that closes a kitchen day or pins a date's cash figures runs on
   `createIsolatedDatabase`** (`test/kitchen.e2e-spec.ts`,
   `test/cash-count.e2e-spec.ts`). A close is one row for the whole database
@@ -2264,6 +2266,96 @@ They are here so the first card that builds it starts from the rule.
   there would make every later kitchen save that day a manager's
   correction; and every suite takes cash on the shared database, so no
   expected figure could be pinned.
+
+## Reports *(from C8-1)*
+
+- **The nine reports are JSON reads under `/staff/reports/*`, computed on
+  read from the stored rows the way the staff app's `reports.tsx` computes
+  them from its local store** (plan §10, A20): `sales`, `payments`,
+  `kitchen-crosscheck`, `stock-movements`, `waste`, `cash`, `transfers`,
+  `maintenance`, `vendor-spend`. The screen keeps building its CSV from the
+  rows (`staff/lib/exports.ts`), so the API never builds a file.
+- **Every report takes one query class (`ReportPeriodQuery`) and one range
+  rule (`reportPeriod`): `from` and `to` as Lagos business dates,
+  inclusive, today when absent, at most 366 days, refused with
+  `resolveDateRange`'s sentences.** The demo's `validatePeriod` checks the
+  same two things (real dates, an end not before the start) on the screen,
+  in its own words, before it asks; the API keeps the words its first two
+  reports already answer, so all nine say a bad range the same way.
+- **A record dated by an instant (a settlement, a movement, a waste entry,
+  a requisition) is in the range from 00:00 in Jos on `from` to 00:00 in
+  Jos the day after `to` (`ReportPeriod.start`/`end`, `watDayBounds`); one
+  dated by a business date column (a payment, a cash count, a repair's
+  reported date) is matched on the dates.** A bill settled at 00:30 in Jos
+  is the next day's sale, though its UTC date is the day before; the e2e
+  suite pins both sides of the midnight and fails with UTC day bounds.
+- **An instant in a report's raw SQL is bound as ISO text and read as UTC
+  (`(…::timestamptz AT TIME ZONE 'UTC')`, `utcInstant` in
+  `reports.service.ts`), never as a Date parameter.** The columns hold UTC
+  without a zone (*Data and migrations*); a zoned parameter would be cast
+  in the session's zone, the hour-long drift TAY once shipped.
+- **Every report pages its table like the first two
+  (`{ data, page, pageSize, total, from, to }` and its own figures), and
+  every figure beside the table covers the whole range, never the page.**
+  The screen's Stat cards are range totals; a page-sized sum would change
+  as the user pages.
+- **Money is summed as `bigint` in SQL (plan §10), and a bill's VAT and
+  service are rounded per bill by the till's own formula
+  (`totalsFromSubtotal` in `order-totals.ts`, which `orderTotals` calls).**
+  The demo rounds each bill's figures and adds the bills; summing VAT over
+  the range first would differ by a kobo per bill, and a second copy of
+  the formula in SQL would be one that drifts.
+- **Sales departments are each line's (`departmentShares`): a bill whose
+  lines are one department is wholly that department's, and a mixed web
+  order gives the Bar its drinks' own totals at the bill's rates (the
+  discount shared by subtotal), the bill's own department the rest** (plan
+  §10, D30: "web drinks count as Bar"). *Decision (the plan leaves the
+  split open):* the remainder rule makes the departments add up to
+  Completed Sales to the kobo. With a department chosen, a bill appears
+  when it has a line in it, with that department's share of every figure;
+  the row's `department` stays the bill's own (its number's), and
+  `departments` lists its lines'.
+- **Q21: delivery fees are their own line (`deliveryFeesKobo`,
+  `deliveryOrders`), never inside a sales figure, and they are reported
+  whatever department is chosen**: a fee belongs to no department, and the
+  bill's totals exclude it (*Staff Online Orders*: "the fee stays its own
+  line outside the bill").
+- **Still Owed is every open bill (Open or Payment) of any date, by the
+  bill's department, after part payments (`balanceDueKobo`)**, as the
+  demo's stat is: it is what is owed now, not what the range sold.
+- **Sales by Item and by Category follow the menu's order (`MENU_ORDER`)
+  and name each dish and staff category as they stand now**, as the demo
+  reads them from its menu; quantities and money are the lines as sold,
+  before order-level discounts.
+- **Payments Received is every non-reversed payment dated in the range,
+  refunds (negative) included, newest first, with the demo's kind:
+  `PART_PAYMENT` for a part payment, `ONLINE_CHECKOUT` for any other
+  `ONLINE` payment, `FINAL_PAYMENT` otherwise.** The demo's own rule, so a
+  card refund shows as `ONLINE_CHECKOUT` with a negative amount, as the
+  demo would show it. Daily Transfers is the `TRANSFER` rows of the same
+  read, oldest first (the demo's list order).
+- **Stock Movements, Waste and Maintenance History are answered by their
+  own modules' services (`StockService.movements` with a time window,
+  `WasteService.reportPage`, `MaintenanceService.reportPage`)**, so a row
+  reads the same in the report as on its screen. Waste adds the Lagos day
+  it was logged (the Date column) and lists every status, oldest first.
+- **Vendor Spend lists every vendor in the order they were added, zero
+  rows included; Purchases Received is the Fulfilled requisitions raised
+  in the range, by line vendor (received packs × cost per pack), and
+  Maintenance Cost the repairs reported in the range.** *Decision:* the
+  demo dates a requisition by when it was raised (`p.at`), and the record
+  has no received-at column; dating by the receipt would need the
+  `PURCHASE_RECEIPT` movement, which the demo does not read.
+- **Who reads which is the staff app's (plan §6.1): managers all nine; the
+  Cashier Payments Received, Cash Reconciliation and Daily Transfers
+  (`@Roles(CASHIER)`); every other role none (`@Roles()`).** The e2e suite
+  walks every role over every report.
+- **`test/reports.e2e-spec.ts` runs on `createIsolatedDatabase` and writes
+  its bills, payments, movements, waste, purchases and repairs directly at
+  chosen instants.** Every report sums the whole range, so another suite's
+  row in the shared database would move its figures; the commands stamp
+  the server's clock, and the suite is about how the reports read the
+  records, not how the commands write them.
 
 ## Reception: bookings, table sessions and the floor *(from C4)*
 

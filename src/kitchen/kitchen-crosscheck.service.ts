@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { formatIsoDate } from '../common/calendar-date';
-import { resolveDateRange } from '../common/date-range';
 import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
+import { reportPeriod } from '../common/report-period';
 import { parseDocketItems } from '../orders/docket-items';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { readKitchenMappings } from '../stock/kitchen-mapping.service';
@@ -20,9 +20,6 @@ import {
   type CrosscheckEntry,
 } from './kitchen-crosscheck';
 import { parseKitchenLines, type KitchenLine } from './kitchen-rules';
-
-/** The longest range one crosscheck read covers: a year. */
-const CROSSCHECK_MAX_DAYS = 366;
 
 const ENTRY_COLUMNS = {
   docketRef: true,
@@ -54,14 +51,10 @@ export class KitchenCrosscheckService {
   async report(query: KitchenCrosscheckQuery): Promise<CrosscheckPageResponse> {
     const page = query.page ?? DEFAULT_PAGE;
     const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
-    const range = resolveDateRange(query, new Date(), {
-      defaultDays: 1,
-      maxDays: CROSSCHECK_MAX_DAYS,
-      subject: 'The kitchen crosscheck',
-    });
+    const range = reportPeriod(query, 'The kitchen crosscheck');
     // Bound as `YYYY-MM-DD` text, never a Date (see `DocketsService.list`).
-    const from = formatIsoDate(range.from);
-    const to = formatIsoDate(range.to);
+    const from = range.fromIso;
+    const to = range.toIso;
 
     // Every revision of a ref carries its bill's business date, so the
     // latest revision of each ref in the range is the latest of the ref.

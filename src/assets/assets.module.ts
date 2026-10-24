@@ -21,6 +21,9 @@ import { MaintenanceService } from './maintenance.service';
   imports: [CncAuthModule, AuditModule],
   controllers: [AssetsController],
   providers: [AssetsService, MaintenanceService],
+  // For Reports → Maintenance History (C8-1), which reads repairs as the
+  // repairs read answers them.
+  exports: [MaintenanceService],
 })
 export class AssetsModule implements OnModuleInit {
   constructor(

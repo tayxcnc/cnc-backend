@@ -35,10 +35,7 @@ import {
   MoneyControlService,
   REFUND_RELEASE_ACTION,
 } from '../src/money-control/money-control.service';
-import {
-  OnlineBalanceMethod,
-  type OnlineBalanceRequest,
-} from '../src/online-orders/dto/online-order.request';
+import { OnlineBalanceMethod } from '../src/online-orders/dto/online-order.request';
 import { OnlineOrdersService } from '../src/online-orders/online-orders.service';
 import {
   BALANCE_TRANSFER_MESSAGE,
@@ -1739,7 +1736,7 @@ describe('Online Orders: the staff commands (e2e)', () => {
             version,
             method: OnlineBalanceMethod.PAYSTACK,
             reason: 'Refund drinks',
-          } as OnlineBalanceRequest,
+          },
           '127.0.0.1',
         ),
       );

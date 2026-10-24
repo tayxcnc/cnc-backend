@@ -28,6 +28,7 @@ import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
 import { ReceptionModule } from './reception/reception.module';
+import { ReportsModule } from './reports/reports.module';
 import { SettingsModule } from './settings/settings.module';
 import { ShellModule } from './shell/shell.module';
 import { StaffModule } from './staff/staff.module';
@@ -72,6 +73,7 @@ import { WasteModule } from './waste/waste.module';
     OrdersModule,
     KitchenModule,
     CashModule,
+    ReportsModule,
     ReceptionModule,
     CustomerNotificationsModule,
     EnquiriesModule,

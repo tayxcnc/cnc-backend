@@ -645,6 +645,35 @@ export class WasteService {
     };
   }
 
+  /**
+   * Reports → Waste (C8-1): the entries logged from `start` up to `end`
+   * (the Jos midnights of the report's range), at every location, in the
+   * order they were logged (the demo's list), whatever their status
+   * ("and whether a manager approved it"). Managers only, through the
+   * reports.
+   */
+  async reportPage(
+    madeIn: { start: Date; end: Date },
+    page: number,
+    pageSize: number,
+  ): Promise<{ data: WasteResponse[]; total: number }> {
+    const where: Prisma.WasteEntryWhereInput = {
+      createdAt: { gte: madeIn.start, lt: madeIn.end },
+    };
+    const rows = await this.prisma.wasteEntry.findMany({
+      where,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: WASTE_COLUMNS,
+    });
+
+    return {
+      data: await this.answerMany(this.prisma, rows),
+      total: await this.prisma.wasteEntry.count({ where }),
+    };
+  }
+
   /** Entries awaiting review at every location: the managers' figure. */
   pendingCount(): Promise<number> {
     return this.prisma.wasteEntry.count({
