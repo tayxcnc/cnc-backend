@@ -48,7 +48,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | Release rows: a refused card refund given back to the Daily Approval Limit (C8-0) | Money controls and the audit log; Staff Online Orders |
-| The nine reports: the shared period, Lagos day bounds, paging, bigint sums, departments by line, Q21's delivery line, who reads which | Reports |
+| The nine reports: the shared period, Lagos day bounds, paging, bigint sums, departments by line, Q21's delivery line, who reads which; `settledBills`/`openBills` | Reports |
+| `GET /staff/overview`: manager vs staff overview, the layout deciding what is computed, each role's rows, Needs Attention, the trend's interval, the crosscheck over every date, the measured cost | The overview |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
@@ -208,7 +209,13 @@ src/
   cash/              cash.count and the Cash Reconciliation report
   reports/           Reports (C8-1): Sales, Payments Received, Daily Transfers,
                      Stock Movements, Waste, Maintenance History, Vendor Spend
-                     (ReportsService), beside the crosscheck and cash reports
+                     (ReportsService), beside the crosscheck and cash reports;
+                     the bill reads they share with the overview
+                     (sales-records.ts: settledBills, openBills)
+  overview/          GET /staff/overview (OverviewService): the manager
+                     overview's fourteen widgets by the person's layout, the
+                     staff overview for today; the trend's buckets
+                     (overview-trend.ts)
   reception/         Reception: bookings (ReservationsService.book, the one
                      booking command), table sessions, the floor read, the
                      Free Table Reminder; arrival rules in reservation-rules.ts;
@@ -222,6 +229,7 @@ src/
                      (C8-2 completes it)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
+                     (exported to overview/)
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
@@ -259,7 +267,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      c7-gate: the C7 gate walk, the backend half of
                      steps 1 to 6 with the fake Paystack;
                      reports: the C8-1 reports' figures, the Lagos
-                     midnight, who reads which; money-control: the
+                     midnight, who reads which; overview: every
+                     widget's figures, each role's overview, the trend
+                     at 1, 62 and 63 days; money-control: the
                      ledger, its lock, append-only, release rows),
                      paystack-webhooks.ts,
                      create-test-app.ts, staff-fixtures.ts,

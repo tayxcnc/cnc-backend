@@ -11,7 +11,7 @@ import { ShellService } from './shell.service';
  * The staff app's shell (card C3-8): `GET /staff/me`, `GET /staff/reference`
  * and the overview layout. It reads through the settings and menu services,
  * so the reference data comes back in exactly the shapes their own routes
- * answer.
+ * answer. `GET /staff/overview` itself is `OverviewModule`'s.
  */
 @Module({
   imports: [
@@ -23,5 +23,7 @@ import { ShellService } from './shell.service';
   ],
   controllers: [ShellController],
   providers: [ShellService],
+  // The overview (C8-1) reads a manager's layout through it.
+  exports: [ShellService],
 })
 export class ShellModule {}

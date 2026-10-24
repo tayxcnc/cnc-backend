@@ -1,10 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  Department,
-  OrderChannel,
-  PaymentMethod,
-  Prisma,
-} from '../../generated/cnc-client';
+import { Department, PaymentMethod, Prisma } from '../../generated/cnc-client';
 import { MaintenanceService } from '../assets/maintenance.service';
 import { formatIsoDate } from '../common/calendar-date';
 import {
@@ -15,12 +10,7 @@ import type { ReportPeriodQuery } from '../common/dto/report-period.query';
 import { reportPeriod, type ReportPeriod } from '../common/report-period';
 import { watToday } from '../common/wat';
 import { MENU_ORDER } from '../menu/menu.service';
-import {
-  balanceDueKobo,
-  departmentShares,
-  type DepartmentShare,
-  totalsFromSubtotal,
-} from '../orders/order-totals';
+import { departmentShares, type DepartmentShare } from '../orders/order-totals';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { StockService } from '../stock/stock.service';
 import { WasteService } from '../waste/waste.service';
@@ -39,6 +29,13 @@ import {
   type VendorSpendReportResponse,
   type WasteReportResponse,
 } from './dto/reports.response';
+import {
+  kobo,
+  openBills,
+  settledBills,
+  settledIn,
+  utcInstant,
+} from './sales-records';
 
 /** The four methods a payment can be, in the order the report lists them. */
 const METHODS = [
@@ -47,20 +44,6 @@ const METHODS = [
   PaymentMethod.TRANSFER,
   PaymentMethod.ONLINE,
 ] as const;
-
-/**
- * An instant bound into raw SQL as text and read as UTC, never a Date
- * parameter: the timestamp columns have no zone and hold UTC (*Data and
- * migrations*), and a zoned value would be cast in the session's zone.
- */
-function utcInstant(at: Date): Prisma.Sql {
-  return Prisma.sql`(${at.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
-}
-
-/** A Postgres `bigint` sum as a number: exact far beyond any day's money. */
-function kobo(value: bigint | number | null): number {
-  return value === null ? 0 : Number(value);
-}
 
 /** The page and page size a report read asked for. */
 function pageOf(query: { page?: number; pageSize?: number }) {
@@ -121,22 +104,6 @@ function toPayment(row: PaymentRow): ReportPaymentResponse {
   };
 }
 
-/** One settled bill's lines of one department, as the Sales query sums them. */
-interface SalesLineSum {
-  id: string;
-  number: string;
-  department: Department;
-  channel: OrderChannel;
-  openedOn: string;
-  settledAt: string;
-  vatBps: number;
-  serviceBps: number;
-  discountKobo: number;
-  depositKobo: number;
-  lineDepartment: Department | null;
-  subtotal: bigint;
-}
-
 /**
  * Reports (plan §5.4, §10; card C8-1): JSON over a range of Lagos business
  * dates, computed on read from the stored rows the way the staff app's
@@ -175,43 +142,8 @@ export class ReportsService {
     const { page, pageSize } = pageOf(query);
     const period = reportPeriod(query, 'The sales report');
     const department = query.department ?? null;
-    const settledIn = Prisma.sql`
-          o."status" = 'SETTLED'
-      AND o."settledAt" >= ${utcInstant(period.start)}
-      AND o."settledAt" <  ${utcInstant(period.end)}`;
-
-    const sums = await this.prisma.$queryRaw<SalesLineSum[]>`
-      SELECT o."id", o."number",
-             o."department"::text AS "department",
-             o."channel"::text AS "channel",
-             o."businessDate"::text AS "openedOn",
-             to_char(o."settledAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "settledAt",
-             o."vatBps", o."serviceBps", o."discountKobo", o."depositKobo",
-             l."department"::text AS "lineDepartment",
-             COALESCE(SUM(l."qty"::bigint * l."unitPriceKobo"), 0)::bigint AS "subtotal"
-        FROM "Order" o
-        LEFT JOIN "OrderLine" l ON l."orderId" = o."id"
-       WHERE ${settledIn}
-       GROUP BY o."id", l."department"
-       ORDER BY o."createdAt", o."id", l."department"`;
-
-    // One bill per id, its subtotals by line department, in the bills' order.
-    const bills = new Map<
-      string,
-      { bill: SalesLineSum; subtotals: Map<Department, number> }
-    >();
-
-    for (const sum of sums) {
-      const held = bills.get(sum.id) ?? {
-        bill: sum,
-        subtotals: new Map<Department, number>(),
-      };
-
-      if (sum.lineDepartment !== null) {
-        held.subtotals.set(sum.lineDepartment, kobo(sum.subtotal));
-      }
-      bills.set(sum.id, held);
-    }
+    const settled = settledIn(period);
+    const bills = await settledBills(this.prisma, period);
 
     const rows: SalesOrderRowResponse[] = [];
     const byDepartment = new Map<
@@ -222,8 +154,8 @@ export class ReportsService {
       [Department.BAR, { totalKobo: 0, bills: 0 }],
     ]);
 
-    for (const { bill, subtotals } of bills.values()) {
-      const shares = departmentShares(bill, subtotals);
+    for (const bill of bills) {
+      const shares = departmentShares(bill, bill.subtotals);
       const shown: DepartmentShare[] =
         department === null
           ? shares
@@ -257,7 +189,7 @@ export class ReportsService {
       });
     }
 
-    const owed = await this.stillOwed(department);
+    const owed = await openBills(this.prisma, department);
     const fees = await this.prisma.$queryRaw<
       { kobo: bigint; orders: bigint }[]
     >`
@@ -265,12 +197,9 @@ export class ReportsService {
              COUNT(*) FILTER (WHERE w."feeKobo" > 0)::bigint AS "orders"
         FROM "OnlineOrder" w
         JOIN "Order" o ON o."id" = w."orderId"
-       WHERE ${settledIn}`;
+       WHERE ${settled}`;
 
-    const { byItem, byCategory } = await this.salesByItem(
-      settledIn,
-      department,
-    );
+    const { byItem, byCategory } = await this.salesByItem(settled, department);
 
     return {
       data: rows.slice((page - 1) * pageSize, page * pageSize),
@@ -288,64 +217,14 @@ export class ReportsService {
       })),
       vatKobo: rows.reduce((sum, row) => sum + row.vatKobo, 0),
       serviceKobo: rows.reduce((sum, row) => sum + row.serviceKobo, 0),
-      stillOwedKobo: owed.kobo,
-      openBills: owed.bills,
+      // The demo's Still Owed: every open bill of any date, by the bill's
+      // own department (open bills are the till's, one department each).
+      stillOwedKobo: owed.reduce((sum, bill) => sum + bill.balanceKobo, 0),
+      openBills: owed.length,
       deliveryFeesKobo: kobo(fees[0]?.kobo ?? null),
       deliveryOrders: kobo(fees[0]?.orders ?? null),
       byItem,
       byCategory,
-    };
-  }
-
-  /**
-   * The demo's Still Owed: every open bill (Open or Payment, any date) of
-   * the department chosen, what it still owes after part payments
-   * (`balanceDueKobo`), and how many there are. A bill's department is its
-   * own here: open bills are the till's, one department each.
-   */
-  private async stillOwed(
-    department: Department | null,
-  ): Promise<{ kobo: number; bills: number }> {
-    const open = await this.prisma.$queryRaw<
-      {
-        status: 'OPEN' | 'PAYMENT';
-        vatBps: number;
-        serviceBps: number;
-        discountKobo: number;
-        depositKobo: number;
-        subtotal: bigint;
-        paid: bigint;
-      }[]
-    >`
-      SELECT o."status"::text AS "status", o."vatBps", o."serviceBps",
-             o."discountKobo", o."depositKobo",
-             COALESCE((SELECT SUM(l."qty"::bigint * l."unitPriceKobo")
-                         FROM "OrderLine" l
-                        WHERE l."orderId" = o."id"), 0)::bigint AS "subtotal",
-             COALESCE((SELECT SUM(p."amountKobo")
-                         FROM "Payment" p
-                        WHERE p."orderId" = o."id"
-                          AND NOT p."reversed"), 0)::bigint AS "paid"
-        FROM "Order" o
-       WHERE o."status" IN ('OPEN', 'PAYMENT')
-         ${
-           department === null
-             ? Prisma.empty
-             : Prisma.sql`AND o."department" = ${department}::"Department"`
-         }`;
-
-    return {
-      kobo: open.reduce(
-        (sum, bill) =>
-          sum +
-          balanceDueKobo(
-            bill.status,
-            totalsFromSubtotal(kobo(bill.subtotal), bill).dueKobo,
-            kobo(bill.paid),
-          ),
-        0,
-      ),
-      bills: open.length,
     };
   }
 
@@ -358,7 +237,7 @@ export class ReportsService {
    * them from its menu.
    */
   private async salesByItem(
-    settledIn: Prisma.Sql,
+    settled: Prisma.Sql,
     department: Department | null,
   ): Promise<{
     byItem: SalesItemResponse[];
@@ -372,7 +251,7 @@ export class ReportsService {
              SUM(l."qty"::bigint * l."unitPriceKobo")::bigint AS "sales"
         FROM "OrderLine" l
         JOIN "Order" o ON o."id" = l."orderId"
-       WHERE ${settledIn}
+       WHERE ${settled}
          ${
            department === null
              ? Prisma.empty

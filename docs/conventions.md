@@ -2238,7 +2238,9 @@ They are here so the first card that builds it starts from the rule.
   the latest revision of every ref dated in the range (every revision of a
   ref carries its bill's date), in the order those revisions were written.
   One pure function, so the overview's Needs Attention count (C8) and the
-  report can never disagree.
+  report can never disagree. Both read through one loader
+  (`KitchenCrosscheckService.rows`, a range or every date): the report
+  over its range, `notMatchedCount()` over every date (*The overview*).
 - **A cash count's expected figure is the date's non-reversed `CASH`
   payments, refunds included, summed as `bigint` when the count is
   recorded, and the count keeps it** (plan §4.3; `src/cash/`). Payments are
@@ -2356,6 +2358,104 @@ They are here so the first card that builds it starts from the rule.
   row in the shared database would move its figures; the commands stamp
   the server's clock, and the suite is about how the reports read the
   records, not how the commands write them.
+- **"Settled in the range" and "still owed" are one query each
+  (`settledBills`, `openBills` in `src/reports/sales-records.ts`), shared
+  by the Sales report and the overview**, with `utcInstant` and `kobo`.
+  Two copies of either query would be two answers to "what did we sell
+  today", and a manager reads both screens side by side.
+
+## The overview *(from C8-1)*
+
+- **`GET /staff/overview?from&to` is open to every active staff member,
+  as the Overview page is (`canAccess`), and the role decides what comes
+  back** (plan §5.3, §6.1; `src/overview/`). `scope` is `FULL` for the
+  Owner and Managers (the manager overview, `overview.tsx`) and `BASIC`
+  for every other role (the staff app's staff `Overview` in
+  `workspace.tsx`). The demo shows the two screens to the same split.
+- **A manager gets only the widgets their saved layout shows
+  (`ShellService.overviewPreferences`: the Service preset when none is
+  saved), in the layout's order; a hidden widget is `null` and costs no
+  query.** The layout is already per person on the server (*Optimistic
+  concurrency*), so the poll computes what is on that person's screen and
+  nothing else. After `PUT /staff/me/preferences/overview` the screen reads
+  the overview again.
+- **Every other role gets the Service preset's eight widgets for today,
+  whatever `from` and `to` say, with plan §6.1's row filters:** a
+  Bartender's Settled Sales, Outstanding Bills and Open Orders are the
+  Bar's (*decision*: §6.1 says "Overview ✓ (Bar)"; the demo filtered only
+  the bills owed, and §6.1 is the approved record); Kitchen gets today's
+  kitchen entries (`kitchenEntries`) in place of sales, as the demo does.
+  The staff screen has no period, so a range would be a figure nobody
+  sees.
+- **Needs Attention lists a line only for a role whose page the line
+  opens, and counts what that page would show the reader** (the demo's
+  `canAccess(actor.role, x.page)` filter, then §6.1's row filters):
+  Purchase Requisitions and Waste Awaiting Review (Approvals; managers;
+  the approvals counts, `pendingCount()`); Kitchen Crosscheck (managers
+  only: *decision*, the Cashier opens Reports but may not read that
+  report); Open Stock Requests (Pending or Partially Issued, a Bartender's
+  or Kitchen user's own location, `scopedStockLocation`); Tasks in
+  Progress (not Done, as Tasks shows them to the reader, `visibleTasks`;
+  *decision*: only for roles that open Tasks, so a Waiter or Bartender is
+  never sent to a page that refuses them, the bell's rule).
+- **Kitchen Crosscheck counts every date's rows that are not Matched**, as
+  the demo's `crosscheck(s)` runs over its whole store: an exception stays
+  until someone puts it right, and a manager may record an entry for an
+  old date. It reuses the report's loader, never a second copy of the
+  comparison. *Measured (C8-1):* about 50 ms for a month of history
+  (3,100 dockets) and about 520 ms for a year (36,500); it grows with the
+  history. If it ever needs to be cheaper, bound it to the report's 366
+  days or count it in SQL with a parity test against `crosscheck()`; do
+  not hand-copy the rules.
+- **Settled Sales, the Sales Trend and Restaurant and Bar Sales read the
+  bills settled in the range by their Lagos settlement date
+  (`settledBills`); departments are each line's (`departmentShares`), as
+  the Sales report's are** (*decision*: the demo split by the bill's own
+  department, which is the same for every till bill; D30's web orders mix
+  both, and the overview must agree with the Sales report to the kobo). A
+  bill's total includes VAT and service and excludes the delivery fee
+  (Q21), the chart's own note.
+- **The trend is hourly for one day, daily up to 62 days and monthly
+  beyond, in Lagos time (`overview-trend.ts`, the demo's loop and labels:
+  `00:00`, `1 Oct`, `Oct 26` from `toLocaleDateString('en-GB', { timeZone:
+  'UTC', … })`).** A sale is filed by its Lagos hour or settlement date,
+  so 00:30 in Jos is the new day's `00`. The labels come from the server's
+  ICU; September is `Sep` or `Sept` by ICU version, as in browsers.
+- **Payment Methods is the non-reversed payments dated in the range on
+  the bills settled in the range, by method, in the order each method was
+  first taken** (the demo's `Map`): refunds and delivery fees included,
+  reservation credit excluded (it is not a payment). Bestselling Items is
+  the top five dishes by quantity, under the name first sold in the range,
+  ties by name (`localeCompare`).
+- **The "now" widgets ignore the range:** Outstanding Bills and Open
+  Orders are every open bill of any date (`openBills`, newest first, five
+  shown); Occupied Positions and Service at a Glance are the active tables
+  as Reception's floor shows them today (`floorStatus`, so a Checked In
+  booking holds a table as Reserved, the floor's rule); Expected and Next
+  Arrivals are today's Confirmed bookings by time, with no phone or email;
+  Low Stock is each Kitchen item's Kitchen balance and Bar item's Bar
+  balance below its minimum, lowest first, ties in the order added, eight
+  shown and the total; Tasks in Progress the six oldest not Done.
+- **Range rules are the reports' (`reportPeriod`, "The overview", at most
+  366 days)** (*decision*: the demo's custom range had no cap; one rule
+  for every range read keeps one set of sentences, and a year is the
+  longest range the reports read too).
+- **Cost: every widget is a fixed number of queries, whatever the data,
+  run one after another, never in parallel.** A poll must not hold all
+  three pooled connections the till needs. *Measured (C8-1, local
+  Postgres, a seeded month: 4,650 bills, 10,912 lines, 4,640 payments,
+  3,100 dockets):* the full layout is 25 queries (two of them the guard
+  and the layout); Today median 66 ms, This Month 114 ms, 31 days 136 ms;
+  five at once about 200 to 460 ms. The Service preset is 19 queries,
+  58 ms. The costly reads are the range's settled bills (about 45 ms for a
+  month) and the crosscheck count (about 50 ms); every other widget is
+  under 25 ms.
+- **`test/overview.e2e-spec.ts` runs on `createIsolatedDatabase` with a
+  fixed clock (12:00 in Jos on 21 October 2026) and writes its records
+  directly.** Its "now" widgets read the whole database (open bills,
+  tables, stock, tasks, the crosscheck over every date), so another
+  suite's row would move them; it retires the seeded tables and zeroes the
+  seeded stock minimums for the same reason.
 
 ## Reception: bookings, table sessions and the floor *(from C4)*
 

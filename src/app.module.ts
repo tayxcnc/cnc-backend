@@ -23,6 +23,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { OnlineOrdersModule } from './online-orders/online-orders.module';
 import { OrderingModule } from './ordering/ordering.module';
 import { OrdersModule } from './orders/orders.module';
+import { OverviewModule } from './overview/overview.module';
 import { PaymentsModule } from './payments/payments.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
@@ -74,6 +75,7 @@ import { WasteModule } from './waste/waste.module';
     KitchenModule,
     CashModule,
     ReportsModule,
+    OverviewModule,
     ReceptionModule,
     CustomerNotificationsModule,
     EnquiriesModule,

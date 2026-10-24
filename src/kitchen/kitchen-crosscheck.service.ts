@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { formatIsoDate } from '../common/calendar-date';
+import { Prisma } from '../../generated/cnc-client';
 import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
@@ -18,18 +18,22 @@ import {
   CrosscheckStatus,
   type CrosscheckDocket,
   type CrosscheckEntry,
+  type CrosscheckRow,
 } from './kitchen-crosscheck';
 import { parseKitchenLines, type KitchenLine } from './kitchen-rules';
 
-const ENTRY_COLUMNS = {
-  docketRef: true,
-  orderId: true,
-  revision: true,
-  businessDate: true,
-  lines: true,
-  createdAt: true,
-  order: { select: { number: true } },
-} as const;
+/** Business dates as `YYYY-MM-DD`, inclusive; null for every date. */
+type CrosscheckRange = { from: string; to: string } | null;
+
+/** A kitchen entry as the crosscheck's raw reads return it. */
+interface EntryRow {
+  docketRef: string;
+  orderId: string;
+  orderNumber: string;
+  revision: number;
+  businessDate: string;
+  lines: Prisma.JsonValue;
+}
 
 /**
  * The Kitchen Crosscheck report (plan §7.10, §10; card C4-6), computed on
@@ -41,8 +45,10 @@ const ENTRY_COLUMNS = {
  * Rows come in the order the latest revisions were written (the demo's
  * list order), then the unexplained entries in the order they were
  * recorded. The comparison rules are read as they stand now, as the demo
- * reads them. C8's report screen and the overview's Needs Attention count
- * (`notMatched`) read this.
+ * reads them. The report screen reads `report`; the overview's Needs
+ * Attention count reads `notMatchedCount`, over every date, as the demo's
+ * `crosscheck(s)` runs over its whole store (card C8-1). Both go through
+ * one loader, so the count is always the report's own `notMatched`.
  */
 @Injectable()
 export class KitchenCrosscheckService {
@@ -52,75 +58,9 @@ export class KitchenCrosscheckService {
     const page = query.page ?? DEFAULT_PAGE;
     const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
     const range = reportPeriod(query, 'The kitchen crosscheck');
-    // Bound as `YYYY-MM-DD` text, never a Date (see `DocketsService.list`).
     const from = range.fromIso;
     const to = range.toIso;
-
-    // Every revision of a ref carries its bill's business date, so the
-    // latest revision of each ref in the range is the latest of the ref.
-    const latest = await this.prisma.$queryRaw<{ id: string }[]>`
-      SELECT DISTINCT ON (d."ref") d."id"
-        FROM "Docket" d
-       WHERE d."businessDate" BETWEEN ${from}::date AND ${to}::date
-       ORDER BY d."ref", d."revision" DESC`;
-    const docketRows = await this.prisma.docket.findMany({
-      where: { id: { in: latest.map((row) => row.id) } },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: {
-        ref: true,
-        orderId: true,
-        revision: true,
-        businessDate: true,
-        items: true,
-        order: { select: { number: true } },
-      },
-    });
-
-    const dockets: CrosscheckDocket[] = docketRows.map((row) => ({
-      ref: row.ref,
-      orderId: row.orderId,
-      orderNumber: row.order.number,
-      businessDate: formatIsoDate(row.businessDate),
-      revision: row.revision,
-      items: parseDocketItems(row.items).map((item) => ({
-        menuItemId: item.menuItemId,
-        qty: item.qty,
-      })),
-    }));
-
-    const matched = await this.prisma.kitchenEntry.findMany({
-      where: { docketRef: { in: dockets.map((docket) => docket.ref) } },
-      select: ENTRY_COLUMNS,
-    });
-    // An entry dated in the range whose ref no docket of any date carries.
-    const orphanIds = await this.prisma.$queryRaw<{ id: string }[]>`
-      SELECT e."id"
-        FROM "KitchenEntry" e
-       WHERE e."businessDate" BETWEEN ${from}::date AND ${to}::date
-         AND NOT EXISTS (
-               SELECT 1 FROM "Docket" d WHERE upper(d."ref") = upper(e."docketRef"))`;
-    const orphans = await this.prisma.kitchenEntry.findMany({
-      where: { id: { in: orphanIds.map((row) => row.id) } },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: ENTRY_COLUMNS,
-    });
-
-    const entries: CrosscheckEntry[] = [...matched, ...orphans].map((row) => ({
-      docketRef: row.docketRef,
-      orderId: row.orderId,
-      orderNumber: row.order.number,
-      businessDate: formatIsoDate(row.businessDate),
-      revision: row.revision,
-      lines: parseKitchenLines(row.lines),
-    }));
-
-    const menuItemIds = [
-      ...new Set(
-        dockets.flatMap((docket) => docket.items.map((i) => i.menuItemId)),
-      ),
-    ];
-    const rules = await readKitchenMappings(this.prisma, menuItemIds);
-    const rows = crosscheck(dockets, entries, rules);
+    const rows = await this.rows({ from, to });
 
     const names = await this.stockNames(
       rows.flatMap((row) => [...row.expected, ...row.actual]),
@@ -143,9 +83,106 @@ export class KitchenCrosscheckService {
       total: rows.length,
       from,
       to,
-      notMatched: rows.filter((row) => row.status !== CrosscheckStatus.MATCHED)
-        .length,
+      notMatched: notMatched(rows),
     };
+  }
+
+  /**
+   * The overview's Needs Attention "Kitchen Crosscheck" count: the rows of
+   * every date whose result is not Matched (the demo counts
+   * `crosscheck(s)` over its whole store). An exception stays counted
+   * until it is put right, however old: a manager may still record a
+   * kitchen entry for an earlier date.
+   */
+  async notMatchedCount(): Promise<number> {
+    return notMatched(await this.rows(null));
+  }
+
+  /**
+   * The crosscheck's rows for a range of business dates, or for every
+   * date. Five reads, whatever the number of dockets: the latest revisions,
+   * the entries under their refs, the entries no docket explains, the
+   * rules, and nothing per row.
+   */
+  private async rows(range: CrosscheckRange): Promise<CrosscheckRow[]> {
+    // Bound as `YYYY-MM-DD` text, never a Date (see `DocketsService.list`).
+    const docketIn = (alias: string) =>
+      range === null
+        ? Prisma.sql`TRUE`
+        : Prisma.sql`${Prisma.raw(alias)}."businessDate" BETWEEN ${range.from}::date AND ${range.to}::date`;
+
+    // Every revision of a ref carries its bill's business date, so the
+    // latest revision of each ref in the range is the latest of the ref.
+    const docketRows = await this.prisma.$queryRaw<
+      {
+        ref: string;
+        orderId: string;
+        orderNumber: string;
+        revision: number;
+        businessDate: string;
+        items: Prisma.JsonValue;
+      }[]
+    >`
+      SELECT x."ref", x."orderId", x."orderNumber", x."revision",
+             x."businessDate", x."items"
+        FROM (SELECT DISTINCT ON (d."ref")
+                     d."id", d."ref", d."orderId", o."number" AS "orderNumber",
+                     d."revision", d."businessDate"::text AS "businessDate",
+                     d."items", d."createdAt"
+                FROM "Docket" d
+                JOIN "Order" o ON o."id" = d."orderId"
+               WHERE ${docketIn('d')}
+               ORDER BY d."ref", d."revision" DESC) x
+       ORDER BY x."createdAt", x."id"`;
+
+    const dockets: CrosscheckDocket[] = docketRows.map((row) => ({
+      ref: row.ref,
+      orderId: row.orderId,
+      orderNumber: row.orderNumber,
+      businessDate: row.businessDate,
+      revision: row.revision,
+      items: parseDocketItems(row.items).map((item) => ({
+        menuItemId: item.menuItemId,
+        qty: item.qty,
+      })),
+    }));
+
+    // The entries filed under a ref one of those dockets carries.
+    const matched = await this.prisma.$queryRaw<EntryRow[]>`
+      SELECT e."docketRef", e."orderId", o."number" AS "orderNumber",
+             e."revision", e."businessDate"::text AS "businessDate", e."lines"
+        FROM "KitchenEntry" e
+        JOIN "Order" o ON o."id" = e."orderId"
+       WHERE EXISTS (SELECT 1 FROM "Docket" d
+                      WHERE d."ref" = e."docketRef" AND ${docketIn('d')})`;
+    // An entry dated in the range whose ref no docket of any date carries.
+    const orphans = await this.prisma.$queryRaw<EntryRow[]>`
+      SELECT e."docketRef", e."orderId", o."number" AS "orderNumber",
+             e."revision", e."businessDate"::text AS "businessDate", e."lines"
+        FROM "KitchenEntry" e
+        JOIN "Order" o ON o."id" = e."orderId"
+       WHERE ${docketIn('e')}
+         AND NOT EXISTS (
+               SELECT 1 FROM "Docket" d WHERE upper(d."ref") = upper(e."docketRef"))
+       ORDER BY e."createdAt", e."id"`;
+
+    const entries: CrosscheckEntry[] = [...matched, ...orphans].map((row) => ({
+      docketRef: row.docketRef,
+      orderId: row.orderId,
+      orderNumber: row.orderNumber,
+      businessDate: row.businessDate,
+      revision: row.revision,
+      lines: parseKitchenLines(row.lines),
+    }));
+
+    const menuItemIds = [
+      ...new Set(
+        dockets.flatMap((docket) => docket.items.map((i) => i.menuItemId)),
+      ),
+    ];
+    const rules = await readKitchenMappings(this.prisma, menuItemIds);
+
+    return crosscheck(dockets, entries, rules);
   }
 
   private async stockNames(
@@ -162,4 +199,9 @@ export class KitchenCrosscheckService {
 
     return new Map(items.map((item) => [item.id, item.name]));
   }
+}
+
+/** How many rows are anything but Matched. */
+function notMatched(rows: readonly CrosscheckRow[]): number {
+  return rows.filter((row) => row.status !== CrosscheckStatus.MATCHED).length;
 }
