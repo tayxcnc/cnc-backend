@@ -30,7 +30,9 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Business dates, `Africa/Lagos`, `wat.ts` | Contract conventions |
 | Enums on the wire and the frontend adapters | Contract conventions |
 | Pagination shape | Contract conventions |
-| Error body, messages kept byte for byte, status codes | Errors |
+| Error body, messages kept byte for byte, status codes, the database-busy 503 | Errors |
+| `npm run load:till`, where it may run (never staging by an agent), the mix, the generator's pause, the measured figures | Load testing (and `docs/load-testing.md`) |
+| The Backend Brief §12 acceptance walk, the 107 demo tests' map (`docs/demo-tests-map.md`), the no-leak sweep over every route | The acceptance list |
 | `version` and the stale-write 409 | Optimistic concurrency |
 | `Idempotency-Key` and its CORS consequence | Idempotency |
 | The `CNC_` prefix, the `TAY_` refusal, `check:env-names` | Configuration |
@@ -104,6 +106,7 @@ npm test                 # jest unit tests
 npm run test:e2e         # jest, test/jest-e2e.json (locally: -- --maxWorkers=2)
 npm run lint             # eslint --fix
 npm run check:env-names  # fails on any env read that is not CNC_*, PORT or NODE_ENV
+npm run load:till        # the C8-4 load test; read docs/load-testing.md first
 npm run mock             # prism mock against openapi-cnc.json, port 4014
 
 npm run db:generate      # prisma generate, to generated/cnc-client
@@ -286,13 +289,18 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      sweep's boundaries, the open shift, batches;
                      account-deletion: nothing but the audit log keeps
                      a deleted person's details, and its read withholds
-                     them),
+                     them; c8-acceptance: the Backend Brief §12 list,
+                     one test per line, the sweep of every route for
+                     leaks),
                      paystack-webhooks.ts, staff-bell.ts (readBell),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,
                      shared-rows-lock.ts, test-images.ts
-scripts/             check-env-names.ts
+scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
+                     load:till, C8-4)
+docs/                conventions.md; load-testing.md (C8-4);
+                     demo-tests-map.md (the 107 demo tests, C8-6)
 ```
 
 ## Working style

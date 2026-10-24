@@ -147,6 +147,17 @@ They are here so the first card that builds it starts from the rule.
   field's own sentence once ("Enter a valid kitchen date.", "Enter a valid
   reconciliation date."); the docket, kitchen and report queries share it,
   so no two routes disagree on what a date is.
+- **The database not answering in time is `503` "CNC is busy right now.
+  Wait a moment and try again." with `Retry-After: 2`, never the generic
+  500** (`AllExceptionsFilter`, from C8-4): Prisma's P2024 (no pool
+  connection in time), P2028 (a transaction that could not start within its
+  wait or ran past its timeout, rolled back) and `pg`'s own "timeout
+  exceeded when trying to connect" (matched by its exact message). The C8-4
+  load test found them as 500s during a stall; nothing was written in any
+  of the three, every money and booking write carries an Idempotency-Key,
+  so trying again is the right answer and the client is told so. One
+  warning line with the code, never Prisma's message (it can name the
+  query). Any other database error stays the generic 500.
 
 ## Optimistic concurrency
 
@@ -3570,6 +3581,89 @@ They are here so the first card that builds it starts from the rule.
   payment never becomes one without a person. A new state rather than
   `FAILED`, because `FAILED` is settleable and a replayed report would
   hold it again.
+
+## Load testing *(from C8-4)*
+
+- **`npm run load:till` (`scripts/load/till-and-booking.ts`) is plain
+  Node: `fetch` (undici, in Node 22) and `pg` for the connection sampler,
+  so it adds no package.** A load tool pinned for one card is a dependency
+  to keep current for nothing else. How to run it, and the founder's steps
+  for staging, are in `docs/load-testing.md`.
+- **It runs only against a backend started locally on a throwaway
+  database, created and dropped for the run, or against CNC staging by the
+  founder with TAY idle** (plan §19, risk 1: the shared db-f1-micro allows
+  about 25 connections and TAY alone can open 40). Never against
+  `cnc_db` or `cnc_test`, whose rows other work reads; never against
+  production. The connection sampler (`CNC_LOAD_DB_URL`) refuses anything
+  but a local database (`databaseTarget`).
+- **The mix is the venue's busy hour, compressed:** cashiers opening,
+  filling, sending and settling Restaurant bills in cash; Reception reading
+  the floor, booking and reading the day; website guests reading
+  availability and booking; managers and cashiers polling the bell, the
+  overview and Online Orders. Restaurant dishes only, because a Bar sale is
+  refused without Bar stock and a load test must not count stock. Bookings
+  are 400 days or more ahead, one table and date each, cancelled at the
+  end; bills stay, because money records are never deleted.
+- **It reports how long the load generator itself was paused** (a 100 ms
+  timer's lateness). On the founder's 8 GB machine a run was seen paused
+  for 15.9 s by memory pressure, and every timing and error in such a
+  window is the machine's, not the server's. A run whose pause is more
+  than a second is read with that in mind.
+- **Measured locally (2026-10-24, two instances on one throwaway database,
+  Postgres 16 on the same machine).** The default mix (4 cashiers, 1
+  receptionist, 2 website guests, 4 pollers every second, 60 s): 42,120
+  requests, 691 a second, p50 9 ms, p95 23 ms, p99 38 ms, no errors, the
+  generator never paused; the database held at most 6 client connections,
+  exactly the pools' 3 × 2. A heavier mix (8, 2, 4 and 8 pollers every
+  half second) during a 15.9 s machine stall: 514 a second, p50 17 ms,
+  p95 65 ms, p99 121 ms, 13 errors all inside the stall, 6 connections at
+  most. The errors were transaction and pool timeouts answered 500: the
+  defect fixed in *Errors* (now 503 with `Retry-After`). The default mix
+  again after the fix: 37,597 requests, 617 a second, p50 9 ms, p95 27 ms,
+  p99 53 ms, no errors, 6 connections at most.
+- **The pool cap holds under load: CNC never exceeded 3 connections an
+  instance.** Each instance held its three open for the whole run (the
+  pool keeps an idle one 300 s), and a fourth concurrent query waits in
+  the pool (up to 5 s, then 503) rather than opening a connection the
+  shared instance does not have. The overview poll is the slowest read (p50 88 ms with the day's
+  3,600 test bills) and grows with the day's bills, as *The overview*
+  records.
+- **Not measured: CNC staging.** Cloud Run, the Cloud SQL proxy and the
+  shared db-f1-micro (with TAY idle) are the founder's run.
+
+## The acceptance list *(from C8-6)*
+
+- **`test/c8-acceptance.e2e-spec.ts` runs the Backend Brief's §12 list,
+  one test per line in the brief's order, on its own database with the
+  real seeds**, with the plan's two restatements: line 1 holds
+  `docs/demo-tests-map.md` to the specs (107 rows, the suites' counts,
+  every named spec and test title present), and line 3 compares the
+  public menu, ordering config and quote with the staff menu and settings
+  through the API. A test per line makes a failure name the promise that
+  broke.
+- **The 107 demo tests are 97 backend tests and 10 browser-only ones**
+  (`docs/demo-tests-map.md`): the staff app's browser-storage and file
+  tests have no server counterpart and stay in its own suite. Where a demo
+  test's assertions are split over several backend tests, the map lists
+  each; no demo test needed a new port in C8-6.
+- **"No API response contains card numbers, sign-in codes or other
+  customers' data" is tested by calling every route in the published
+  OpenAPI document as two signed-in customers, every staff role and an
+  anonymous caller: every GET with the walk's real ids, every write with
+  an empty body, plus every response the walk received.** Searched for: a
+  13 to 19 digit Luhn-valid run (not a decimal's digits), every sign-in
+  code mailed, every stored code, password and refresh-token hash and any
+  `*Hash` field, every refresh token set in a cookie, the other customer's
+  id, email, phone and street, and either customer's contact in any
+  response to the Waiter, Bartender, Kitchen, Storekeeper or nobody (plan
+  §6.1 gives those roles no page with a customer's contact; Reception, the
+  Cashier and managers read them by design). The search is proved by
+  planting each kind once. Writes that end the caller's session or account
+  are left out of the sweep; their suites prove them.
+- **A checkout's reference is the confirmation page's capability**: each
+  customer reads only their own in the sweep, and a guessed reference
+  finds nothing. The reference is 122 random bits (*Online checkout*), so
+  holding it is what lets the page show the name and address.
 
 ## CORS
 
