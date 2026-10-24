@@ -30,6 +30,7 @@ import {
   createIsolatedDatabase,
   type IsolatedDatabase,
 } from './isolated-database';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -378,15 +379,9 @@ describe('the C4 gate (e2e)', () => {
   }
 
   async function bell(actor: Actor) {
-    const response = await request(server())
-      .get('/api/v1/staff/notifications')
-      .query({ pageSize: 100 })
-      .set(as(actor))
-      .expect(200);
-
-    return (
-      response.body as { data: { id: string; title: string; detail: string }[] }
-    ).data.filter((item) => item.id.startsWith(`free:${loungeTs1}:`));
+    return (await readBell(server(), as(actor))).data.filter((item) =>
+      item.id.startsWith(`free:${loungeTs1}:`),
+    );
   }
 
   it('1. the Owner records opening balances by stock count, and sets a comparison rule', async () => {

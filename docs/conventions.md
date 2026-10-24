@@ -1601,8 +1601,9 @@ They are here so the first card that builds it starts from the rule.
   a role whose pages include Tasks** (the demo's `staffNotifications`; the C5
   gate's step 2). The page rule keeps every bell item openable. The demo
   hides a manager's own review tasks while the approvals alert is on,
-  because the Purchase Approval item stands in for them; that item is C8-2's,
-  so until it exists the review task shows as an assigned task.
+  because the Purchase Approval item stands in for them. *From C8-2 the
+  Purchase Approval item exists and the rule is applied (see* The staff
+  bell*); a review task shows only while the approvals alert is off.*
 
 ## Waste *(from C5)*
 
@@ -1776,7 +1777,8 @@ They are here so the first card that builds it starts from the rule.
 - **The demo's "manager bell contains pending approvals and removes each
   when it is resolved" is ported onto this read
   (`test/approvals.e2e-spec.ts`); the bell item itself is C8-2's**
-  (plan §9.1), and the C5 gate does not need it.
+  (plan §9.1), and the C5 gate does not need it. *Built in C8-2:* see
+  *The staff bell*.
 
 ## Tasks *(from C5)*
 
@@ -2457,6 +2459,85 @@ They are here so the first card that builds it starts from the rule.
   suite's row would move them; it retires the seeded tables and zeroes the
   seeded stock minimums for the same reason.
 
+## The staff bell *(from C8-2)*
+
+- **`GET /staff/notifications` ports `staff/lib/notifications.ts` item by
+  item, in the demo's order and words, with the items built before it in
+  the places C7-7 gave them** (plan §9.1; `src/notifications/`). The
+  order: Purchase Approval, Waste Approval, Low Stock, Unsettled From a
+  Previous Day, Online Order, New Web Docket, Checkout Needs Attention,
+  Stock Request, Free Table Reminder, Expected Guest Arrival, Assigned
+  Task; within a kind, oldest first (the demo's lists in the order they
+  were added; Low Stock by item, the Store before the item's own
+  location). The screen shows the list as it comes, so the order is the
+  contract.
+- **Who gets what is the demo's, with §9.1's table:** approvals for
+  managers; Low Stock for managers and the Storekeeper; unsettled bills
+  for managers and the Cashier; online orders for the Cashier; the New
+  Web Docket for the Kitchen and managers; held checkouts for managers;
+  open stock requests (Pending or Partially Issued, every location) for
+  the Storekeeper only; the Free Table Reminder and arrivals for
+  Reception and managers; tasks for whoever they are assigned to. A
+  Bartender and a Waiter get none of these, as in the demo.
+- **Every kind is offered only to a role whose `pagesFor` includes the
+  kind's page, so every item opens.** The role conditions above already
+  say so; the filter keeps it true if a role's pages change, and it is
+  what keeps a task held by an account re-roled to Waiter off a bell
+  whose Tasks page would refuse it.
+- **The four switches are `Settings.alertApprovals`, `alertLowStock`,
+  `alertUnsettled` and `alertArrivals`, read on every poll** (the demo's
+  `ALERTS`, saved by `settings.save`). A switch hides its kind for every
+  reader at the next poll. The Free Table Reminder, the online items,
+  stock requests and tasks have no switch, as in the demo.
+- **While the approvals alert is on, a manager's bell leaves out a task
+  linked to a purchase whose title starts "Review"** (the demo's rule):
+  the Purchase Approval already asks for that decision, and two items
+  for one decision would be counted twice on the badge. With the alert
+  off the review task comes back, because then it is the only reminder.
+  Other purchase tasks ("Receive goods for …") always show.
+- **Low Stock follows `isLow` and the demo's loop: every stock item,
+  active or not, at the Store (under one pack) and at its own location
+  (the Kitchen, or the Bar for a Bar item; under its reorder level), a
+  missing balance being zero.** The detail is the demo's: "Rice · 0 bags
+  left" at the Store, "Rice · 3 portions left, reorder level 15"
+  elsewhere, with the demo's plural (an "s" unless exactly one). The
+  Bartender is not given it, as in the demo; the Stock screen shows the
+  Bar its own low flags.
+- **Unsettled From a Previous Day is an Open or Payment bill
+  (`UNSETTLED_ORDER_STATUSES`) whose business date is before today's in
+  Lagos (`watToday`)**, both departments; Expected Guest Arrival is a
+  booking Confirmed for today, "Name · 19:00 · 4 guests" (the demo says
+  "guests" for one too), in the order the bookings were taken.
+- **The filters are the owning modules' own** (`AWAITING_APPROVAL` from
+  Purchasing, the Approvals count's; `OPEN_REQUEST_STATUSES`, which the
+  overview now uses too; `UNSETTLED_ORDER_STATUSES`;
+  `ACTIVE_ONLINE_STATUSES`), so "pending" on the bell and on the screen it
+  opens are one definition. The new items' words are
+  `src/notifications/staff-bell-items.ts`.
+- **A poll is bounded by construction: one settings read, then for each
+  kind the reader gets an indexed `COUNT` and, only for the kinds the
+  requested page overlaps, an `OFFSET`/`LIMIT` read** (`pageOfSources`,
+  `bell-sources.ts`). `total` stays exact and at most `pageSize` (100 at
+  most) rows are read, whatever is pending; the kinds run one after
+  another, never in parallel, so a poll holds one pooled connection.
+  Every signed-in device polls every 30 seconds, and a bell that loaded
+  every row would cost what the backlog is. The Free Table Reminder is
+  loaded whole (at most one per table). *Not measured:* the New Web Docket
+  count checks every web docket of a day not closed against the kitchen
+  entries; a day the kitchen never closes keeps its dockets in that
+  count. If it ever shows in a poll's time, bound it to the open kitchen
+  days rather than change what rings.
+- **`test/staff-bell.e2e-spec.ts` runs on `createIsolatedDatabase` with a
+  fixed clock and the real seeds**, because the bell reads the whole
+  database: it gives the seeded Bar items one Store pack and a zero
+  reorder level so only its own items are low, places the web order and
+  the held checkout through the real checkout and the signed fake
+  webhook, and checks every role's whole bell, each switch, the paging
+  and the items leaving. **A suite looking for one bell item reads every
+  page (`test/staff-bell.ts`, `readBell`)**: with the seeds, a manager's
+  or the Storekeeper's bell starts with a Low Stock item for every seeded
+  Bar item (none holds stock), more than one page.
+
 ## Reception: bookings, table sessions and the floor *(from C4)*
 
 - **Every booking, whatever its channel, is made by
@@ -2517,8 +2598,9 @@ They are here so the first card that builds it starts from the rule.
   minutes under an hour (D37), and served on `GET /staff/notifications`**
   (`src/notifications/`). The bell is C8-2's card, but the C4 gate's step
   11 needs the reminder, so the route starts with this one item and C8-2
-  adds the rest of plan §9.1 beside it, each with its own roles; the floor's
-  seating carries `reminderDue` for the same rule.
+  adds the rest of plan §9.1 beside it, each with its own roles (done:
+  *The staff bell*); the floor's seating carries `reminderDue` for the
+  same rule.
 - **A guest's phone is kept as `guestPhone` writes it: a Nigerian mobile
   number in its one form (`0` plus 10 digits) however it was typed, any
   other number as typed; a guest's email is trimmed and lower-cased.** The

@@ -63,11 +63,18 @@ export class StaffNotificationsController {
     operationId: 'staffNotifications',
     summary: 'The staff bell',
     description:
-      'The reader’s pending items, computed now. Today it carries the ' +
-      'active online orders (Cashier), the New Web Docket (Kitchen and ' +
-      'managers), Checkout Needs Attention (managers), the Free Table ' +
-      'Reminder (Reception and managers) and the reader’s assigned tasks; ' +
-      'card C8-2 adds the rest of plan §9.1.',
+      'The reader’s pending items, computed now, in this order (plan ' +
+      '§9.1): Purchase Approval and Waste Approval (managers; approvals ' +
+      'alert), Low Stock (managers and the Storekeeper; low-stock alert), ' +
+      'Unsettled From a Previous Day (managers and the Cashier; unsettled ' +
+      'alert), Online Order (Cashier), New Web Docket (Kitchen and ' +
+      'managers), Checkout Needs Attention (managers), Stock Request ' +
+      '(Storekeeper), Free Table Reminder (Reception and managers), ' +
+      'Expected Guest Arrival (Reception and managers; arrivals alert) and ' +
+      'the reader’s assigned tasks (a manager’s purchase review tasks are ' +
+      'left out while the approvals alert is on). Every item opens a page ' +
+      'the reader can open. `total` counts every pending item; only the ' +
+      'page asked for is read.',
   })
   @ApiResponse({ status: 200, type: StaffNotificationPageResponse })
   @ApiResponse({

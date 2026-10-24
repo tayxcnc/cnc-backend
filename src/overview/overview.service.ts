@@ -6,7 +6,6 @@ import {
   ReservationStatus,
   StaffRole,
   StockLocation,
-  StockRequestStatus,
   TaskStatus,
   TableSessionStatus,
 } from '../../generated/cnc-client';
@@ -37,6 +36,7 @@ import {
 import { ShellService } from '../shell/shell.service';
 import { pagesFor } from '../shell/staff-pages';
 import { scopedStockLocation } from '../stock/stock-locations';
+import { OPEN_REQUEST_STATUSES } from '../stock/stock-request-rules';
 import { visibleTasks } from '../tasks/task-rules';
 import { WasteService } from '../waste/waste.service';
 import {
@@ -463,12 +463,7 @@ export class OverviewService {
 
         return this.prisma.stockRequest.count({
           where: {
-            status: {
-              in: [
-                StockRequestStatus.PENDING,
-                StockRequestStatus.PARTIALLY_ISSUED,
-              ],
-            },
+            status: { in: [...OPEN_REQUEST_STATUSES] },
             ...(location === undefined ? {} : { location }),
           },
         });

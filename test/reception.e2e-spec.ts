@@ -61,6 +61,7 @@ import {
   createIsolatedDatabase,
   type IsolatedDatabase,
 } from './isolated-database';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 interface Booking {
@@ -348,13 +349,7 @@ describe('Reception (e2e)', () => {
   }
 
   async function bell(role: StaffRole): Promise<BellItem[]> {
-    const response = await request(server())
-      .get('/api/v1/staff/notifications')
-      .query({ pageSize: 100 })
-      .set(auth(role))
-      .expect(200);
-
-    return (response.body as { data: BellItem[] }).data;
+    return (await readBell(server(), auth(role))).data;
   }
 
   async function history(ref: string) {

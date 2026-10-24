@@ -134,8 +134,12 @@ function auditLines(lines: readonly CheckedLine[]) {
   }));
 }
 
-/** A requisition awaiting a decision: Pending and not archived. */
-const AWAITING_APPROVAL = {
+/**
+ * A requisition awaiting a decision: Pending and not archived. Exported for
+ * the staff bell's Purchase Approval items, so the bell and the Approvals
+ * count mean the same requisitions.
+ */
+export const AWAITING_APPROVAL = {
   status: PurchaseStatus.PENDING,
   archived: false,
 } satisfies Prisma.PurchaseWhereInput;

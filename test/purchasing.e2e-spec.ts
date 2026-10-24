@@ -52,6 +52,7 @@ import {
   createIsolatedDatabase,
   type IsolatedDatabase,
 } from './isolated-database';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -311,13 +312,7 @@ describe('Vendors and purchases (e2e)', () => {
   }
 
   async function bell(actor: Actor): Promise<BellItem[]> {
-    const response = await request(server())
-      .get('/api/v1/staff/notifications')
-      .query({ pageSize: 100 })
-      .set(as(actor))
-      .expect(200);
-
-    return (response.body as { data: BellItem[] }).data;
+    return (await readBell(server(), as(actor))).data;
   }
 
   async function storeBalance(stockItemId: string): Promise<number> {
@@ -641,11 +636,23 @@ describe('Vendors and purchases (e2e)', () => {
         assignedToId: staffId.manager,
         raisedById: staffId.storekeeper,
       });
+      // While the approvals alert is on (the default), the manager's bell
+      // asks for the decision once, as a Purchase Approval, and leaves the
+      // review task off (the demo's rule, C8-2).
+      const managerBell = await bell('manager');
+
       expect(
-        (await bell('manager')).some(
-          (i) => i.detail === review.title && i.category === 'Task',
+        managerBell.some(
+          (i) =>
+            i.title === 'Purchase Approval' &&
+            i.detail.startsWith(`${purchase.number} · `),
         ),
       ).toBe(true);
+      expect(
+        managerBell.some(
+          (i) => i.detail === review.title && i.category === 'Task',
+        ),
+      ).toBe(false);
 
       const entry = await prisma.auditLog.findFirstOrThrow({
         where: { ref: purchase.number },

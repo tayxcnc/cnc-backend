@@ -36,6 +36,7 @@ import {
   createIsolatedDatabase,
   type IsolatedDatabase,
 } from './isolated-database';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -819,15 +820,7 @@ describe('Tasks (e2e)', () => {
       });
 
       const bell = async () =>
-        (
-          (
-            await request(server())
-              .get('/api/v1/staff/notifications')
-              .query({ pageSize: 100 })
-              .set(as('cashier'))
-              .expect(200)
-          ).body as { data: { id: string }[] }
-        ).data.map((item) => item.id);
+        (await readBell(server(), as('cashier'))).data.map((item) => item.id);
 
       expect(await bell()).toContain(`task:${task.id}`);
       await save('cashier', task, { status: 'DONE' }).expect(200);

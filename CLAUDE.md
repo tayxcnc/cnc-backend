@@ -50,6 +50,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Release rows: a refused card refund given back to the Daily Approval Limit (C8-0) | Money controls and the audit log; Staff Online Orders |
 | The nine reports: the shared period, Lagos day bounds, paging, bigint sums, departments by line, Q21's delivery line, who reads which; `settledBills`/`openBills` | Reports |
 | `GET /staff/overview`: manager vs staff overview, the layout deciding what is computed, each role's rows, Needs Attention, the trend's interval, the crosscheck over every date, the measured cost | The overview |
+| `GET /staff/notifications`: the bell's items, order and words, who gets which, the four alert switches, the review-task rule, the bounded poll, `readBell` in tests | The staff bell |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
@@ -224,9 +225,10 @@ src/
                      (CustomerReservationsService), the customer link
                      (customer-link.ts), the booking emails and in-app items
                      (ReservationMail), the reminders (ReservationRemindersService)
-  notifications/     GET /staff/notifications, the staff bell: the online
-                     items (C7-7), the Free Table Reminder, assigned tasks
-                     (C8-2 completes it)
+  notifications/     GET /staff/notifications, the staff bell (C8-2): every
+                     plan §9.1 item in the demo's order, behind the alert
+                     switches; the new items' words (staff-bell-items.ts),
+                     the bounded pager over the kinds (bell-sources.ts)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
                      (exported to overview/)
@@ -270,8 +272,10 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      midnight, who reads which; overview: every
                      widget's figures, each role's overview, the trend
                      at 1, 62 and 63 days; money-control: the
-                     ledger, its lock, append-only, release rows),
-                     paystack-webhooks.ts,
+                     ledger, its lock, append-only, release rows;
+                     staff-bell: every role's bell, each alert switch,
+                     the paging, items leaving),
+                     paystack-webhooks.ts, staff-bell.ts (readBell),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,
