@@ -2688,7 +2688,17 @@ They are here so the first card that builds it starts from the rule.
   longest range the reports read too).
 - **Cost: every widget is a fixed number of queries, whatever the data,
   run one after another, never in parallel.** A poll must not hold all
-  three pooled connections the till needs. *Measured (C8-1, local
+  three pooled connections the till needs. A fixed number of queries is
+  not a fixed cost: each read's time follows the rows it must reach, so
+  every range read goes through an index on what it filters by (the
+  settled bills by `Order(status, settledAt)`, C8 review) and the one
+  read without a range, the crosscheck count, is bounded to a year.
+  *Measured (C8 review, local Postgres 16, a year of history: 54,900
+  settled bills, 109,800 lines):* the settled bills query for today took
+  1.3 to 1.6 ms through `Order_status_settledAt_idx` and 11.6 to 31.8 ms
+  scanning every bill without it, a cost that grew with every day of
+  history; 25 days took 20 to 28 ms with it. That is the query alone,
+  not the whole poll. *Measured (C8-1, local
   Postgres, a seeded month: 4,650 bills, 10,912 lines, 4,640 payments,
   3,100 dockets):* the full layout is 25 queries (two of them the guard
   and the layout); Today median 66 ms, This Month 114 ms, 31 days 136 ms;
@@ -3692,8 +3702,13 @@ They are here so the first card that builds it starts from the rule.
   pool keeps an idle one 300 s), and a fourth concurrent query waits in
   the pool (up to 5 s, then 503) rather than opening a connection the
   shared instance does not have. The overview poll is the slowest read (p50 88 ms with the day's
-  3,600 test bills) and grows with the day's bills, as *The overview*
-  records.
+  3,600 test bills). *Correction (C8 review):* that run's database held
+  one seeded month, so it could not show that the settled bills read
+  scanned every settled bill in history, growing with every day, not
+  only with the day's bills; `Order(status, settledAt)` now bounds it to
+  the range's bills, and the crosscheck count is bounded to a year
+  (*The overview*). The load test was not rerun after the index; the
+  query alone was measured on a year of history.
 - **Not measured: CNC staging.** Cloud Run, the Cloud SQL proxy and the
   shared db-f1-micro (with TAY idle) are the founder's run.
 

@@ -1223,6 +1223,9 @@ model Order {
 
   @@index([businessDate, department])
   @@index([status, department])
+  /// The reports' and the overview's settled bills by settlement time
+  /// (`settledIn`): without it every read scans every settled bill ever.
+  @@index([status, settledAt])
   @@index([tableId, status])
   @@index([customerId])
 }
