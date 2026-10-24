@@ -1142,7 +1142,40 @@ They are here so the first card that builds it starts from the rule.
 - **`ApprovalLedger` is append-only by trigger, like `AuditLog`, and an
   amount is always positive.** A deleted or lowered row is a manager's limit
   quietly raised. A refund counts by its size, so the writer stores the
-  absolute amount.
+  absolute amount. *Amended by C8-0 below: a release row is the one
+  negative row.*
+- **A decision whose money never moved is given back by a release row,
+  never by touching the row that counted it** (C8-0, the founder's
+  decision of 2026-10-24: a card refund Paystack refused, or one a manager
+  resolves as not in Paystack's dashboard). The limit caps the money a
+  manager moves in a day, and a refusal moves none. `withinLimit` answers
+  the row it wrote, the refund keeps it (`OnlineRefund.ledgerEntryId`), and
+  `releaseCounted` appends `online.refundRelease` with a negative amount,
+  `releasesId` naming the row, and that row's person, business date and
+  ref, in the transaction that records the refusal. So the day lowered is
+  the day that counted it, whenever and by whomever the refusal is
+  recorded, and the release commits with the refusal or not at all.
+- **A release gives back at most what its row counted, and a row is
+  released once** (`ApprovalLedger_amount_check` lets only a row with
+  `releasesId` be negative; the unique `releasesId` and the
+  `ApprovalLedger_release_shape` trigger refuse a second release, a larger
+  one, one on another person, date or ref, and a release of a release).
+  The service computes the amount, but only the database can stop a
+  mistaken or concurrent writer; a release above its row would raise a
+  manager's limit for unrelated decisions.
+- **`releaseCounted` takes no ledger lock.** A release only lowers a day,
+  so a decision summing that day while it commits sees the higher total
+  and can at worst be refused, never pass above the limit; and taking the
+  lock after the refund's own rows could deadlock against a decision that
+  holds the lock and waits for those rows (`online.balance` settling the
+  same adjustments).
+- **`standing()` and `approvalRefusal` need nothing new for releases:**
+  the day's `bigint` sum already includes the negative rows, so the
+  Approvals screen predicts on what the manager actually moved.
+- **A plain `TRUNCATE "ApprovalLedger"` now stops at the foreign keys that
+  name its rows; the append-only test truncates with `CASCADE` to reach the
+  trigger**, as the stock movements' test does. The trigger fires before
+  anything is emptied, so the cascade empties nothing.
 - **The last-Owner rule takes one advisory lock before it counts the other
   active Owners.** Two Owners demoting each other at once would otherwise
   both see the other still active and leave CNC with none. An advisory lock
@@ -2914,6 +2947,10 @@ They are here so the first card that builds it starts from the rule.
   §6.2: edit, cancel, balance: L, D; zone per Q27's "under the limits").
   So a refund decided by an edit and paid by a balance counts twice
   toward one manager's day, as in the demo; the Owner is never counted.
+  *From C8-0:* a card refund Paystack refused releases only its own
+  `online.balance` row, never the edit's or the cancel's: the change to the
+  order was a real decision and still stands; only the money that never
+  moved is given back.
 - **`online.balance` records the whole balance in one payment, as the
   demo does: extra money due is `CASH` or `TRANSFER` only (Q34); a refund
   is `CASH`, `TRANSFER` or `PAYSTACK` (Q26), and a card refund is never
@@ -2947,14 +2984,26 @@ They are here so the first card that builds it starts from the rule.
   means no money moved; a lost answer may mean Paystack queued it, and a
   second send could pay the customer twice. A 5xx or a malformed success
   from Paystack's refund API counts as no answer, never as a refusal. The
-  ledger row of a refused refund stays (append-only). *From the C7
+  ledger row of a refused refund stays (append-only); *from C8-0* a
+  release row beside it gives back what it counted (see *Money controls*),
+  so the Cash or Transfer that pays the refund counts once. *From the C7
   review:* **a manager resolves an `UNCONFIRMED` refund, or one left
   `SENDING` for over two minutes (`REFUND_SENDING_STUCK_MS`), by what
   Paystack's dashboard shows: `POST /staff/online-orders/:id/refunds/
   :refundId/resolve` (M+r, the order's `version`, audited
   `online.resolveRefund`). `SENT` with the dashboard's refund id is
   accepted as Paystack's answer would be (the customer is told); `NOT_SENT`
-  is undone as a refusal is, so the refund is owed again.** Without it an
+  is undone as a refusal is, so the refund is owed again.** *From C8-0:*
+  **an `UNCONFIRMED` refund keeps counting toward the Daily Approval Limit
+  until it is resolved; `SENT` keeps counting (the money moved); `NOT_SENT`
+  releases the count on the deciding manager's original business date,
+  whoever resolves it and on whatever day. Undoing a refund is one
+  conditional move out of the status the caller read (`SENDING` for
+  Paystack's refusal, the read status for a resolve), so a refusal and a
+  "not sent" arriving together undo and release once; a resolve that loses
+  is 409 "Only a card refund Paystack has not confirmed can be resolved."
+  (`REFUND_NOT_UNCONFIRMED_MESSAGE`).** Without the condition the second
+  would reverse the payment again and release twice. Without it an
   unanswered refund left the balance at 0 and no way to record the money
   if Paystack never had it. Two minutes is far past the client's
   10-second timeout, so a send still waiting is never resolved under it.

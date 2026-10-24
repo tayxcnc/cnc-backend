@@ -8,6 +8,7 @@ import {
   OWNER_ONLY_ACTIONS,
   OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE,
   OWNER_ONLY_PRICE_MESSAGE,
+  REFUND_RELEASE_ACTION,
   approvalLimitMessage,
   approvalRefusal,
   dailyLimitMessage,
@@ -37,11 +38,13 @@ const NOW = new Date('2026-09-30T22:30:00.000Z');
 const NEXT = new Date('2026-10-01T10:00:00.000Z');
 
 interface LedgerRow {
+  id: string;
   staffId: string;
   businessDate: string;
   amountKobo: number;
   action: string;
   ref: string | null;
+  releasesId?: string | null;
 }
 
 interface FakeSettings {
@@ -89,16 +92,30 @@ function fakeTx(options: { activeOtherOwners?: number } = {}) {
         ({
           data,
         }: {
-          data: Omit<LedgerRow, 'businessDate'> & { businessDate: Date };
+          data: Omit<LedgerRow, 'businessDate' | 'id'> & { businessDate: Date };
         }) => {
           calls.push('insert');
+          const id = `ledger-${ledger.length + 1}`;
+
           ledger.push({
             ...data,
+            id,
             businessDate: data.businessDate.toISOString().slice(0, 10),
           });
-          return Promise.resolve({});
+          return Promise.resolve({ id });
         },
       ),
+      findUniqueOrThrow: jest.fn(({ where }: { where: { id: string } }) => {
+        calls.push('read');
+        const row = ledger.find((one) => one.id === where.id);
+
+        if (row === undefined) return Promise.reject(new Error('No row'));
+
+        return Promise.resolve({
+          ...row,
+          businessDate: new Date(`${row.businessDate}T00:00:00.000Z`),
+        });
+      }),
     },
     staff: {
       count: jest.fn(() => {
@@ -405,7 +422,7 @@ describe('MoneyControlService', () => {
           what: LIMITED_DECISIONS.purchase,
           action: 'purchase.edit',
         }),
-      ).resolves.toBeUndefined();
+      ).resolves.toBeNull();
     });
 
     it('exempts the Owner at any amount, and never records the Owner', async () => {
@@ -474,6 +491,7 @@ describe('MoneyControlService', () => {
       });
       expect(ledger).toEqual([
         {
+          id: 'ledger-1',
           staffId: manager.id,
           businessDate: '2026-09-30',
           amountKobo: 650_000,
@@ -607,7 +625,7 @@ describe('MoneyControlService', () => {
 
       await expect(
         money.withinLimit(tx, manager, writeOff(NEXT)),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ id: expect.any(String) as string });
     });
 
     it('locks the manager’s day before summing it, and inserts after', async () => {
@@ -763,6 +781,98 @@ describe('MoneyControlService', () => {
       // the day are refused and roll back; ₦20,000 with the limit off is
       // still counted (D36).
       expect(fake.approvedBy(manager.id)).toBe(17_000_000);
+    });
+  });
+
+  describe('releaseCounted (a refused card refund, C8-0)', () => {
+    const refund = (at: Date) => ({
+      amountKobo: -3_000_000,
+      what: LIMITED_DECISIONS.paymentCorrection,
+      count: true,
+      action: 'online.balance',
+      ref: 'CNCR-000101',
+      at,
+    });
+
+    it('answers the row a counted decision wrote, and null for none', async () => {
+      const { tx } = fakeTx();
+
+      expect(await money.withinLimit(tx, manager, refund(NOW))).toEqual({
+        id: 'ledger-1',
+      });
+      expect(await money.withinLimit(tx, owner, refund(NOW))).toBeNull();
+      expect(
+        await money.withinLimit(tx, manager, { ...refund(NOW), count: false }),
+      ).toBeNull();
+    });
+
+    it('gives back what was counted on the decision’s own day, with its own action and ref', async () => {
+      const fake = fakeTx();
+      const counted = await money.withinLimit(fake.tx, manager, refund(NOW));
+
+      // Recorded the next morning; it lowers the day that counted it.
+      await money.releaseCounted(fake.tx, counted!.id, 3_000_000);
+
+      expect(fake.ledger.at(-1)).toEqual({
+        id: 'ledger-2',
+        staffId: manager.id,
+        businessDate: '2026-09-30',
+        amountKobo: -3_000_000,
+        action: REFUND_RELEASE_ACTION,
+        ref: 'CNCR-000101',
+        releasesId: 'ledger-1',
+      });
+      expect(await money.standing(fake.tx, manager, NOW)).toMatchObject({
+        approvedTodayKobo: 0,
+      });
+    });
+
+    it('never releases more than the row counted', async () => {
+      const fake = fakeTx();
+      const counted = await money.withinLimit(fake.tx, manager, refund(NOW));
+
+      await money.releaseCounted(fake.tx, counted!.id, 9_000_000);
+
+      expect(fake.ledger.at(-1)?.amountKobo).toBe(-3_000_000);
+      expect(fake.approvedBy(manager.id)).toBe(0);
+    });
+
+    it('releases part of a row that counted more than the refund', async () => {
+      const fake = fakeTx();
+      const counted = await money.withinLimit(fake.tx, manager, refund(NOW));
+
+      await money.releaseCounted(fake.tx, counted!.id, 1_000_000);
+
+      expect(fake.approvedBy(manager.id)).toBe(2_000_000);
+    });
+
+    it('releases nothing for a refund nobody counted (the Owner)', async () => {
+      const fake = fakeTx();
+
+      await money.releaseCounted(fake.tx, null, 3_000_000);
+
+      expect(fake.ledger).toEqual([]);
+      expect(fake.calls).toEqual([]);
+    });
+
+    it('lets the day’s room come back for the real decision', async () => {
+      const fake = fakeTx();
+
+      fake.settings.dailyLimitKobo = 3_000_000;
+
+      const counted = await money.withinLimit(fake.tx, manager, refund(NOW));
+
+      expect(
+        await refusal(money.withinLimit(fake.tx, manager, refund(NOW))),
+      ).toBe(dailyLimitMessage(6_000_000, 3_000_000));
+
+      await money.releaseCounted(fake.tx, counted!.id, 3_000_000);
+      await money.withinLimit(fake.tx, manager, {
+        ...refund(NOW),
+        action: 'online.balance',
+      });
+
+      expect(fake.approvedBy(manager.id)).toBe(3_000_000);
     });
   });
 });
