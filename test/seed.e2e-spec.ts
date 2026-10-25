@@ -342,6 +342,11 @@ describe('seeds (e2e)', () => {
 
     /** Demote every Owner, inside the caller's rolled-back transaction. */
     async function withoutOwners(tx: Prisma.TransactionClient): Promise<void> {
+      // The shared database's other suites make Owners of their own while
+      // these run. Until this transaction rolls back, no other session may
+      // add or change a staff row, so the Owner counts below see only this
+      // test's work (a committed Owner from elsewhere failed them at random).
+      await tx.$executeRaw`LOCK TABLE "Staff" IN SHARE ROW EXCLUSIVE MODE`;
       await tx.staff.updateMany({
         where: { role: 'OWNER' },
         data: { role: 'MANAGER' },
