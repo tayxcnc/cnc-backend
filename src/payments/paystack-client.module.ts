@@ -6,17 +6,24 @@ import { PAYSTACK_CLIENT, type PaystackClient } from './paystack-client';
 
 /**
  * The Paystack client by deployment, chosen once (as `mailTransportFor`
- * chooses the mail transport): a local run calls nobody, staging and
- * production call Paystack with CNC's own key. A built container refuses
- * `CNC_ENV=local`, so the offline client cannot reach a deployed service.
- * Every e2e app replaces it with a fake (`createTestApp`).
+ * chooses the mail transport): a local run calls nobody, unless
+ * `CNC_PAYSTACK_LOCAL_MODE=test` sends it to Paystack's test mode with
+ * CNC's test key; staging and production call Paystack with CNC's own key.
+ * A built container refuses `CNC_ENV=local`, so the offline client cannot
+ * reach a deployed service. Every e2e app replaces it with a fake
+ * (`createTestApp`).
  */
 export function paystackClientFor(
-  config: Pick<CncConfigService, 'cncEnv' | 'paystackKey'>,
+  config: Pick<
+    CncConfigService,
+    'cncEnv' | 'paystackKey' | 'paystackLocalTestMode'
+  >,
 ): PaystackClient {
-  return config.cncEnv === 'local'
-    ? new LocalPaystackClient()
-    : new HttpPaystackClient(() => config.paystackKey);
+  if (config.cncEnv === 'local' && !config.paystackLocalTestMode) {
+    return new LocalPaystackClient();
+  }
+
+  return new HttpPaystackClient(() => config.paystackKey);
 }
 
 /**
