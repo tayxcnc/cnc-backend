@@ -14,7 +14,7 @@ datasource db {
 // bundle. A .ts file under generated/ pulls that directory into the build and
 // moves every entry point from dist/ to dist/src/, which is not where the
 // image runs it. That move is its own card at a later boundary; the
-// deprecated generator compiles and runs cleanly under 7.10.0.
+// deprecated generator compiles and runs cleanly under 7.10.1.
 //
 // The output is a path of its own, imported by that path everywhere
 // (`generated/cnc-client`), never through `@prisma/client`.

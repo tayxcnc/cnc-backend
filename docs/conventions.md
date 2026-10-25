@@ -335,17 +335,28 @@ They are here so the first card that builds it starts from the rule.
 
 ## Data and migrations
 
-- **Prisma is pinned exactly, to `7.10.0`** (A1), with `@prisma/client` and
+- **Prisma is pinned exactly, to `7.10.1`** (A1), with `@prisma/client` and
   `@prisma/adapter-pg` at the same version, `pg` at `8.23.0` and
-  `pg-connection-string` at `2.14.0`. These are the versions TAY runs in
-  production-shape today. A caret range would let a fresh `npm ci` pick up a
-  release nobody tested; Prisma 8 is a rewrite that emits a schema contract
-  instead of a client, and is excluded until it is evaluated on its own card.
+  `pg-connection-string` at `2.14.0`. A1 chose `7.10.0`, the version TAY
+  runs; the patch release `7.10.1` replaced it after C8 (2026-10-25, the
+  founder's go-ahead for security patches) because `7.10.0`'s own CLI
+  package carries `mysql2` and `deepmerge-ts` versions with high
+  advisories, which `7.10.1` fixes. A caret range would let a fresh
+  `npm ci` pick up a release nobody tested; Prisma 8 is a rewrite that
+  emits a schema contract instead of a client, and is excluded until it is
+  evaluated on its own card. `package.json`'s `allowScripts` names the
+  pinned version, so it moves with the pin.
+- **`overrides` holds transitive versions a direct dependency pins below
+  its fix: `multer` 2.5.0 (under `@nestjs/platform-express`, which pins
+  2.4.0) and `js-yaml` 5.4.3 (under `@nestjs/swagger`, which pins 5.3.0)**,
+  both for high or moderate advisories, both the same major line. Remove
+  an override once the direct dependency ships the fix itself; `npm audit
+  --omit=dev` must stay at 0.
 - **The generator stays `prisma-client-js`, with output
   `generated/cnc-client`** (A1). Prisma deprecates it in favour of
   `prisma-client`, which emits TypeScript and so moves the build output and
   the Docker image layout. That move is its own card; the deprecated
-  generator compiles and runs cleanly under 7.10.0. Import the client from
+  generator compiles and runs cleanly under 7.10.1. Import the client from
   `generated/cnc-client`, never from `@prisma/client`, which is not the client
   generated from this schema.
 - **`generated/` is gitignored, so run `npx prisma generate` after a clone or
@@ -1246,8 +1257,7 @@ They are here so the first card that builds it starts from the rule.
   plus "; more remain for the next run." at the cap). A run's request
   stays short on a shared instance, a row written meanwhile can never be
   caught, and a second run the same day deletes nothing. Its Scheduler
-  job's proposed schedule is in *Infrastructure*; the job waits for the
-  founder.
+  job (weekly) is in *Infrastructure*.
 - **Deleting an account (`DELETE /me`) also forgets what carries the
   account's verified email without being linked to it**
   (`CustomerDeletionService.forgetUnlinked`): its enquiries are deleted,
@@ -2571,11 +2581,12 @@ They are here so the first card that builds it starts from the rule.
   reads them from its menu; quantities and money are the lines as sold,
   before order-level discounts.
 - **Payments Received is every non-reversed payment dated in the range,
-  refunds (negative) included, newest first, with the demo's kind:
-  `PART_PAYMENT` for a part payment, `ONLINE_CHECKOUT` for any other
-  `ONLINE` payment, `FINAL_PAYMENT` otherwise.** The demo's own rule, so a
-  card refund shows as `ONLINE_CHECKOUT` with a negative amount, as the
-  demo would show it. Daily Transfers is the `TRANSFER` rows of the same
+  refunds (negative) included, newest first, with its kind: `REFUND` for
+  a negative payment of any method, `PART_PAYMENT` for a part payment,
+  `ONLINE_CHECKOUT` for any other `ONLINE` payment, `FINAL_PAYMENT`
+  otherwise.** The demo's rule plus `REFUND`, by the founder's decision of
+  2026-10-25: the demo showed a card refund as an Online Checkout of a
+  negative amount, which read as a sale. Daily Transfers is the `TRANSFER` rows of the same
   read, oldest first (the demo's list order).
 - **Stock Movements, Waste and Maintenance History are answered by their
   own modules' services (`StockService.movements` with a time window,
@@ -3153,6 +3164,15 @@ They are here so the first card that builds it starts from the rule.
   key a `.env` holds (the mail transport's rule, for money). A local walk
   pays by signing a fake `charge.success` with its local key
   (`signPaystackBody`); the local client's verify answers it paid.
+- **One exception, by the founder's request (2026-10-24): a local run with
+  `CNC_PAYSTACK_LOCAL_MODE=test` gets `HttpPaystackClient`, against
+  Paystack's test mode with CNC's test key** (`paystackLocalTestMode`).
+  It is a choice made in the local `.env`, never a default. The boot
+  refuses it without an `sk_test_` key, so a laptop can never charge a real
+  card, and staging and production refuse the setting itself. Paystack
+  cannot deliver a webhook to localhost, so the confirmation read's verify
+  completes the order; the checkouts sweep does not run locally. Tests
+  never use it: every e2e app binds the fake.
 - **The HTTP client is TAY's: plain `fetch`, 10 s timeout, no retries,
   kobo never multiplied, never a body in a log line; unlike TAY's it
   narrows every answer at runtime (`readTransaction`) instead of casting.**
@@ -3914,12 +3934,13 @@ They are here so the first card that builds it starts from the rule.
   | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
   | `cnc-staging-sweep-checkouts` | `*/10 * * * *` | `checkouts` | C7-5 | plan §5.5; a checkout lives 30 minutes, so an abandoned one is expired, or a paid one whose webhook was lost gets its order, within 40 |
   | `cnc-staging-sweep-payments` | `*/15 * * * *` | `payments` | C7-5 | plan §5.5; a delivery is handled within seconds, so one still unprocessed after 5 minutes failed, and 15 bounds how long a paid order can wait on a verify outage |
-  | `cnc-staging-sweep-retention` | `30 3 * * *` | `retention` | C8-5 (**proposed; the founder is asked before it is created**) | Q36: periods counted in months and years need a daily run at most; 03:30, after the tokens sweep and far from service, so its deletes never meet the till's pool |
+  | `cnc-staging-sweep-retention` | `30 3 * * 0` | `retention` | C8-5 (exists, 2026-10-25, on the founder's go-ahead) | Q36: periods counted in months and years; weekly, by the founder's choice (2026-10-25), so a record goes at most a week after its date, well inside "after 12 months" and "after 2 years"; one run's cap (10,000 rows a table) is years of CNC's enquiries and shifts; Sunday 03:30, after the tokens sweep and far from service, so its deletes never meet the till's pool |
 
   The two C7 jobs are created after the C7 deploy is live, as the C6 ones
-  were. The retention job is created only on the founder's go-ahead, after
-  the C8 deploy is live: it deletes personal data, and no code depends on
-  it having run. **The prod job must exist before the site's account page
+  were. The retention job was created only on the founder's go-ahead, after
+  the C8 deploy was live: it deletes personal data, and no code depends on
+  it having run. Its cost is nil in practice: the messages job already
+  wakes the service every 5 minutes. **The prod job must exist before the site's account page
   reaches production**: its privacy note (cnc-frontend
   `components/account/panels.tsx`, Q36) tells customers enquiries are
   deleted from CNC's records after 12 months, and only this job deletes

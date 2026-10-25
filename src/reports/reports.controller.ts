@@ -87,8 +87,8 @@ export class ReportsController {
     description:
       'Every non-reversed payment dated in the range, part payments ' +
       'included, newest first, with its kind (PART_PAYMENT, ' +
-      'ONLINE_CHECKOUT, FINAL_PAYMENT) and PAY- number; refunds are ' +
-      'negative. The Cashier and managers.',
+      'ONLINE_CHECKOUT, FINAL_PAYMENT, or REFUND for a negative amount) ' +
+      'and PAY- number. The Cashier and managers.',
   })
   @ApiResponse({ status: 200, type: PaymentsReportResponse })
   @ApiResponse(BAD_RANGE)

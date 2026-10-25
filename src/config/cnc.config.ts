@@ -220,6 +220,15 @@ export class CncConfigService {
       );
     }
 
+    // A local switch on a deployed service would read as if it did
+    // something there; deployed environments always call Paystack.
+    if ((this.own('PAYSTACK_LOCAL_MODE')?.trim() ?? '') !== '') {
+      problems.push(
+        'CNC_PAYSTACK_LOCAL_MODE is a local setting: remove it. Staging ' +
+          'and production always call Paystack with CNC_PAYSTACK_SECRET_KEY.',
+      );
+    }
+
     // Counted, never printed. A path (`https://tayxcnc.com/cnc` pasted from
     // CNC_WEB_URL) or a trailing slash can never equal a browser's Origin
     // header, so such an entry silently refuses its frontend.
@@ -546,6 +555,40 @@ export class CncConfigService {
    */
   get paystackKey(): string | undefined {
     return this.ownUnlessPlaceholder('PAYSTACK_SECRET_KEY');
+  }
+
+  /**
+   * Local only: whether a local run calls Paystack's **test mode** with
+   * CNC's test key (`CNC_PAYSTACK_LOCAL_MODE=test`) instead of the offline
+   * client (unset or `offline`, the default). For walking a real test
+   * payment on a laptop (the founder's request of 2026-10-24); Paystack
+   * cannot deliver a webhook to localhost, so the confirmation read's
+   * verify completes the order.
+   *
+   * Throws, so the boot fails, on any other value, and when `test` is set
+   * without a test key: a local run never charges a real card, so a live
+   * key (`sk_live_`), a placeholder or nothing is refused. Deployed
+   * environments refuse the setting itself (`assertDeployedConfiguration`).
+   */
+  get paystackLocalTestMode(): boolean {
+    const mode = (this.own('PAYSTACK_LOCAL_MODE')?.trim() ?? '').toLowerCase();
+
+    if (mode === '' || mode === 'offline') return false;
+    if (mode !== 'test') {
+      throw new Error(
+        'CNC_PAYSTACK_LOCAL_MODE must be "offline" or "test", not ' +
+          `"${mode.slice(0, 20)}".`,
+      );
+    }
+    if (this.paystackKey?.startsWith('sk_test_') !== true) {
+      throw new Error(
+        'CNC_PAYSTACK_LOCAL_MODE=test needs CNC’s Paystack test key ' +
+          '(sk_test_…) in CNC_PAYSTACK_SECRET_KEY: a local run never uses ' +
+          'a live key.',
+      );
+    }
+
+    return true;
   }
 
   /**

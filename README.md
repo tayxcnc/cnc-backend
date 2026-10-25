@@ -4,7 +4,7 @@ The API for CNC (Chef Noro Culinary), the restaurant, lounge and bar at 7A
 Hospital Place, Jos. It serves CNC's website, its customer app ("My Account")
 and its staff operations app.
 
-NestJS 11, Prisma 7.10.0 and Postgres 16, deployed to Cloud Run in
+NestJS 11, Prisma 7.10.1 and Postgres 16, deployed to Cloud Run in
 `europe-west1`. It is CNC's alone: it shares no database, auth realm or
 environment with TAY, and it reads no `TAY_*` variable.
 

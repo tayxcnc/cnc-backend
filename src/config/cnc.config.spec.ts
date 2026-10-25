@@ -203,6 +203,17 @@ describe('deployed rules (staging and production)', () => {
     expect(message).not.toContain('do_not_print_me');
   });
 
+  it('refuses the local Paystack switch on a deployed service', () => {
+    for (const env of [STAGING, PRODUCTION]) {
+      environment(env, {
+        CNC_PAYSTACK_SECRET_KEY: 'sk_test_x',
+        CNC_PAYSTACK_LOCAL_MODE: 'test',
+      });
+
+      expect(refusal()).toMatch(/CNC_PAYSTACK_LOCAL_MODE is a local setting/);
+    }
+  });
+
   it('refuses staging without a sweep token', () => {
     environment(STAGING, { CNC_SWEEP_TOKEN: undefined });
 
@@ -372,6 +383,52 @@ describe('getters', () => {
       'https://a.example',
       'https://b.example',
     ]);
+  });
+
+  it('keeps a local run offline unless CNC_PAYSTACK_LOCAL_MODE is test', () => {
+    for (const mode of [undefined, '', 'offline', 'OFFLINE']) {
+      environment(
+        { CNC_JWT_SECRET: SECRET, CNC_PAYSTACK_SECRET_KEY: 'sk_test_x' },
+        { CNC_PAYSTACK_LOCAL_MODE: mode },
+      );
+
+      expect(new CncConfigService().paystackLocalTestMode).toBe(false);
+    }
+
+    environment({
+      CNC_JWT_SECRET: SECRET,
+      CNC_PAYSTACK_SECRET_KEY: 'sk_test_x',
+      CNC_PAYSTACK_LOCAL_MODE: 'test',
+    });
+    expect(new CncConfigService().paystackLocalTestMode).toBe(true);
+  });
+
+  it('refuses the local test mode without a test key, and an unknown mode', () => {
+    for (const key of [
+      undefined,
+      'PLACEHOLDER_NOT_SET',
+      'sk_live_do_not_print_me',
+    ]) {
+      environment(
+        { CNC_JWT_SECRET: SECRET, CNC_PAYSTACK_LOCAL_MODE: 'test' },
+        { CNC_PAYSTACK_SECRET_KEY: key },
+      );
+      const config = new CncConfigService();
+
+      expect(() => config.paystackLocalTestMode).toThrow(
+        /needs CNC’s Paystack test key/,
+      );
+      try {
+        void config.paystackLocalTestMode;
+      } catch (error) {
+        expect((error as Error).message).not.toContain('do_not_print_me');
+      }
+    }
+
+    environment({ CNC_JWT_SECRET: SECRET, CNC_PAYSTACK_LOCAL_MODE: 'live' });
+    expect(() => new CncConfigService().paystackLocalTestMode).toThrow(
+      /must be "offline" or "test"/,
+    );
   });
 
   it('reads the payment key lazily, refusing only when asked for it', () => {
