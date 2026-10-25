@@ -342,11 +342,6 @@ describe('seeds (e2e)', () => {
 
     /** Demote every Owner, inside the caller's rolled-back transaction. */
     async function withoutOwners(tx: Prisma.TransactionClient): Promise<void> {
-      // The shared database's other suites make Owners of their own while
-      // these run. Until this transaction rolls back, no other session may
-      // add or change a staff row, so the Owner counts below see only this
-      // test's work (a committed Owner from elsewhere failed them at random).
-      await tx.$executeRaw`LOCK TABLE "Staff" IN SHARE ROW EXCLUSIVE MODE`;
       await tx.staff.updateMany({
         where: { role: 'OWNER' },
         data: { role: 'MANAGER' },
@@ -425,7 +420,10 @@ describe('seeds (e2e)', () => {
         expect(await tx.staff.findUniqueOrThrow({ where: { email } })).toEqual(
           stored,
         );
-        expect(await tx.staff.count({ where: { role: 'OWNER' } })).toBe(1);
+        // Neither rerun made an Owner (scoped to their name, as below).
+        expect(
+          await tx.staff.count({ where: { role: 'OWNER', name: 'Again' } }),
+        ).toBe(0);
       });
     });
 
@@ -460,7 +458,13 @@ describe('seeds (e2e)', () => {
             select: { role: true },
           }),
         ).toEqual({ role: 'CASHIER' });
-        expect(await tx.staff.count({ where: { role: 'OWNER' } })).toBe(0);
+        // No Owner was made under the probe's name. Counting every Owner
+        // raced the shared database's other suites, which commit Owners of
+        // their own while this runs (holding the staff table instead stalled
+        // their writes).
+        expect(
+          await tx.staff.count({ where: { role: 'OWNER', name: 'Probe' } }),
+        ).toBe(0);
       });
     });
   });
