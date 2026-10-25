@@ -1246,8 +1246,7 @@ They are here so the first card that builds it starts from the rule.
   plus "; more remain for the next run." at the cap). A run's request
   stays short on a shared instance, a row written meanwhile can never be
   caught, and a second run the same day deletes nothing. Its Scheduler
-  job's proposed schedule is in *Infrastructure*; the job waits for the
-  founder.
+  job (weekly) is in *Infrastructure*.
 - **Deleting an account (`DELETE /me`) also forgets what carries the
   account's verified email without being linked to it**
   (`CustomerDeletionService.forgetUnlinked`): its enquiries are deleted,
@@ -3914,12 +3913,13 @@ They are here so the first card that builds it starts from the rule.
   | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
   | `cnc-staging-sweep-checkouts` | `*/10 * * * *` | `checkouts` | C7-5 | plan §5.5; a checkout lives 30 minutes, so an abandoned one is expired, or a paid one whose webhook was lost gets its order, within 40 |
   | `cnc-staging-sweep-payments` | `*/15 * * * *` | `payments` | C7-5 | plan §5.5; a delivery is handled within seconds, so one still unprocessed after 5 minutes failed, and 15 bounds how long a paid order can wait on a verify outage |
-  | `cnc-staging-sweep-retention` | `30 3 * * *` | `retention` | C8-5 (**proposed; the founder is asked before it is created**) | Q36: periods counted in months and years need a daily run at most; 03:30, after the tokens sweep and far from service, so its deletes never meet the till's pool |
+  | `cnc-staging-sweep-retention` | `30 3 * * 0` | `retention` | C8-5 (exists, 2026-10-25, on the founder's go-ahead) | Q36: periods counted in months and years; weekly, by the founder's choice (2026-10-25), so a record goes at most a week after its date, well inside "after 12 months" and "after 2 years"; one run's cap (10,000 rows a table) is years of CNC's enquiries and shifts; Sunday 03:30, after the tokens sweep and far from service, so its deletes never meet the till's pool |
 
   The two C7 jobs are created after the C7 deploy is live, as the C6 ones
-  were. The retention job is created only on the founder's go-ahead, after
-  the C8 deploy is live: it deletes personal data, and no code depends on
-  it having run. **The prod job must exist before the site's account page
+  were. The retention job was created only on the founder's go-ahead, after
+  the C8 deploy was live: it deletes personal data, and no code depends on
+  it having run. Its cost is nil in practice: the messages job already
+  wakes the service every 5 minutes. **The prod job must exist before the site's account page
   reaches production**: its privacy note (cnc-frontend
   `components/account/panels.tsx`, Q36) tells customers enquiries are
   deleted from CNC's records after 12 months, and only this job deletes
