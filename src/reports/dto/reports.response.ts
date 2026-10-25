@@ -10,12 +10,14 @@ import { WasteResponse } from '../../waste/dto/waste.response';
 
 /**
  * The Payments Received report's Kind column (the demo's words: Part
- * Payment, Online Checkout, Final Payment), travelling `UPPER_SNAKE` (A5).
+ * Payment, Online Checkout, Final Payment; and Refund for a negative
+ * payment), travelling `UPPER_SNAKE` (A5).
  */
 export enum PaymentKind {
   PART_PAYMENT = 'PART_PAYMENT',
   ONLINE_CHECKOUT = 'ONLINE_CHECKOUT',
   FINAL_PAYMENT = 'FINAL_PAYMENT',
+  REFUND = 'REFUND',
 }
 
 /** What every report page carries besides its rows. */

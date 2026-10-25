@@ -2570,11 +2570,12 @@ They are here so the first card that builds it starts from the rule.
   reads them from its menu; quantities and money are the lines as sold,
   before order-level discounts.
 - **Payments Received is every non-reversed payment dated in the range,
-  refunds (negative) included, newest first, with the demo's kind:
-  `PART_PAYMENT` for a part payment, `ONLINE_CHECKOUT` for any other
-  `ONLINE` payment, `FINAL_PAYMENT` otherwise.** The demo's own rule, so a
-  card refund shows as `ONLINE_CHECKOUT` with a negative amount, as the
-  demo would show it. Daily Transfers is the `TRANSFER` rows of the same
+  refunds (negative) included, newest first, with its kind: `REFUND` for
+  a negative payment of any method, `PART_PAYMENT` for a part payment,
+  `ONLINE_CHECKOUT` for any other `ONLINE` payment, `FINAL_PAYMENT`
+  otherwise.** The demo's rule plus `REFUND`, by the founder's decision of
+  2026-10-25: the demo showed a card refund as an Online Checkout of a
+  negative amount, which read as a sale. Daily Transfers is the `TRANSFER` rows of the same
   read, oldest first (the demo's list order).
 - **Stock Movements, Waste and Maintenance History are answered by their
   own modules' services (`StockService.movements` with a time window,

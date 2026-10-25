@@ -53,11 +53,18 @@ function pageOf(query: { page?: number; pageSize?: number }) {
   };
 }
 
-/** The demo's Kind column: Part Payment, Online Checkout or Final Payment. */
+/**
+ * The Kind column: the demo's Part Payment, Online Checkout or Final
+ * Payment, and Refund for money paid back (a negative payment, card or
+ * cash), by the founder's decision of 2026-10-25: the demo called a card
+ * refund an Online Checkout of a negative amount.
+ */
 export function paymentKind(payment: {
   part: boolean;
   method: PaymentMethod;
+  amountKobo: number;
 }): PaymentKind {
+  if (payment.amountKobo < 0) return PaymentKind.REFUND;
   if (payment.part) return PaymentKind.PART_PAYMENT;
   if (payment.method === PaymentMethod.ONLINE) {
     return PaymentKind.ONLINE_CHECKOUT;
