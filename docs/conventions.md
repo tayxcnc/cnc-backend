@@ -335,17 +335,28 @@ They are here so the first card that builds it starts from the rule.
 
 ## Data and migrations
 
-- **Prisma is pinned exactly, to `7.10.0`** (A1), with `@prisma/client` and
+- **Prisma is pinned exactly, to `7.10.1`** (A1), with `@prisma/client` and
   `@prisma/adapter-pg` at the same version, `pg` at `8.23.0` and
-  `pg-connection-string` at `2.14.0`. These are the versions TAY runs in
-  production-shape today. A caret range would let a fresh `npm ci` pick up a
-  release nobody tested; Prisma 8 is a rewrite that emits a schema contract
-  instead of a client, and is excluded until it is evaluated on its own card.
+  `pg-connection-string` at `2.14.0`. A1 chose `7.10.0`, the version TAY
+  runs; the patch release `7.10.1` replaced it after C8 (2026-10-25, the
+  founder's go-ahead for security patches) because `7.10.0`'s own CLI
+  package carries `mysql2` and `deepmerge-ts` versions with high
+  advisories, which `7.10.1` fixes. A caret range would let a fresh
+  `npm ci` pick up a release nobody tested; Prisma 8 is a rewrite that
+  emits a schema contract instead of a client, and is excluded until it is
+  evaluated on its own card. `package.json`'s `allowScripts` names the
+  pinned version, so it moves with the pin.
+- **`overrides` holds transitive versions a direct dependency pins below
+  its fix: `multer` 2.5.0 (under `@nestjs/platform-express`, which pins
+  2.4.0) and `js-yaml` 5.4.3 (under `@nestjs/swagger`, which pins 5.3.0)**,
+  both for high or moderate advisories, both the same major line. Remove
+  an override once the direct dependency ships the fix itself; `npm audit
+  --omit=dev` must stay at 0.
 - **The generator stays `prisma-client-js`, with output
   `generated/cnc-client`** (A1). Prisma deprecates it in favour of
   `prisma-client`, which emits TypeScript and so moves the build output and
   the Docker image layout. That move is its own card; the deprecated
-  generator compiles and runs cleanly under 7.10.0. Import the client from
+  generator compiles and runs cleanly under 7.10.1. Import the client from
   `generated/cnc-client`, never from `@prisma/client`, which is not the client
   generated from this schema.
 - **`generated/` is gitignored, so run `npx prisma generate` after a clone or
@@ -3153,6 +3164,15 @@ They are here so the first card that builds it starts from the rule.
   key a `.env` holds (the mail transport's rule, for money). A local walk
   pays by signing a fake `charge.success` with its local key
   (`signPaystackBody`); the local client's verify answers it paid.
+- **One exception, by the founder's request (2026-10-24): a local run with
+  `CNC_PAYSTACK_LOCAL_MODE=test` gets `HttpPaystackClient`, against
+  Paystack's test mode with CNC's test key** (`paystackLocalTestMode`).
+  It is a choice made in the local `.env`, never a default. The boot
+  refuses it without an `sk_test_` key, so a laptop can never charge a real
+  card, and staging and production refuse the setting itself. Paystack
+  cannot deliver a webhook to localhost, so the confirmation read's verify
+  completes the order; the checkouts sweep does not run locally. Tests
+  never use it: every e2e app binds the fake.
 - **The HTTP client is TAY's: plain `fetch`, 10 s timeout, no retries,
   kobo never multiplied, never a body in a log line; unlike TAY's it
   narrows every answer at runtime (`readTransaction`) instead of casting.**

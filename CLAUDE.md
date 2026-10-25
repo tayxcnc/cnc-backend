@@ -37,7 +37,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `Idempotency-Key` and its CORS consequence | Idempotency |
 | The `CNC_` prefix, the `TAY_` refusal, `check:env-names` | Configuration |
 | Deployed and production boot rules, `CNC_WEB_URL` base path | Configuration |
-| The Prisma `7.10.0` pin, `prisma-client-js`, the driver adapter, pool size | Data and migrations |
+| The Prisma `7.10.1` pin, `prisma-client-js`, the driver adapter, pool size; `overrides` for transitive security fixes | Data and migrations |
 | `migrate dev` local only; `migrate deploy` by hand before the merge | Data and migrations |
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
