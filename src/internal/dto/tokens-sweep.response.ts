@@ -29,4 +29,11 @@ export class TokensSweepResponse {
     example: 3,
   })
   idempotencyKeys!: number;
+
+  @ApiProperty({
+    description:
+      'Rate-limit counts deleted whose window and block had both ended.',
+    example: 40,
+  })
+  rateLimitCounts!: number;
 }

@@ -896,7 +896,9 @@ export class OnlineOrdersService {
       cardRefundableKobo: money.cardRefundableKobo,
     });
 
-    await this.money.withinLimit(tx, actor, {
+    // A card refund keeps the row that counted it, so a refusal can give
+    // back exactly that (C8-0); Cash and Transfer are money already moved.
+    const counted = await this.money.withinLimit(tx, actor, {
       amountKobo,
       what: LIMITED_DECISIONS.paymentCorrection,
       count: true,
@@ -941,6 +943,7 @@ export class OnlineOrdersService {
             transactionReference: online.paystackReference,
             amountKobo: -amountKobo,
             staffId: actor.id,
+            ledgerEntryId: counted?.id ?? null,
           },
           select: { id: true },
         })

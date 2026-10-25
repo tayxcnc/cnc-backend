@@ -314,7 +314,11 @@ describe('money controls (e2e)', () => {
         (id: string) =>
           prisma.$executeRaw`DELETE FROM "ApprovalLedger" WHERE "id" = ${id}`,
       ],
-      ['TRUNCATE', () => prisma.$executeRaw`TRUNCATE "ApprovalLedger"`],
+      // From C8-0 the ledger is referenced (a release names its row, a card
+      // refund the row that counted it), so a plain TRUNCATE stops at the
+      // foreign keys first; CASCADE gets past them and meets the trigger,
+      // which fires before anything is emptied.
+      ['TRUNCATE', () => prisma.$executeRaw`TRUNCATE "ApprovalLedger" CASCADE`],
     ])('refuses %s', async (operation, run) => {
       await expect(run(rowId)).rejects.toThrow(
         `ApprovalLedger is append-only: ${operation} is not allowed`,
@@ -337,6 +341,96 @@ describe('money controls (e2e)', () => {
           },
         }),
       ).rejects.toThrow(/ApprovalLedger_amount_check/);
+    });
+  });
+
+  describe('release rows (C8-0)', () => {
+    const DAY = new Date('2026-09-30T00:00:00.000Z');
+
+    async function counted(): Promise<{ id: string; staffId: string }> {
+      const manager = await staff(StaffRole.MANAGER);
+      const row = await prisma.$transaction((tx) =>
+        money.withinLimit(tx, manager, { ...writeOff(), ref: 'CNCR-REL-1' }),
+      );
+
+      return { id: row!.id, staffId: manager.id };
+    }
+
+    it('lets only a release row be negative', async () => {
+      const manager = await staff(StaffRole.MANAGER);
+
+      await expect(
+        prisma.approvalLedger.create({
+          data: {
+            businessDate: DAY,
+            staffId: manager.id,
+            amountKobo: -650_000,
+            action: 'online.refundRelease',
+          },
+        }),
+      ).rejects.toThrow(/ApprovalLedger_amount_check/);
+    });
+
+    it('releases a row once, on its own day and person, never above it', async () => {
+      const row = await counted();
+      const release = (over: Record<string, unknown>) =>
+        prisma.approvalLedger.create({
+          data: {
+            businessDate: DAY,
+            staffId: row.staffId,
+            amountKobo: -650_000,
+            action: 'online.refundRelease',
+            ref: 'CNCR-REL-1',
+            releasesId: row.id,
+            ...over,
+          },
+        });
+      const other = await staff(StaffRole.MANAGER);
+
+      for (const wrong of [
+        { amountKobo: -650_001 },
+        { businessDate: new Date('2026-10-01T00:00:00.000Z') },
+        { staffId: other.id },
+        { ref: 'CNCR-OTHER' },
+      ]) {
+        await expect(release(wrong)).rejects.toThrow(
+          /does not match the row it releases/,
+        );
+      }
+
+      const first = await release({});
+
+      await expect(release({ amountKobo: -1 })).rejects.toThrow();
+      // A release is never released, so it cannot be cancelled out.
+      await expect(
+        prisma.approvalLedger.create({
+          data: {
+            businessDate: DAY,
+            staffId: row.staffId,
+            amountKobo: -1,
+            action: 'online.refundRelease',
+            ref: 'CNCR-REL-1',
+            releasesId: first.id,
+          },
+        }),
+      ).rejects.toThrow(/does not match the row it releases/);
+      expect(await ledgerTotal(prisma, row.staffId, '2026-09-30')).toBe(0);
+    });
+
+    it('is reflected in the standing', async () => {
+      const row = await counted();
+
+      await prisma.$transaction((tx) =>
+        money.releaseCounted(tx, row.id, 400_000),
+      );
+
+      expect(
+        await money.standing(
+          prisma,
+          { id: row.staffId, role: StaffRole.MANAGER },
+          NOW,
+        ),
+      ).toMatchObject({ approvedTodayKobo: 250_000 });
     });
   });
 

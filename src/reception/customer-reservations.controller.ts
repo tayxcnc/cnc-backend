@@ -21,6 +21,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
+import {
+  BOOKING_CHANGE_LIMIT,
+  CustomerWriteThrottle,
+} from '../auth/auth-throttle';
 import type { CustomerPrincipal } from '../auth/customer-principal';
 import {
   CurrentCustomer,
@@ -65,6 +69,14 @@ const NOT_YOURS = {
   status: 404,
   description:
     '"We could not find that reservation." (also for another customer’s).',
+  type: ApiErrorResponse,
+} as const;
+
+const CUSTOMER_TOO_MANY = {
+  status: 429,
+  description:
+    '"Too many attempts. Wait a few minutes and try again." (per customer), ' +
+    'with `Retry-After`.',
   type: ApiErrorResponse,
 } as const;
 
@@ -192,6 +204,8 @@ export class CustomerReservationsController {
   }
 
   @Patch(':id')
+  @UseGuards(ClientAddressThrottlerGuard)
+  @CustomerWriteThrottle(BOOKING_CHANGE_LIMIT)
   @Header('Cache-Control', 'no-store')
   @ApiParam({ name: 'id', description: 'Reservation.id.' })
   @ApiOperation({
@@ -224,6 +238,7 @@ export class CustomerReservationsController {
       'again."',
     type: ApiErrorResponse,
   })
+  @ApiResponse(CUSTOMER_TOO_MANY)
   change(
     @CurrentCustomer() customer: CustomerPrincipal,
     @Param('id') id: string,
@@ -240,6 +255,8 @@ export class CustomerReservationsController {
 
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(ClientAddressThrottlerGuard)
+  @CustomerWriteThrottle(BOOKING_CHANGE_LIMIT)
   @Header('Cache-Control', 'no-store')
   @ApiParam({ name: 'id', description: 'Reservation.id.' })
   @ApiOperation({
@@ -260,6 +277,7 @@ export class CustomerReservationsController {
       'cancelled.", or a stale version.',
     type: ApiErrorResponse,
   })
+  @ApiResponse(CUSTOMER_TOO_MANY)
   cancel(
     @CurrentCustomer() customer: CustomerPrincipal,
     @Param('id') id: string,

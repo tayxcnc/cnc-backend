@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { STATUS_CODES } from 'node:http';
 import type { Response } from 'express';
+import { isPrismaErrorCode } from '../../prisma/prisma-error';
 import { currentRequestId } from '../request-context';
 
 /**
@@ -107,6 +108,43 @@ function clientFaultStatusOf(exception: unknown): number | undefined {
     : undefined;
 }
 
+/**
+ * The answer when the database could not take the request in time (card
+ * C8-4). New: the demo had no server to be busy.
+ */
+export const DATABASE_BUSY_MESSAGE =
+  'CNC is busy right now. Wait a moment and try again.';
+
+/** Seconds a caller is told to wait after {@link DATABASE_BUSY_MESSAGE}. */
+export const DATABASE_BUSY_RETRY_AFTER_S = 2;
+
+/**
+ * Prisma's two "not in time" errors, both of which leave nothing written:
+ * P2024, no connection came free from the pool in time, and P2028, an
+ * interactive transaction that could not start within its wait or ran past
+ * its timeout (Prisma rolls it back). Found by the C8-4 load test: while the
+ * database was slow, every such request answered the generic 500, which
+ * tells a cashier nothing and a client nothing it can act on. Nothing was
+ * committed, and every money and booking write carries an Idempotency-Key,
+ * so trying again is safe: 503 with `Retry-After`.
+ *
+ * The driver adapter also lets `pg`'s own pool error through unwrapped
+ * when a query outside a transaction waits longer than the pool's connect
+ * timeout (5 s) for a connection: the query never ran. It is matched by
+ * `pg-pool`'s exact message, the only mark it carries.
+ */
+export const PG_POOL_TIMEOUT_MESSAGE =
+  'timeout exceeded when trying to connect';
+
+function isDatabaseBusy(exception: unknown): boolean {
+  return (
+    isPrismaErrorCode(exception, 'P2024') ||
+    isPrismaErrorCode(exception, 'P2028') ||
+    (exception instanceof Error &&
+      exception.message === PG_POOL_TIMEOUT_MESSAGE)
+  );
+}
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionsHandler');
@@ -167,6 +205,30 @@ export class AllExceptionsFilter implements ExceptionFilter {
       // Not logged as an error. This is the service working: a caller sent
       // something it should not have and was told so.
       response.status(clientFault).json(payload);
+      return;
+    }
+
+    // The database could not take the request in time; nothing was written.
+    // One warning line with the code, never Prisma's message (it can name
+    // the query).
+    if (isDatabaseBusy(exception)) {
+      const code = (exception as { code?: unknown }).code;
+
+      this.logger.warn(
+        `Database busy (${typeof code === 'string' ? code : 'pool timeout'}): answered 503.`,
+      );
+
+      const payload: Record<string, unknown> = {
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        message: DATABASE_BUSY_MESSAGE,
+      };
+
+      if (requestId !== undefined) payload.requestId = requestId;
+
+      response
+        .status(HttpStatus.SERVICE_UNAVAILABLE)
+        .setHeader('Retry-After', String(DATABASE_BUSY_RETRY_AFTER_S))
+        .json(payload);
       return;
     }
 

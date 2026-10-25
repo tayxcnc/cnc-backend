@@ -32,7 +32,11 @@ import {
   approvalLimitMessage,
   dailyLimitMessage,
   LIMITED_DECISIONS,
+  MoneyControlService,
+  REFUND_RELEASE_ACTION,
 } from '../src/money-control/money-control.service';
+import { OnlineBalanceMethod } from '../src/online-orders/dto/online-order.request';
+import { OnlineOrdersService } from '../src/online-orders/online-orders.service';
 import {
   BALANCE_TRANSFER_MESSAGE,
   CARD_REFUND_LIMIT_MESSAGE,
@@ -52,7 +56,10 @@ import {
   STATUS_MODE_MESSAGE,
   ZONE_BEFORE_DISPATCH_MESSAGE,
 } from '../src/online-orders/online-order-messages';
-import { REFUND_PROVIDER_REF_PREFIX } from '../src/online-orders/online-refunds.service';
+import {
+  OnlineRefundsService,
+  REFUND_PROVIDER_REF_PREFIX,
+} from '../src/online-orders/online-refunds.service';
 import {
   PaystackRefusedError,
   PaystackUnavailableError,
@@ -1487,6 +1494,343 @@ describe('Online Orders: the staff commands (e2e)', () => {
           },
         });
       }
+    });
+  });
+
+  /**
+   * C8-0, the founder's decision of 2026-10-24: a card refund Paystack
+   * refused, or one a manager resolves as not in the dashboard, gives back
+   * what its `online.balance` counted, on that decision's own day; the Cash
+   * or Transfer that pays it then counts once. Each case has a manager of
+   * its own, so their ledger is the case's alone. The later-day case moves
+   * the clock forward and so comes last in the file.
+   */
+  describe('refused card refunds and the Daily Approval Limit (C8-0)', () => {
+    const tokens = () => app.get(CncTokenService, { strict: false });
+
+    /** A manager of the case's own, with a token minted now. */
+    const freshManager = async () => {
+      const account = await createStaffAccount(prisma, StaffRole.MANAGER);
+
+      return { account, token: await accessTokenFor(tokens(), account.id) };
+    };
+
+    /** A command by one person, on the order's current version. */
+    const by =
+      (bearer: string) =>
+      async (
+        id: string,
+        name: string,
+        body: Record<string, unknown>,
+        key?: string,
+      ) => {
+        const { version } = await read(id, StaffRole.OWNER);
+        const call = request(server())
+          .post(`/api/v1/staff/online-orders/${id}/${name}`)
+          .set({ Authorization: `Bearer ${bearer}` });
+
+        return (key ? call.set('Idempotency-Key', key) : call).send({
+          version,
+          ...body,
+        });
+      };
+
+    const ledgerOf = (staff: string) =>
+      prisma.approvalLedger.findMany({
+        where: { staffId: staff },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+    const sumOf = (rows: { amountKobo: number }[]) =>
+      rows.reduce((sum, row) => sum + row.amountKobo, 0);
+    const isoDay = (date: Date) => date.toISOString().slice(0, 10);
+
+    /** A paid order a manager edits down to food only: the drinks owed. */
+    const owedOrder = async (bearer: string) => {
+      const placed = await place();
+
+      await by(bearer)(placed.id, 'edit', {
+        lines: [{ menuItemId: food.id, qty: 2 }],
+        reason: 'No drinks',
+      }).then((answer) => expect(answer.status).toBe(200));
+
+      return { ...placed, owedKobo: bill(2, 3) - bill(2, 0) };
+    };
+
+    it('releases a refused card refund, so the Cash that pays it counts once', async () => {
+      const { account, token: bearer } = await freshManager();
+      const settings = await prisma.settings.findUniqueOrThrow({
+        where: { singleton: true },
+      });
+      const order = await owedOrder(bearer);
+      const owed = order.owedKobo;
+
+      // Room for the edit and one refund, and nothing more.
+      await prisma.settings.update({
+        where: { singleton: true },
+        data: {
+          approvalLimitKobo: 100_000_000,
+          dailyLimitOn: true,
+          dailyLimitKobo: 2 * owed,
+        },
+      });
+
+      try {
+        paystack.failNextRefundWith = new PaystackRefusedError(400, 'Declined');
+
+        const refused = await by(bearer)(
+          order.id,
+          'balance',
+          { method: 'PAYSTACK', reason: 'Refund drinks' },
+          randomUUID(),
+        );
+
+        expect(refused.status).toBe(502);
+
+        const afterRefusal = await ledgerOf(account.id);
+        const counted = afterRefusal.find(
+          (row) => row.action === 'online.balance',
+        )!;
+
+        expect(afterRefusal.map((row) => [row.action, row.amountKobo])).toEqual(
+          [
+            ['online.edit', owed],
+            ['online.balance', owed],
+            [REFUND_RELEASE_ACTION, -owed],
+          ],
+        );
+        expect(afterRefusal.at(-1)).toMatchObject({
+          releasesId: counted.id,
+          ref: counted.ref,
+          businessDate: counted.businessDate,
+        });
+        expect(
+          await app
+            .get(MoneyControlService, { strict: false })
+            .standing(prisma, account),
+        ).toMatchObject({ approvedTodayKobo: owed });
+
+        // Counted twice, the Cash would take the day to 3 × owed and be
+        // refused; released, it fits exactly.
+        const cash = await by(bearer)(
+          order.id,
+          'balance',
+          { method: 'CASH', reason: 'Refunded in cash' },
+          randomUUID(),
+        );
+
+        expect(cash.status).toBe(200);
+        expect(sumOf(await ledgerOf(account.id))).toBe(2 * owed);
+        expect(
+          sumOf(
+            (await ledgerOf(account.id)).filter(
+              (row) => row.action !== 'online.edit',
+            ),
+          ),
+        ).toBe(owed);
+      } finally {
+        await prisma.settings.update({
+          where: { singleton: true },
+          data: {
+            approvalLimitKobo: settings.approvalLimitKobo,
+            dailyLimitOn: settings.dailyLimitOn,
+            dailyLimitKobo: settings.dailyLimitKobo,
+          },
+        });
+      }
+    });
+
+    it('releases an unconfirmed refund resolved as not sent, on the deciding manager', async () => {
+      const { account, token: bearer } = await freshManager();
+      const order = await owedOrder(bearer);
+
+      paystack.failNextRefundWith = new PaystackUnavailableError();
+      expect(
+        (
+          await by(bearer)(
+            order.id,
+            'balance',
+            { method: 'PAYSTACK', reason: 'Refund drinks' },
+            randomUUID(),
+          )
+        ).status,
+      ).toBe(503);
+
+      // Unconfirmed, it keeps counting.
+      expect(sumOf(await ledgerOf(account.id))).toBe(2 * order.owedKobo);
+
+      const refundId = (await read(order.id)).refunds[0].id;
+
+      // Another person (the Owner) resolves it; the release is the
+      // deciding manager's, as the count was.
+      expect(
+        (
+          await by(token[StaffRole.OWNER]!)(
+            order.id,
+            `refunds/${refundId}/resolve`,
+            { outcome: 'NOT_SENT', reason: 'Not in the dashboard' },
+          )
+        ).status,
+      ).toBe(200);
+
+      const rows = await ledgerOf(account.id);
+
+      expect(rows.at(-1)).toMatchObject({
+        action: REFUND_RELEASE_ACTION,
+        amountKobo: -order.owedKobo,
+      });
+      expect(sumOf(rows)).toBe(order.owedKobo);
+      expect(
+        await prisma.approvalLedger.count({
+          where: { staffId: staffId[StaffRole.OWNER] },
+        }),
+      ).toBe(0);
+    });
+
+    it('keeps counting a refund the dashboard shows as sent', async () => {
+      const { account, token: bearer } = await freshManager();
+      const order = await owedOrder(bearer);
+
+      paystack.failNextRefundWith = new PaystackUnavailableError();
+      await by(bearer)(
+        order.id,
+        'balance',
+        { method: 'PAYSTACK', reason: 'Refund drinks' },
+        randomUUID(),
+      );
+
+      const refundId = (await read(order.id)).refunds[0].id;
+
+      expect(
+        (
+          await by(bearer)(order.id, `refunds/${refundId}/resolve`, {
+            outcome: 'SENT',
+            providerRefundId: '555123',
+            reason: 'Shown as processed',
+          })
+        ).status,
+      ).toBe(200);
+
+      const rows = await ledgerOf(account.id);
+
+      expect(rows.map((row) => row.action)).toEqual([
+        'online.edit',
+        'online.balance',
+      ]);
+      expect(sumOf(rows)).toBe(2 * order.owedKobo);
+    });
+
+    it('releases once when two sends of the same refund meet a refusal', async () => {
+      const { account, token: bearer } = await freshManager();
+      const order = await owedOrder(bearer);
+      const { version } = await read(order.id);
+      const online = app.get(OnlineOrdersService, { strict: false });
+      const refunds = app.get(OnlineRefundsService, { strict: false });
+
+      // Recorded as the route records it, and not yet sent.
+      const recorded = await prisma.$transaction((tx) =>
+        online.balance(
+          tx,
+          account,
+          order.id,
+          {
+            version,
+            method: OnlineBalanceMethod.PAYSTACK,
+            reason: 'Refund drinks',
+          },
+          '127.0.0.1',
+        ),
+      );
+      const sentBefore = paystack.refunds.length;
+
+      paystack.failNextRefundWith = new PaystackRefusedError(400, 'Declined');
+
+      const outcomes = await Promise.all([
+        refunds.send(recorded.refundId!, account, '127.0.0.1'),
+        refunds.send(recorded.refundId!, account, '127.0.0.1'),
+      ]);
+
+      expect(outcomes).toContain(OnlineRefundStatus.REFUSED);
+      // Had the second reached Paystack, the fake would have taken it.
+      expect(paystack.refunds).toHaveLength(sentBefore);
+
+      const rows = await ledgerOf(account.id);
+
+      expect(
+        rows.filter((row) => row.action === REFUND_RELEASE_ACTION),
+      ).toHaveLength(1);
+      expect(sumOf(rows)).toBe(order.owedKobo);
+      expect(
+        await prisma.auditLog.count({
+          where: {
+            ref: (await read(order.id)).orderNumber,
+            action: 'online.refund',
+          },
+        }),
+      ).toBe(1);
+    });
+
+    it('releases on the day the refund was counted when it is resolved a day later', async () => {
+      const { account, token: bearer } = await freshManager();
+      const order = await owedOrder(bearer);
+
+      paystack.failNextRefundWith = new PaystackUnavailableError();
+      await by(bearer)(
+        order.id,
+        'balance',
+        { method: 'PAYSTACK', reason: 'Refund drinks' },
+        randomUUID(),
+      );
+
+      const countedOn = isoDay(
+        (await ledgerOf(account.id)).find(
+          (row) => row.action === 'online.balance',
+        )!.businessDate,
+      );
+      const refundId = (await read(order.id)).refunds[0].id;
+
+      // The next day; tokens minted before the jump have expired.
+      jest.setSystemTime(Date.now() + 24 * 60 * 60 * 1000);
+
+      const nextDay = await accessTokenFor(tokens(), account.id);
+
+      token[StaffRole.OWNER] = await accessTokenFor(
+        tokens(),
+        staffId[StaffRole.OWNER]!,
+      );
+      expect(
+        (
+          await by(nextDay)(order.id, `refunds/${refundId}/resolve`, {
+            outcome: 'NOT_SENT',
+            reason: 'Not in the dashboard',
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await by(nextDay)(
+            order.id,
+            'balance',
+            { method: 'CASH', reason: 'Refunded in cash' },
+            randomUUID(),
+          )
+        ).status,
+      ).toBe(200);
+
+      const rows = await ledgerOf(account.id);
+      const release = rows.find((row) => row.action === REFUND_RELEASE_ACTION)!;
+      const cash = rows.at(-1)!;
+
+      expect(isoDay(release.businessDate)).toBe(countedOn);
+      expect(release.amountKobo).toBe(-order.owedKobo);
+      expect(cash.action).toBe('online.balance');
+      expect(isoDay(cash.businessDate)).not.toBe(countedOn);
+      // The first day keeps only the edit; the second has the Cash.
+      expect(
+        sumOf(rows.filter((row) => isoDay(row.businessDate) === countedOn)),
+      ).toBe(order.owedKobo);
+      expect(
+        sumOf(rows.filter((row) => isoDay(row.businessDate) !== countedOn)),
+      ).toBe(order.owedKobo);
     });
   });
 });

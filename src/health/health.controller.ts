@@ -34,7 +34,8 @@ import { SERVICE_NAME } from './service-name.token';
  * Redis is the one dependency reported, and it is reported rather than
  * checked: the `redis` field says whether the cache answered, and the HTTP
  * status stays 200 whatever it says. A process that has lost its cache is
- * up, serving, and rate limiting in memory — turning that into a failed
+ * up and serving (its rate limits are stored in Postgres, C8-3) — turning
+ * that into a failed
  * probe would have Cloud Run restart healthy containers because a cache
  * blinked. Both probes are optional at the DI level: a module that has not
  * wired one registers nothing and reads `unconfigured`.
@@ -60,9 +61,8 @@ export class HealthController {
       'Reports that the process is up and which service it is. Takes no ' +
       'parameters, requires no token, and touches no database — a 200 ' +
       'here says nothing about whether the database is reachable. The ' +
-      '`redis` field is informational: `unavailable` or `unconfigured` ' +
-      'means rate limits are counted per instance, and the status is still ' +
-      '200.',
+      '`redis` field is informational: rate limits are stored in the ' +
+      'database, not in Redis, and the status is 200 whatever it says.',
   })
   @ApiResponse({
     status: 200,

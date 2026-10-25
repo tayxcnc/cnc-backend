@@ -218,6 +218,20 @@ export interface LimitedDecision {
   at?: Date;
 }
 
+/** The ledger row a counted decision wrote, for a later release of it. */
+export interface CountedEntry {
+  /** ApprovalLedger.id. */
+  id: string;
+}
+
+/**
+ * The ledger action of a release row (C8-0): a card refund Paystack
+ * refused, or one a manager found missing from Paystack's dashboard, gives
+ * back what its `online.balance` counted. Its own name, so the ledger reads
+ * as what happened; the row it releases keeps its own.
+ */
+export const REFUND_RELEASE_ACTION = 'online.refundRelease';
+
 /** The settings the limits are read from, in the command's transaction. */
 const LIMIT_SETTINGS_SELECT = {
   approvalLimitKobo: true,
@@ -238,7 +252,10 @@ export interface ApprovalStanding {
   approvalLimitKobo: number;
   dailyLimitOn: boolean;
   dailyLimitKobo: number;
-  /** The ledger's total for the person on the business date. */
+  /**
+   * The ledger's total for the person on the business date, less what its
+   * release rows gave back (a refused card refund, C8-0).
+   */
   approvedTodayKobo: number;
 }
 
@@ -311,7 +328,9 @@ async function limitSettings(client: Pick<Tx, 'settings'>) {
 /**
  * One person's ledger total for one business date (`YYYY-MM-DD`). A bigint
  * sum (plan §10): with the limit off a day's total is unbounded, and an
- * Int `_sum` overflows at about ₦21 million.
+ * Int `_sum` overflows at about ₦21 million. Release rows are negative, so
+ * the sum is already net of what they gave back (C8-0); a release never
+ * exceeds the row it releases, so the total is never below zero.
  */
 async function ledgerTotalKobo(
   client: Pick<Tx, '$queryRaw'>,
@@ -456,13 +475,17 @@ export class MoneyControlService {
    *
    * The limits are read from the settings row in the same transaction, so
    * a lowered limit applies to the next decision at once.
+   *
+   * Answers the ledger row written, or null when nothing was counted, so a
+   * decision whose money may yet fail to move (a card refund) can name the
+   * row a release gives back ({@link releaseCounted}).
    */
   async withinLimit(
     tx: Tx,
     actor: MoneyActor,
     decision: LimitedDecision,
-  ): Promise<void> {
-    if (isOwner(actor.role)) return;
+  ): Promise<CountedEntry | null> {
+    if (isOwner(actor.role)) return null;
 
     const settings = await limitSettings(tx);
 
@@ -476,7 +499,7 @@ export class MoneyControlService {
 
     const counted = Math.abs(decision.countedKobo ?? decision.amountKobo);
 
-    if (decision.count !== true || counted === 0) return;
+    if (decision.count !== true || counted === 0) return null;
 
     const businessDate = watToday(decision.at ?? new Date());
     // The date travels as `YYYY-MM-DD` text, never as a Date parameter: a
@@ -497,13 +520,70 @@ export class MoneyControlService {
       }
     }
 
-    await tx.approvalLedger.create({
+    return tx.approvalLedger.create({
       data: {
         businessDate,
         staffId: actor.id,
         amountKobo: counted,
         action: decision.action,
         ref: decision.ref ?? null,
+      },
+      select: { id: true },
+    });
+  }
+
+  /**
+   * Give back what a counted row holds for money that never moved (C8-0,
+   * the founder's decision of 2026-10-24): a card refund Paystack refused,
+   * or one a manager found missing from Paystack's dashboard. The limit
+   * caps the money a manager moves in a day, and a refusal moves none.
+   *
+   * Appends a release row (the ledger stays append-only): a negative
+   * amount, {@link REFUND_RELEASE_ACTION}, and the counted row's own
+   * person, business date and ref, so the day it lowers is the day that
+   * counted it, whenever the refusal is recorded. It releases at most
+   * `kobo`, and never more than the row counted. No row (the Owner, never
+   * counted) releases nothing.
+   *
+   * Run it in the transaction that records the refusal, so the release
+   * commits with it or not at all. The unique `releasesId` and the
+   * migration's trigger refuse a second release or a larger one.
+   *
+   * It takes no ledger lock: a release only lowers a day's total, so a
+   * decision summing the day while it commits sees the higher total and
+   * can at worst be refused, never pass above the limit; and a lock taken
+   * after the refund's own rows could deadlock against a decision holding
+   * the lock and waiting for those rows.
+   */
+  async releaseCounted(
+    tx: Tx,
+    entryId: string | null,
+    kobo: number,
+  ): Promise<void> {
+    if (entryId === null) return;
+
+    const counted = await tx.approvalLedger.findUniqueOrThrow({
+      where: { id: entryId },
+      select: {
+        id: true,
+        businessDate: true,
+        staffId: true,
+        amountKobo: true,
+        ref: true,
+      },
+    });
+    const released = Math.min(counted.amountKobo, Math.abs(kobo));
+
+    if (released <= 0) return;
+
+    await tx.approvalLedger.create({
+      data: {
+        businessDate: counted.businessDate,
+        staffId: counted.staffId,
+        amountKobo: -released,
+        action: REFUND_RELEASE_ACTION,
+        ref: counted.ref,
+        releasesId: counted.id,
       },
     });
   }

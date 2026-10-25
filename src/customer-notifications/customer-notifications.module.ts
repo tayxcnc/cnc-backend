@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CncAuthModule } from '../auth/cnc-auth.module';
+import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { CustomerNotificationsController } from './customer-notifications.controller';
 import { CustomerNotificationsService } from './customer-notifications.service';
 
@@ -14,7 +15,7 @@ import { CustomerNotificationsService } from './customer-notifications.service';
 @Module({
   imports: [CncAuthModule],
   controllers: [CustomerNotificationsController],
-  providers: [CustomerNotificationsService],
+  providers: [CustomerNotificationsService, ClientAddressThrottlerGuard],
   exports: [CustomerNotificationsService],
 })
 export class CustomerNotificationsModule {}

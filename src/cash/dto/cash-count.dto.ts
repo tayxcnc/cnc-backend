@@ -1,8 +1,6 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ValidateIf } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
 import { calendarDate, Checked, wholeNumber } from '../../common/checked';
-import { PaginationQuery } from '../../common/dto/pagination.query';
-import { isSent } from '../../common/is-sent';
+import { ReportPeriodQuery } from '../../common/dto/report-period.query';
 import { CASH_COUNT_MESSAGE, CASH_DATE_MESSAGE } from '../cash-messages';
 
 /** Body of `POST /staff/cash-counts`: `cash.count`. */
@@ -44,23 +42,7 @@ export class CashCountResponse {
 }
 
 /** `GET /staff/reports/cash`: counts by business date. */
-export class CashReportQuery extends PaginationQuery {
-  @ApiPropertyOptional({
-    example: '2026-10-21',
-    description: 'First business date (YYYY-MM-DD); `to` when absent.',
-  })
-  @ValidateIf(isSent)
-  @Checked(calendarDate('from must be a real calendar date.'))
-  from?: string;
-
-  @ApiPropertyOptional({
-    example: '2026-10-21',
-    description: 'Last business date (YYYY-MM-DD); today in Jos when absent.',
-  })
-  @ValidateIf(isSent)
-  @Checked(calendarDate('to must be a real calendar date.'))
-  to?: string;
-}
+export class CashReportQuery extends ReportPeriodQuery {}
 
 /** Reports → Cash Reconciliation. */
 export class CashReportResponse {

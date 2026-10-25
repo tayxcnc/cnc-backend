@@ -4,6 +4,7 @@ import { REASON_MAX_LENGTH } from '../../common/admin-reason';
 import { calendarDate, Checked, wholeNumber } from '../../common/checked';
 import { POSITIVE_STOCK_LINES, ValidLines } from '../../common/command-lines';
 import { PaginationQuery } from '../../common/dto/pagination.query';
+import { ReportPeriodQuery } from '../../common/dto/report-period.query';
 import { VERSION_FIELD_MESSAGE } from '../../common/dto/versioned-write.dto';
 import { isSent } from '../../common/is-sent';
 import { OptionalText } from '../../common/optional-text';
@@ -115,20 +116,4 @@ export class KitchenEntriesQuery extends PaginationQuery {
 }
 
 /** `GET /staff/reports/kitchen-crosscheck`: dockets by business date. */
-export class KitchenCrosscheckQuery extends PaginationQuery {
-  @ApiPropertyOptional({
-    example: '2026-10-21',
-    description: 'First business date (YYYY-MM-DD); `to` when absent.',
-  })
-  @ValidateIf(isSent)
-  @Checked(calendarDate('from must be a real calendar date.'))
-  from?: string;
-
-  @ApiPropertyOptional({
-    example: '2026-10-21',
-    description: 'Last business date (YYYY-MM-DD); today in Jos when absent.',
-  })
-  @ValidateIf(isSent)
-  @Checked(calendarDate('to must be a real calendar date.'))
-  to?: string;
-}
+export class KitchenCrosscheckQuery extends ReportPeriodQuery {}

@@ -1223,6 +1223,9 @@ model Order {
 
   @@index([businessDate, department])
   @@index([status, department])
+  /// The reports' and the overview's settled bills by settlement time
+  /// (`settledIn`): without it every read scans every settled bill ever.
+  @@index([status, settledAt])
   @@index([tableId, status])
   @@index([customerId])
 }
@@ -1711,6 +1714,14 @@ model AttendanceCorrection {
 /// human reference. **Append-only**, by trigger as `AuditLog` is: a ledger
 /// row deleted is a manager's limit quietly raised. Restrict: a manager with
 /// approvals is never deleted (staff are deactivated).
+///
+/// **A release row** (C8-0, the founder's decision of 2026-10-24) gives
+/// back what an earlier row counted for money that never moved: a card
+/// refund Paystack refused, or one a manager found missing from Paystack's
+/// dashboard. It names the row it releases (`releasesId`, unique, so a row
+/// is released once at most), carries a negative `amountKobo` no larger
+/// than that row's, and that row's person, business date and `ref`; a
+/// trigger refuses any other shape. Only a release row may be negative.
 model ApprovalLedger {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -1720,8 +1731,14 @@ model ApprovalLedger {
   amountKobo   Int
   action       String
   ref          String?
+  /// The row this one releases, for a release row only.
+  releasesId   String?  @unique
 
-  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  staff        Staff           @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  releases     ApprovalLedger? @relation("LedgerRelease", fields: [releasesId], references: [id], onDelete: Restrict)
+  releasedBy   ApprovalLedger? @relation("LedgerRelease")
+  /// The card refund this row counted, for `online.balance` to the card.
+  onlineRefund OnlineRefund?
 
   @@index([staffId, businessDate])
 }
@@ -2078,10 +2095,15 @@ model OnlineRefund {
   providerMessage      String?
   staffId              String
   sentAt               DateTime?
+  /// The Daily Approval Limit's row that counted this refund (C8-0): null
+  /// for the Owner, who is never counted. A refusal releases what it
+  /// counted.
+  ledgerEntryId        String?            @unique
 
-  onlineOrder OnlineOrder @relation(fields: [onlineOrderId], references: [id], onDelete: Restrict)
-  payment     Payment     @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  staff       Staff       @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  onlineOrder OnlineOrder     @relation(fields: [onlineOrderId], references: [id], onDelete: Restrict)
+  payment     Payment         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  staff       Staff           @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  ledgerEntry ApprovalLedger? @relation(fields: [ledgerEntryId], references: [id], onDelete: Restrict)
 
   @@index([onlineOrderId])
   @@index([status, createdAt])
@@ -2135,4 +2157,25 @@ model IdempotencyKey {
 
   @@unique([scope, key])
   @@index([createdAt])
+}
+
+/// One rate-limit count (card C8-3): how many requests one key (a route,
+/// a named count and who is counted, hashed by the throttler) has made in
+/// the window that ends at `windowEndsAt`, and until when it is refused
+/// (`blockedUntil`), if it went over.
+///
+/// **Stored, so every Cloud Run instance counts against one number.** An
+/// in-memory count (plan A18) is per instance, so each new instance gave a
+/// caller the limit again, and a restart forgot it. Written only by
+/// `RateLimitStore.hit`, one atomic upsert per request. The tokens sweep
+/// deletes rows whose window and block have both ended; an ended row that
+/// is still here is treated as a fresh window, so nothing depends on the
+/// sweep having run. A CHECK holds `hits` at one or more.
+model RateLimitCount {
+  key          String    @id
+  hits         Int
+  windowEndsAt DateTime
+  blockedUntil DateTime?
+
+  @@index([windowEndsAt])
 }

@@ -45,19 +45,8 @@ import {
   type IsolatedDatabase,
 } from './isolated-database';
 import { chargeSuccessBody, postSignedWebhook } from './paystack-webhooks';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
-
-interface Bell {
-  data: {
-    id: string;
-    title: string;
-    detail: string;
-    page: string;
-    category: string;
-    ref?: string;
-  }[];
-  total: number;
-}
 
 interface CustomerOrder {
   number: string;
@@ -301,13 +290,7 @@ describe('Online order messages, my orders and the bell (e2e)', () => {
       .expect(status);
   };
 
-  const bell = async (headers: Record<string, string>) =>
-    (
-      await request(server())
-        .get('/api/v1/staff/notifications?pageSize=100')
-        .set(headers)
-        .expect(200)
-    ).body as Bell;
+  const bell = (headers: Record<string, string>) => readBell(server(), headers);
 
   const items = async (customerId: string) =>
     prisma.customerNotification.findMany({

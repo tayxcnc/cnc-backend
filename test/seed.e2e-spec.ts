@@ -420,7 +420,10 @@ describe('seeds (e2e)', () => {
         expect(await tx.staff.findUniqueOrThrow({ where: { email } })).toEqual(
           stored,
         );
-        expect(await tx.staff.count({ where: { role: 'OWNER' } })).toBe(1);
+        // Neither rerun made an Owner (scoped to their name, as below).
+        expect(
+          await tx.staff.count({ where: { role: 'OWNER', name: 'Again' } }),
+        ).toBe(0);
       });
     });
 
@@ -455,7 +458,13 @@ describe('seeds (e2e)', () => {
             select: { role: true },
           }),
         ).toEqual({ role: 'CASHIER' });
-        expect(await tx.staff.count({ where: { role: 'OWNER' } })).toBe(0);
+        // No Owner was made under the probe's name. Counting every Owner
+        // raced the shared database's other suites, which commit Owners of
+        // their own while this runs (holding the staff table instead stalled
+        // their writes).
+        expect(
+          await tx.staff.count({ where: { role: 'OWNER', name: 'Probe' } }),
+        ).toBe(0);
       });
     });
   });

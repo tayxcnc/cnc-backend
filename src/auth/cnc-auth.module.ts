@@ -4,6 +4,8 @@ import { PassportModule } from '@nestjs/passport';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuditModule } from '../audit/audit.module';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
+import { RateLimitStore } from '../common/throttler/rate-limit-store';
+import { RateLimitModule } from '../common/throttler/rate-limit.module';
 import { CncConfigService } from '../config/cnc.config';
 import { MoneyControlModule } from '../money-control/money-control.module';
 import {
@@ -38,8 +40,10 @@ import {
  * to boot on a placeholder or a value under 32 characters. TAY's realm has
  * its own secret, so a TAY token presented here fails verification (401).
  *
- * `ThrottlerModule` is registered here, with in-memory storage (plan A18:
- * no Redis at launch). It provides the options and storage
+ * `ThrottlerModule` is registered here, with stored counts
+ * (`RateLimitStore`, card C8-3: one count for every instance, where plan
+ * A18's in-memory storage gave each instance its own). It provides the
+ * options and storage
  * `ClientAddressThrottlerGuard` resolves against and registers no
  * APP_GUARD, so the limits reach only the routes that apply the guard by
  * hand (`auth-throttle.ts`). `ThrottlerModule` is `@Global`, so this is the
@@ -68,14 +72,19 @@ import {
     }),
     // Every named count, at the tightest number; each route's decorator in
     // `auth-throttle.ts` sets its own numbers and skips the counts it does
-    // not use.
-    ThrottlerModule.forRoot({
-      throttlers: Object.values(THROTTLERS).map((name) => ({
-        name,
-        limit: AUTH_ATTEMPT_LIMIT,
-        ttl: AUTH_ATTEMPT_WINDOW_MS,
-      })),
-      errorMessage: TOO_MANY_ATTEMPTS_MESSAGE,
+    // not use. The counts are stored (C8-3), so every instance shares them.
+    ThrottlerModule.forRootAsync({
+      imports: [RateLimitModule],
+      inject: [RateLimitStore],
+      useFactory: (store: RateLimitStore) => ({
+        throttlers: Object.values(THROTTLERS).map((name) => ({
+          name,
+          limit: AUTH_ATTEMPT_LIMIT,
+          ttl: AUTH_ATTEMPT_WINDOW_MS,
+        })),
+        errorMessage: TOO_MANY_ATTEMPTS_MESSAGE,
+        storage: store,
+      }),
     }),
   ],
   controllers: [StaffAuthController, StaffPasswordResetController],

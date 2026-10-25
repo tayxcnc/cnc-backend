@@ -21,7 +21,9 @@ import { StockService } from './stock.service';
  * `StockLedgerService` is exported: it is the one writer of balances and
  * movements, and the till (Bar settlement and reversal), the kitchen
  * entries, requests, purchases, waste and paid web orders move stock only
- * through it. `KitchenMappingService` is exported for the crosscheck.
+ * through it. `KitchenMappingService` is exported for the crosscheck, and
+ * `StockService` for Reports → Stock Movements (C8-1), which reads the
+ * movements as this module's own read does.
  *
  * Registers the `AuditRefAccess` reader for request numbers (`SR-`), which
  * plan §4.8 lets the Storekeeper, the Kitchen and a Bartender read. No
@@ -42,7 +44,7 @@ import { StockService } from './stock.service';
     StockLedgerService,
     KitchenMappingService,
   ],
-  exports: [StockLedgerService, KitchenMappingService],
+  exports: [StockLedgerService, KitchenMappingService, StockService],
 })
 export class StockModule implements OnModuleInit {
   constructor(

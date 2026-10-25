@@ -40,9 +40,9 @@ export class HealthResponse {
       'Whether Redis answered. Informational, never fatal — the status above ' +
       'stays "ok" and the HTTP code stays 200 whatever this says. `ok`: ' +
       'connected and answered a PING. `unavailable`: configured but not ' +
-      'reachable right now; rate limits are counting per instance in memory ' +
-      'until it returns. `unconfigured`: no Redis for this process, which ' +
-      'is the expected state at launch.',
+      'reachable right now. `unconfigured`: no Redis for this process, ' +
+      'which is the expected state at launch. Rate limits do not depend on ' +
+      'it: they are stored in the database.',
     enum: ['ok', 'unavailable', 'unconfigured'],
     example: 'unconfigured',
   })

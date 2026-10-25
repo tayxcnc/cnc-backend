@@ -23,11 +23,14 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { OnlineOrdersModule } from './online-orders/online-orders.module';
 import { OrderingModule } from './ordering/ordering.module';
 import { OrdersModule } from './orders/orders.module';
+import { OverviewModule } from './overview/overview.module';
 import { PaymentsModule } from './payments/payments.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
+import { RateLimitModule } from './common/throttler/rate-limit.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
 import { ReceptionModule } from './reception/reception.module';
+import { ReportsModule } from './reports/reports.module';
 import { SettingsModule } from './settings/settings.module';
 import { ShellModule } from './shell/shell.module';
 import { StaffModule } from './staff/staff.module';
@@ -55,6 +58,7 @@ import { WasteModule } from './waste/waste.module';
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
     CncConfigModule,
     CncPrismaModule,
+    RateLimitModule,
     IdempotencyModule,
     CncAuthModule,
     CustomersModule,
@@ -72,6 +76,8 @@ import { WasteModule } from './waste/waste.module';
     OrdersModule,
     KitchenModule,
     CashModule,
+    ReportsModule,
+    OverviewModule,
     ReceptionModule,
     CustomerNotificationsModule,
     EnquiriesModule,

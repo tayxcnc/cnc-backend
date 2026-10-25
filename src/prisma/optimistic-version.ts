@@ -19,7 +19,7 @@ export const STALE_VERSION_MESSAGE =
  * a model gains or loses a `version` field without this list following, so a
  * new versioned model cannot be written without the check being available.
  *
- * Later cards append their models here (requests, purchases, tasks…).
+ * A card that adds a versioned model appends it here.
  */
 export const VERSIONED_TABLES = [
   'Settings',

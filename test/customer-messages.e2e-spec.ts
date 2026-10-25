@@ -32,6 +32,7 @@ import { CustomerService } from '../src/customers/customer.service';
 import { SWEEP_TOKEN_HEADER } from '../src/internal/sweep-token.guard';
 import {
   MESSAGE_MAX_ATTEMPTS,
+  MESSAGE_RESERVED_DOMAIN,
   OutboundMessagesService,
 } from '../src/mail/outbound-messages.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
@@ -146,6 +147,7 @@ describe('customer messages (e2e)', () => {
     sentMail(app).configured = true;
     sentMail(app).failWith = undefined;
     sentMail(app).hold = undefined;
+    sentMail(app).deliversToInboxes = false;
   });
 
   const server = () => app.getHttpServer();
@@ -786,6 +788,30 @@ describe('customer messages (e2e)', () => {
         attempts: 1,
         retryAfter: null,
       });
+    });
+
+    it('never sends to a reserved domain through a transport that reaches real inboxes, and spends no attempt', async () => {
+      // As Resend on staging: the load test's guests are `@example.com`.
+      sentMail(app).deliversToInboxes = true;
+      const reserved = `load-web-${randomUUID()}@example.com`;
+      const real = `ada-${randomUUID()}@cnc-guests.ng`;
+      const refused = await book({ email: reserved });
+      const sent = await book({ email: real });
+
+      expect(await messageFor(refused.id)).toMatchObject({
+        status: OutboundMessageStatus.FAILED,
+        attempts: 0,
+        payload: null,
+        lastError: MESSAGE_RESERVED_DOMAIN,
+      });
+      await sweep('messages');
+      expect((await messageFor(refused.id)).attempts).toBe(0);
+      expect(sentMail(app).allTo(reserved)).toHaveLength(0);
+
+      expect((await messageFor(sent.id)).status).toBe(
+        OutboundMessageStatus.SENT,
+      );
+      expect(sentMail(app).allTo(real)).toHaveLength(1);
     });
 
     it('spends no attempt and sets no backoff while mail is not configured', async () => {

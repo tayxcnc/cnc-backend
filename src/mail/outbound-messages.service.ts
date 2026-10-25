@@ -14,6 +14,7 @@ import {
 } from './mail-templates';
 import { MAIL_TRANSPORT, type MailTransport } from './mail-transport';
 import { MessageSeal } from './message-seal';
+import { isReservedMailDomain } from './reserved-mail-domains';
 
 /** Sends a message gets before it is given up (plan §5.5: 3 attempts). */
 export const MESSAGE_MAX_ATTEMPTS = 3;
@@ -68,6 +69,13 @@ export const MAIL_NOT_CONFIGURED = 'Mail is not configured.';
 
 /** `lastError` of a message whose time ran out before a send succeeded. */
 export const MESSAGE_EXPIRED = 'Expired before it could be sent.';
+
+/**
+ * `lastError` of a message to a reserved domain, given up unsent on a
+ * transport that reaches real inboxes (`isReservedMailDomain`, C8 review).
+ */
+export const MESSAGE_RESERVED_DOMAIN =
+  'Not sent: the address is at a reserved domain that cannot receive mail.';
 
 /** `lastError` of a message whose payload could not be read back. */
 export const MESSAGE_UNREADABLE =
@@ -352,6 +360,17 @@ export class OutboundMessagesService {
     if (row.expiresAt !== null && row.expiresAt <= now) {
       await this.giveUp(row.id, MESSAGE_EXPIRED);
       return 'expired';
+    }
+
+    // No provider call, no attempt: a reserved domain can only bounce, and
+    // a bounce spends CNC's quota and its sending domain's standing (the
+    // load test's `@example.com` guests on staging).
+    if (this.transport.deliversToInboxes && isReservedMailDomain(row.to)) {
+      await this.giveUp(row.id, MESSAGE_RESERVED_DOMAIN);
+      this.logger.warn(
+        `Mail to ${row.to} was given up: a reserved domain cannot receive mail.`,
+      );
+      return 'failed';
     }
 
     let mail: { subject: string; html: string; text: string; replyTo?: string };

@@ -30,7 +30,9 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Business dates, `Africa/Lagos`, `wat.ts` | Contract conventions |
 | Enums on the wire and the frontend adapters | Contract conventions |
 | Pagination shape | Contract conventions |
-| Error body, messages kept byte for byte, status codes | Errors |
+| Error body, messages kept byte for byte, status codes, the database-busy 503 | Errors |
+| `npm run load:till`, where it may run (never staging by an agent; the host guard), the mix, the backoff, no email, the generator's pause, the measured figures | Load testing (and `docs/load-testing.md`) |
+| The Backend Brief §12 acceptance walk, the 107 demo tests' map (`docs/demo-tests-map.md`), the no-leak sweep over every route | The acceptance list |
 | `version` and the stale-write 409 | Optimistic concurrency |
 | `Idempotency-Key` and its CORS consequence | Idempotency |
 | The `CNC_` prefix, the `TAY_` refusal, `check:env-names` | Configuration |
@@ -39,14 +41,20 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `migrate dev` local only; `migrate deploy` by hand before the merge | Data and migrations |
 | Raw-SQL `now()`, `P2002`, sequences | Data and migrations |
 | Staff and customer sign-in, cookies, guards (from C3) | Auth |
+| Every public and customer write's limit (the table), stored counts (`RateLimitStore`, replaces A18's in-memory counts), `Retry-After`, the webhook's bad-signature count, `CustomerWriteThrottle`, the test namespace | Rate limits |
 | Customer email codes: caps, tries, sentences, `OtpService`, `CncCustomerGuard`, creating customers | Auth |
-| Email: the outbound queue, sealed payloads, expiry, the retry backoff, the transports, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
+| Email: the outbound queue, sealed payloads, expiry, the retry backoff, the transports, reserved domains never sent on Resend, the mail frame, Reply-To, `sentMail` in tests | Mail and the outbound queue |
 | `GET /me/notifications`, what writes an item, unread, the booking reminders (Q32) and `reminderSentAt` | The customer's in-app list and booking reminders |
 | `POST /enquiries`, `POST /group-enquiries`: honeypot, the two limits, the inbox email (Q20) | Enquiries |
 | The Cloud Scheduler sweep jobs, their schedules and how to create them | Infrastructure |
 | `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
+| Q36's periods, `POST /internal/sweeps/retention`, what deletion also forgets (unlinked records under the email, stored answers), the audit read withholding a deleted guest's values, what still holds a deleted person's details | Data retention and account deletion |
 | Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
+| Release rows: a refused card refund given back to the Daily Approval Limit (C8-0) | Money controls and the audit log; Staff Online Orders |
+| The nine reports: the shared period, Lagos day bounds, paging, bigint sums, departments by line, Q21's delivery line, who reads which; `settledBills`/`openBills` | Reports |
+| `GET /staff/overview`: manager vs staff overview, the layout deciding what is computed, each role's rows, Needs Attention, the trend's interval, the crosscheck over the last 366 days, the measured cost | The overview |
+| `GET /staff/notifications`: the bell's items, order and words, who gets which, the four alert switches, the review-task rule, the bounded poll, `readBell` in tests | The staff bell |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
@@ -98,6 +106,7 @@ npm test                 # jest unit tests
 npm run test:e2e         # jest, test/jest-e2e.json (locally: -- --maxWorkers=2)
 npm run lint             # eslint --fix
 npm run check:env-names  # fails on any env read that is not CNC_*, PORT or NODE_ENV
+npm run load:till        # the C8-4 load test; read docs/load-testing.md first
 npm run mock             # prism mock against openapi-cnc.json, port 4014
 
 npm run db:generate      # prisma generate, to generated/cnc-client
@@ -122,14 +131,20 @@ src/
                      CncStaffGuard, @Roles, @CurrentStaff; tokens, cookies, argon2id
   money-control/     MoneyControlService: Owner-only rules, approval limits and
                      the daily ledger, own record, Manager/Owner accounts, last Owner;
-                     standing() and approvalRefusal() for the approvals read
+                     standing() and approvalRefusal() for the approvals read;
+                     releaseCounted() for a refused card refund (C8-0)
   common/            money, dates, errors, pagination, request helpers, QR tokens
-                     and their SVG renderer, the client-address throttler guard,
-                     one-sentence field checks, the admin reason, item lists
+                     and their SVG renderer, the client-address throttler guard
+                     and the stored rate-limit counts (throttler/: RateLimitStore,
+                     RateLimitModule, C8-3),
+                     one-sentence field checks, the admin reason, item lists;
+                     the reports' period (report-period.ts, ReportPeriodQuery)
   health/            liveness and readiness
   idempotency/       Idempotency-Key: the service, decorator and scopes
-  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens,
-                     messages and reminders sweeps
+  internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens
+                     sweep (which also deletes ended rate-limit counts),
+                     messages and reminders sweeps, the retention sweep
+                     (RetentionSweepService, Q36, C8-5)
   customers/         the customer email-code sign-in (/auth/code, verify, refresh,
                      sign-out), the account (/me: profile, email change, photo,
                      DELETE); CustomerService (the one creator of customers),
@@ -158,7 +173,8 @@ src/
   mail/              the outbound queue (OutboundMessagesService, its retry
                      backoff), templates, the CNC mail frame, MessageSeal, the
                      Resend and recording transports; mail-contact.ts (the
-                     greeting's first name and CNC's phone, shared)
+                     greeting's first name and CNC's phone, shared);
+                     reserved-mail-domains.ts (never sent on Resend)
   customer-notifications/  the customer's in-app list (GET /me/notifications,
                      POST /me/notifications/read), CustomerNotificationsService
                      (the one writer), the items' words
@@ -202,6 +218,15 @@ src/
                      the entries and day reads, the Kitchen Crosscheck report
                      (crosscheck(), the demo's function)
   cash/              cash.count and the Cash Reconciliation report
+  reports/           Reports (C8-1): Sales, Payments Received, Daily Transfers,
+                     Stock Movements, Waste, Maintenance History, Vendor Spend
+                     (ReportsService), beside the crosscheck and cash reports;
+                     the bill reads they share with the overview
+                     (sales-records.ts: settledBills, openBills)
+  overview/          GET /staff/overview (OverviewService): the manager
+                     overview's fourteen widgets by the person's layout, the
+                     staff overview for today; the trend's buckets
+                     (overview-trend.ts)
   reception/         Reception: bookings (ReservationsService.book, the one
                      booking command), table sessions, the floor read, the
                      Free Table Reminder; arrival rules in reservation-rules.ts;
@@ -210,11 +235,13 @@ src/
                      (CustomerReservationsService), the customer link
                      (customer-link.ts), the booking emails and in-app items
                      (ReservationMail), the reminders (ReservationRemindersService)
-  notifications/     GET /staff/notifications, the staff bell: the online
-                     items (C7-7), the Free Table Reminder, assigned tasks
-                     (C8-2 completes it)
+  notifications/     GET /staff/notifications, the staff bell (C8-2): every
+                     plan §9.1 item in the demo's order, behind the alert
+                     switches; the new items' words (staff-bell-items.ts),
+                     the bounded pager over the kinds (bell-sources.ts)
   shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
                      for Reception and managers), the overview layout
+                     (exported to overview/)
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
 prisma/
   schema.prisma      generates to generated/cnc-client (gitignored)
@@ -245,17 +272,37 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      webhooks; online-orders: the order a payment writes,
                      the races, the checkouts and payments sweeps;
                      online-orders-staff: the staff commands, the
-                     refunds through the fake Paystack, the limits;
+                     refunds through the fake Paystack, the limits,
+                     the refused refunds' releases (C8-0);
                      online-order-messages: the receipt, stage and
                      refund emails, /me/orders, the online bell items;
                      c7-gate: the C7 gate walk, the backend half of
-                     steps 1 to 6 with the fake Paystack),
-                     paystack-webhooks.ts,
+                     steps 1 to 6 with the fake Paystack;
+                     reports: the C8-1 reports' figures, the Lagos
+                     midnight, who reads which; overview: every
+                     widget's figures, each role's overview, the trend
+                     at 1, 62 and 63 days; money-control: the
+                     ledger, its lock, append-only, release rows;
+                     staff-bell: every role's bell, each alert switch,
+                     the paging, items leaving; rate-limits: the stored
+                     counts across instances, each write's limit, the
+                     webhook's bad-signature count; retention: the Q36
+                     sweep's boundaries, the open shift, batches;
+                     account-deletion: nothing but the audit log keeps
+                     a deleted person's details, and its read withholds
+                     them; c8-acceptance: the Backend Brief §12 list,
+                     one test per line, the sweep of every route for
+                     leaks),
+                     paystack-webhooks.ts, staff-bell.ts (readBell),
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,
                      shared-rows-lock.ts, test-images.ts
-scripts/             check-env-names.ts
+scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
+                     load:till, C8-4), load/load-targets.ts (where it may
+                     run, its backoff)
+docs/                conventions.md; load-testing.md (C8-4);
+                     demo-tests-map.md (the 107 demo tests, C8-6)
 ```
 
 ## Working style

@@ -9,9 +9,10 @@ import {
 import { STAFF_PRINCIPAL_KEY, type StaffRequest } from './staff-principal';
 
 /**
- * Rate limits for the staff credential routes. TAY's numbers (plan §11: ten
- * per fifteen minutes) and TAY's in-memory counting (plan A18: no Redis at
- * launch), **counted by account rather than by address**.
+ * Rate limits for the staff credential routes, and from C6 to C8-3 every
+ * other public or customer write. TAY's numbers (plan §11: ten per fifteen
+ * minutes), **counted by account rather than by address**. The table of
+ * every route and its limits is in `docs/conventions.md`, *Rate limits*.
  *
  * TAY counts every credential route per client address, which suits TAY's
  * few staff. CNC's staff work in one building, and every till, tablet,
@@ -38,8 +39,10 @@ import { STAFF_PRINCIPAL_KEY, type StaffRequest } from './staff-principal';
  *   is 256 random bits and single-use, so there is nothing to guess; the
  *   ceiling only keeps an unauthenticated, state-changing route a number.
  *
- * Counts are per route and per instance. Two instances at most means a
- * caller gets at most twice each number, which is still a number.
+ * Counts are per route, and from C8-3 they are stored (`RateLimitStore`,
+ * the throttler's storage): every Cloud Run instance counts against the
+ * same number, where the in-memory count of plan A18 gave each instance
+ * its own and forgot it on a restart.
  *
  * Applied per route with `@UseGuards(ClientAddressThrottlerGuard)` and one
  * of the decorators below, never as an APP_GUARD: a global guard would put
@@ -165,16 +168,23 @@ export function signedInCustomerTracker(req: Record<string, unknown>): string {
 export const PROFILE_SAVE_LIMIT = 30;
 
 /**
- * `PATCH /me`, per customer from any address. The route lists the throttler
- * after `CncCustomerGuard` (the controller's guard runs first), so a
- * request without a valid token is refused before it is counted.
+ * A signed-in customer's write, counted per customer from any address:
+ * `limit` in `ttl` milliseconds (fifteen minutes unless given), the other
+ * two counts skipped (C8-3). The route lists the throttler after
+ * `CncCustomerGuard` (a controller's guard runs before a method's), so a
+ * request without a valid token is refused before it is counted, and
+ * nobody can spend another customer's count. Per customer rather than per
+ * address, because customers share the venue's Wi-Fi and a carrier's NAT.
  */
-export function ProfileSaveThrottle(): MethodDecorator {
+export function CustomerWriteThrottle(
+  limit: number,
+  ttl: number = AUTH_ATTEMPT_WINDOW_MS,
+): MethodDecorator {
   return applyDecorators(
     Throttle({
       [THROTTLERS.account]: {
-        limit: PROFILE_SAVE_LIMIT,
-        ttl: AUTH_ATTEMPT_WINDOW_MS,
+        limit,
+        ttl,
         getTracker: signedInCustomerTracker,
       },
     }),
@@ -184,6 +194,47 @@ export function ProfileSaveThrottle(): MethodDecorator {
     }),
   );
 }
+
+/** `PATCH /me`, per customer from any address. */
+export function ProfileSaveThrottle(): MethodDecorator {
+  return CustomerWriteThrottle(PROFILE_SAVE_LIMIT);
+}
+
+/**
+ * `POST /auth/sign-out` (the customer's), per customer. A sign-out ends
+ * every session, so it needs no number of its own beyond keeping a
+ * state-changing route a number.
+ */
+export const CUSTOMER_SIGN_OUT_LIMIT = 30;
+
+/**
+ * `POST /me/photo` and `DELETE /me/photo`, each per customer. An upload is
+ * decoded and resized on the server and written to the bucket, the most
+ * expensive thing a customer can ask for; twenty is a person trying a few
+ * pictures, many times over.
+ */
+export const CUSTOMER_PHOTO_LIMIT = 20;
+
+/**
+ * `DELETE /me`, per customer. A deletion succeeds once; the count only
+ * keeps the refused ones (a booking still to come) from being a loop.
+ */
+export const ACCOUNT_DELETE_LIMIT = 10;
+
+/**
+ * `POST /me/notifications/read`, per customer. The app marks the list read
+ * each time it is opened; a hundred and twenty in fifteen minutes is far
+ * above a person opening it.
+ */
+export const NOTIFICATIONS_READ_LIMIT = 120;
+
+/**
+ * `PATCH /me/reservations/:id` and `POST /me/reservations/:id/cancel`,
+ * each per customer. Each change or cancellation emails the customer and
+ * takes the table's lock; thirty is far above a person moving a booking
+ * around, and a script cycling a table's slots meets it.
+ */
+export const BOOKING_CHANGE_LIMIT = 30;
 
 /**
  * A public route counted per client address only: `limit` requests in
@@ -250,10 +301,9 @@ export function SignedInCredentialThrottle(): MethodDecorator {
 
 /**
  * `POST /auth/code`, a customer asking for a sign-in code (C6): the address
- * over every email, at the sign-in ceiling. This is only the in-memory
- * first line, so a flood is refused before it reaches the database; the
- * real caps on issuance (per email and per address, counted on the stored
- * code rows so they hold across instances and restarts) are
+ * over every email, at the sign-in ceiling. This is only the first line,
+ * so a flood is refused before any code is issued; the real caps on
+ * issuance (per email and per address, counted on the code rows) are
  * `OtpService`'s.
  */
 export function CodeRequestThrottle(): MethodDecorator {

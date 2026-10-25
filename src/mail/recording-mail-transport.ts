@@ -30,6 +30,12 @@ export class RecordingMailTransport implements MailTransport {
   /** Set to false to see how the queue treats an unconfigured transport. */
   configured = true;
 
+  /**
+   * Set to true to see how the queue treats a transport that reaches real
+   * inboxes (a reserved domain is given up unsent).
+   */
+  deliversToInboxes = false;
+
   /** Set to make the next sends throw this, as a failing provider would. */
   failWith: Error | undefined;
 

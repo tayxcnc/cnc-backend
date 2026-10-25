@@ -1,20 +1,23 @@
 import {
   Controller,
   HttpCode,
+  HttpException,
   HttpStatus,
   Logger,
   Post,
   Req,
+  Res,
   ServiceUnavailableException,
   UnauthorizedException,
-  UseGuards,
 } from '@nestjs/common';
 import type { RawBodyRequest } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import type { Request } from 'express';
-import { AddressThrottle } from '../auth/auth-throttle';
+import type { Request, Response } from 'express';
+import { TOO_MANY_ATTEMPTS_MESSAGE } from '../auth/auth-throttle';
+import { clientAddressOf } from '../common/client-address';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
-import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
+import { RETRY_AFTER_HEADER } from '../common/throttler/client-address-throttler.guard';
+import { RateLimitStore } from '../common/throttler/rate-limit-store';
 import { CncConfigService } from '../config/cnc.config';
 import { WebhookAckResponse } from './dto/webhook-ack.response';
 import {
@@ -31,12 +34,21 @@ import {
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
 
 /**
- * Deliveries per client address per minute: a ceiling an order of
- * magnitude above any burst Paystack has reason to send (TAY's H-2), not a
- * budget, because Paystack retries a 429 like any non-2xx.
+ * Deliveries with a bad signature per client address per minute (C8-3).
+ * **A correctly signed delivery is never counted or refused for volume**:
+ * only Paystack holds the key, a replay of the same bytes changes nothing
+ * (the `PaymentEvent` ledger), and refusing one would only delay a payment
+ * until Paystack's retry or the payments sweep. Unsigned traffic is the
+ * only volume worth stopping, and past this number it is answered 429
+ * with `Retry-After` and no log line, so a flood cannot fill the log. The
+ * number is the old per-address ceiling (TAY's H-2), now counted in the
+ * stored counts every instance shares.
  */
-export const WEBHOOK_DELIVERY_LIMIT = 120;
-export const WEBHOOK_DELIVERY_WINDOW_MS = 60 * 1000;
+export const WEBHOOK_BAD_SIGNATURE_LIMIT = 120;
+export const WEBHOOK_BAD_SIGNATURE_WINDOW_MS = 60 * 1000;
+
+/** The stored count's key: the route, then the address it counts. */
+const BAD_SIGNATURE_KEY = 'payments-webhook:bad-signature:';
 
 /**
  * How long a delivery's request waits for its own handling before it
@@ -74,11 +86,13 @@ export class PaymentsController {
     private readonly config: CncConfigService,
     private readonly events: PaymentEventService,
     private readonly dispatcher: WebhookDispatcherService,
+    private readonly rateLimits: RateLimitStore,
   ) {}
 
+  // No throttler guard: it would count before the signature is checked,
+  // and a signed delivery must never be refused for volume. The bad
+  // signatures are counted below, after the check.
   @Post('webhook')
-  @UseGuards(ClientAddressThrottlerGuard)
-  @AddressThrottle(WEBHOOK_DELIVERY_LIMIT, WEBHOOK_DELIVERY_WINDOW_MS)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'paystackWebhook',
@@ -113,7 +127,10 @@ export class PaymentsController {
   })
   @ApiResponse({
     status: 429,
-    description: 'More than 120 deliveries a minute from one address.',
+    description:
+      'More than 120 deliveries with a bad signature in a minute from one ' +
+      'address; with `Retry-After`. A correctly signed delivery is never ' +
+      'refused for volume.',
     type: ApiErrorResponse,
   })
   @ApiResponse({
@@ -125,6 +142,7 @@ export class PaymentsController {
   })
   async webhook(
     @Req() request: RawBodyRequest<Request>,
+    @Res({ passthrough: true }) response: Response,
   ): Promise<WebhookAckResponse> {
     const key = this.config.paystackKey;
 
@@ -141,6 +159,23 @@ export class PaymentsController {
         key,
       )
     ) {
+      const counted = await this.rateLimits.hit(
+        BAD_SIGNATURE_KEY + clientAddressOf(request),
+        WEBHOOK_BAD_SIGNATURE_LIMIT,
+        WEBHOOK_BAD_SIGNATURE_WINDOW_MS,
+      );
+
+      if (counted.blocked) {
+        response.setHeader(
+          RETRY_AFTER_HEADER,
+          String(Math.max(1, counted.retryAfterSeconds)),
+        );
+        throw new HttpException(
+          TOO_MANY_ATTEMPTS_MESSAGE,
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+
       // Nothing from the unverified body reaches the log.
       this.logger.warn(
         'Rejected a webhook delivery with an invalid signature.',

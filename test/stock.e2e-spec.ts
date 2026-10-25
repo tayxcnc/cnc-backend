@@ -1103,14 +1103,26 @@ describe('Stock core (e2e)', () => {
         { stockItemId: rice.id, stockItemName: rice.name, qty: 2 },
       ]);
 
-      const list = await request(server())
-        .get('/api/v1/staff/kitchen-mappings')
-        .query({ pageSize: 100 })
-        .set(auth(StaffRole.MANAGER))
-        .expect(200);
-      const rule = (
-        list.body as { data: { menuItemId: string; lines: unknown[] }[] }
-      ).data.find((r) => r.menuItemId === dishId);
+      // Every page: the shared test database keeps every run's dishes,
+      // and past a hundred rules this one may sort onto a later page.
+      const rules: { menuItemId: string; lines: unknown[] }[] = [];
+
+      for (let page = 1; ; page += 1) {
+        const list = await request(server())
+          .get('/api/v1/staff/kitchen-mappings')
+          .query({ page, pageSize: 100 })
+          .set(auth(StaffRole.MANAGER))
+          .expect(200);
+        const body = list.body as {
+          data: { menuItemId: string; lines: unknown[] }[];
+          total: number;
+        };
+
+        rules.push(...body.data);
+        if (rules.length >= body.total || body.data.length === 0) break;
+      }
+
+      const rule = rules.find((r) => r.menuItemId === dishId);
       expect(rule?.lines).toHaveLength(1);
 
       const reference = await request(server())

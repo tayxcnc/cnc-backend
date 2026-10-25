@@ -55,3 +55,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # This negation MUST stay after the rule above: .gitignore is last-match-wins.
 docs/*
 !docs/conventions.md
+# Two more records that must survive a clone (C8): the 107 demo tests' map,
+# which test/c8-acceptance.e2e-spec.ts reads, and the load test's runbook.
+!docs/demo-tests-map.md
+!docs/load-testing.md

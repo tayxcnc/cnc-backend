@@ -20,6 +20,8 @@ import {
 import type { Request, Response } from 'express';
 import {
   CodeRequestThrottle,
+  CUSTOMER_SIGN_OUT_LIMIT,
+  CustomerWriteThrottle,
   RefreshThrottle,
   SignInThrottle,
 } from '../auth/auth-throttle';
@@ -241,7 +243,9 @@ export class CustomerAuthController {
 
   @Post('sign-out')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @UseGuards(CncCustomerGuard)
+  // The customer guard first, so only a verified customer is counted.
+  @UseGuards(CncCustomerGuard, ClientAddressThrottlerGuard)
+  @CustomerWriteThrottle(CUSTOMER_SIGN_OUT_LIMIT)
   @ApiBearerAuth()
   @ApiOperation({
     operationId: 'customerSignOut',
@@ -263,6 +267,7 @@ export class CustomerAuthController {
     description: 'A staff token.',
     type: ApiErrorResponse,
   })
+  @ApiResponse(tooMany('per customer'))
   async signOut(
     @CurrentCustomer() customer: CustomerPrincipal,
     @Res({ passthrough: true }) response: Response,

@@ -44,7 +44,7 @@ import {
 } from './dto/checkout.dto';
 
 /**
- * Checkouts per client address in fifteen minutes, in memory (A18). Each
+ * Checkouts per client address in fifteen minutes, stored (C8-3). Each
  * one is a call to Paystack on CNC's account; a person retrying a declined
  * card a few times stays far below it, and the venue's Wi-Fi shares one
  * address among many guests.
@@ -52,7 +52,7 @@ import {
 export const CHECKOUT_ADDRESS_LIMIT = 30;
 
 /**
- * Confirmation reads per client address in a minute, in memory (A18).
+ * Confirmation reads per client address in a minute, stored (C8-3).
  * A read may recheck with Paystack, so a script cycling through many
  * references must stop somewhere; five a second is far above a page
  * polling every few seconds, even for many guests on the venue's Wi-Fi.

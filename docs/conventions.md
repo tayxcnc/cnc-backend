@@ -147,6 +147,17 @@ They are here so the first card that builds it starts from the rule.
   field's own sentence once ("Enter a valid kitchen date.", "Enter a valid
   reconciliation date."); the docket, kitchen and report queries share it,
   so no two routes disagree on what a date is.
+- **The database not answering in time is `503` "CNC is busy right now.
+  Wait a moment and try again." with `Retry-After: 2`, never the generic
+  500** (`AllExceptionsFilter`, from C8-4): Prisma's P2024 (no pool
+  connection in time), P2028 (a transaction that could not start within its
+  wait or ran past its timeout, rolled back) and `pg`'s own "timeout
+  exceeded when trying to connect" (matched by its exact message). The C8-4
+  load test found them as 500s during a stall; nothing was written in any
+  of the three, every money and booking write carries an Idempotency-Key,
+  so trying again is the right answer and the client is told so. One
+  warning line with the code, never Prisma's message (it can name the
+  query). Any other database error stays the generic 500.
 
 ## Optimistic concurrency
 
@@ -638,8 +649,10 @@ They are here so the first card that builds it starts from the rule.
 - **The admin reset (`POST /staff/people/:id/reset-password`) sets a
   temporary password from `generateTemporaryPassword`, forces a change at
   first sign-in, ends every session, and returns the password once in the
-  response.** TAY emails it; CNC has no mail until C6, so the manager hands
-  it over in person, and C6 may move it to email. It is never stored in
+  response.** TAY emails it; CNC had no mail until C6, so the manager hands
+  it over in person. *Settled in C8-5: it stays in person after C6, because
+  a staff member who forgot their password is at the venue, and a password
+  in an inbox outlives its first use.* It is never stored in
   plain text, logged or written to an audit row. Managers only; a Manager or
   Owner account only by the Owner ("Only the Owner can create or change
   Manager and Owner accounts.", the demo's `staff.save` rule); never one's
@@ -661,6 +674,8 @@ They are here so the first card that builds it starts from the rule.
   says "Too many attempts. Wait a few minutes and try again.", not the
   throttler's default, which names a class. TAY's Redis fallback storage is
   not copied: with no Redis there is nothing to fall back from.
+  *Corrected in C8-3: the counts are stored in Postgres, not in memory,
+  and a 429 carries `Retry-After` (see* Rate limits*).*
 - **An e2e test that calls a throttled route sends its own
   `X-Forwarded-For` address** (`test/staff-auth.e2e-spec.ts` makes a fresh
   one per call). Every request from the harness otherwise shares one
@@ -865,6 +880,130 @@ They are here so the first card that builds it starts from the rule.
   sign-out does**: a refresh token carries no id a client could name, so
   one-device sign-out would be a token-service change.
 
+## Rate limits *(from C8-3)*
+
+- **Every rate-limit count is stored in Postgres (`RateLimitCount`,
+  written only by `RateLimitStore.hit`), never in memory; this replaces
+  plan A18's in-memory counting.** `RateLimitStore` is the storage of the
+  one `ThrottlerModule` (`cnc-auth.module.ts`), so every `@Throttle`
+  count is stored with no change to the decorators. An in-memory count is
+  per instance: each Cloud Run instance gave a caller the whole number
+  again, and a restart or a scale-to-zero forgot it, so a limit was a
+  number times however many instances happened to run. The stored caps
+  that already counted rows (codes, bookings, enquiries) are unchanged.
+- **One count is one atomic `INSERT … ON CONFLICT DO UPDATE` on the key's
+  row, timed by the database's clock, in a fixed window**: the first
+  request opens a window; the request over the limit is refused and
+  blocks the key for the window; blocked requests are refused and not
+  counted; the next request after the block opens a new window. The
+  row's lock orders requests arriving together on any instance, so none
+  is lost (25 at once against a limit of 10 allow exactly 10, in the
+  e2e suite), and one clock means instances cannot disagree about a
+  window. A fixed window lets a burst at the end of one window and the
+  start of the next through together, at most twice the number; that is
+  still a number, and it needs no second row per key.
+- **The key is a digest: `<namespace>:<sha256>` of the throttler's own
+  key (the route, the named count and who is counted) or of a hand-made
+  key.** No row holds an address or an email in the clear. The namespace
+  is `cnc` for the service (`RATE_LIMIT_NAMESPACE`); the e2e harness
+  gives each test app its own, because the suites share one database and
+  run minutes apart, and a count left by one would refuse another's
+  requests (`createTestApp({ rateLimitNamespace })` makes two apps one
+  deployment, which is how the cross-instance test works).
+- **Cost: each counted request is one more write on the shared pool, so
+  only writes are counted** (and the one read that may call Paystack).
+  The public reads stay unthrottled. There is one row per caller per
+  count per route, so a flood from many addresses is many small rows
+  until the sweep. The tokens sweep deletes rows whose window and block
+  have both ended (`rateLimitCounts` in its answer); an ended row it has
+  not reached is a fresh window, so nothing depends on the sweep. Every
+  venue device refreshing from one address meets on one row, whose lock
+  is held for one statement.
+- **A refusal costs no database round trip once this instance has seen
+  the key blocked: `RateLimitStore` remembers each blocked key until its
+  stored block ends and answers 429 from memory** (C8 review). Without it
+  every request of a flood at a public write (codes, bookings, enquiries,
+  checkouts, the quote, bad webhook signatures) still took one of the
+  three pooled connections the till needs, on the instance shared with
+  TAY, so a limit no longer shed load. The block's end is the database's,
+  carried over as a duration onto the process's monotonic clock
+  (`performance.now()`, which the e2e fake clock leaves real), so a block
+  never ends early on any instance; at most 10,000 keys are remembered
+  (`BLOCKED_KEYS_REMEMBERED`), ended ones first out, and a key past the
+  cap is still refused by its row. *Known limit:* many addresses, each
+  under its limit, are still one write per request; stopping that is the
+  edge's work (a load balancer or Cloud Armor rule), not the
+  application's, and belongs with production's hardening.
+- **Every 429 from a throttle answers "Too many attempts. Wait a few
+  minutes and try again." and carries a standard `Retry-After` in whole
+  seconds** (`ClientAddressThrottlerGuard`, beside the throttler's own
+  `Retry-After-<count>`; the webhook sets it by hand). CORS exposes it
+  (`CORS_EXPOSED_HEADERS`), so a page on an allowed origin can read it.
+  *Decision:* the stored caps that count rows (the code caps, the daily
+  booking caps, the hourly enquiry cap) keep their 429 without
+  `Retry-After`: their honest wait is when the oldest counted row leaves
+  the window, which they do not compute, and the code's resend gap
+  already says its seconds in the sentence.
+- **The Paystack webhook counts only deliveries with a bad signature,
+  per address, 120 a minute, after the signature is checked; a correctly
+  signed delivery is never counted or refused for volume.** Only Paystack
+  holds the key, a replay of the same bytes changes nothing (the
+  `PaymentEvent` ledger), and the payments and checkouts sweeps re-verify
+  with Paystack, so refusing a signed delivery could only delay a payment.
+  Past the number a bad delivery is answered 429 with `Retry-After` and
+  no log line, so a flood of forgeries cannot fill the log. A throttler
+  guard is not used on the route, because a guard counts before the
+  handler checks the signature.
+- **A signed-in customer's write is counted per customer, after
+  `CncCustomerGuard` (`CustomerWriteThrottle(limit, ttl)`)**, never per
+  address: customers share the venue's Wi-Fi and their carriers' NAT, and
+  counting after the guard means a request without a valid token is
+  refused uncounted and nobody can spend another customer's count. The
+  photo upload is counted by the guard before the upload interceptor
+  reads the file.
+- **The routes and their limits.** Windows are fifteen minutes unless
+  said. "Stored caps" count the records themselves. Staff routes behind
+  `CncStaffGuard` are not limited (a staff command needs a signed-in
+  account, and a global guard would put every staff read under a
+  sign-in limit), except the two credential routes below.
+
+  | Route | Caller | Limits | Why this number |
+  | :--- | :--- | :--- | :--- |
+  | `POST /auth/staff/sign-in` | anyone | the email at one address 10; the email from anywhere 30; the address over every email 100 | per account, not per address: the whole venue is one address (*Auth*) |
+  | `POST /auth/staff/refresh` | anyone with the cookie | the address 600 | a refused refresh signs a real person out; the token cannot be guessed |
+  | `POST /auth/staff/change-password` | staff | the signed-in account 10 | counted after the guard, so nobody spends another's tries |
+  | `POST /staff/people/:id/reset-password` | managers | the signed-in account 10 | as change-password |
+  | `POST /auth/code` | anyone | the address 100; stored caps: 30 s between codes per email, 5 per email and 30 per address, no code after 25 wrong tries in a day | the inbox and the guess rate (*Auth*, codes) |
+  | `POST /auth/verify` | anyone | as staff sign-in (10, 30, 100); 5 tries per code | the guess rate |
+  | `POST /auth/refresh` | anyone with the cookie | the address 600 | as staff refresh |
+  | `POST /auth/sign-out` | customer | the customer 30 (new) | a state-changing route stays a number |
+  | `PATCH /me` | customer | the customer 30 | a phone number cannot be tested as a list |
+  | `POST /me/email/code` | customer | the address 100; the code caps | as `/auth/code` |
+  | `POST /me/email/verify` | customer | as `/auth/verify` | as `/auth/verify` |
+  | `POST /me/photo`, `DELETE /me/photo` | customer | the customer 20 each (new) | decoding and resizing is the dearest thing a customer can ask for |
+  | `DELETE /me` | customer | the customer 10 (new) | it succeeds once; this stops a refused one looping |
+  | `POST /me/notifications/read` | customer | the customer 120 (new) | far above opening the list |
+  | `PATCH /me/reservations/:id`, `POST …/cancel` | customer | the customer 30 each (new) | each emails and takes the table's lock |
+  | `POST /ordering/quote` | anyone | the address 120 (new) | four times the checkouts one address may make |
+  | `POST /checkouts` | anyone or customer | the address 30 | each is a Paystack call on CNC's account |
+  | `GET /checkouts/:reference` | anyone with the reference | the address 300 a minute | a read that may call Paystack's verify |
+  | `POST /reservations` | anyone or customer | the address 30; stored caps: 20 a day per address, 10 a day per email | holds a table for a date and sends an email |
+  | `POST /enquiries`, `POST /group-enquiries` | anyone | the address 20 per form; stored cap: 5 an hour per address across both | each is an email into CNC's inbox |
+  | `POST /payments/webhook` | Paystack | bad signatures per address 120 a minute; signed deliveries never | see above |
+  | `POST /internal/sweeps/*` | Cloud Scheduler | none (`SweepTokenGuard`) | not a person; a wrong token costs a comparison |
+  | `POST /auth/staff/sign-out` | staff | none | staff-authenticated, as every staff command |
+
+- **`test/rate-limits.e2e-spec.ts` proves each new number and the stored
+  behaviour**: two apps on one namespace share a count and a restarted one
+  still refuses; requests together are counted once each; a block ends in
+  a fresh window; every limit above without an earlier test answers 429
+  with the sentence and a `Retry-After` within its window; signed
+  webhook deliveries far past the ceiling are all accepted and recorded
+  once, and a signed delivery lands from an address its bad signatures
+  have blocked; no key holds an address. The older suites keep their own
+  limits' tests (`staff-auth`, `customer-auth`, `customer-account`,
+  `customer-reservations`, `enquiries`).
+
 ## Mail and the outbound queue *(from C6)*
 
 - **Every email goes through `OutboundMessagesService` (`src/mail/`):
@@ -928,10 +1067,22 @@ They are here so the first card that builds it starts from the rule.
   (`PLACEHOLDER_NOT_SET`, `CHANGE_ME`) as unset.** Staging carries the
   placeholder until the founder's Resend steps; handed to Resend it would
   make every send a failure that burns a retry.
+- **On a transport that reaches real inboxes (`deliversToInboxes`:
+  Resend), a message to a reserved domain is given up unsent, with no
+  provider call and no attempt spent** (`isReservedMailDomain`:
+  `example.com`, `.net`, `.org` and every `.test`, `.example`, `.invalid`
+  and `.localhost` name, RFC 2606 and 6761; `lastError` "Not sent: the
+  address is at a reserved domain that cannot receive mail."; C8 review).
+  Such an address can only bounce: the load test's guests are
+  `@example.com`, and people trying staging type `test@example.com`, so
+  each send would spend CNC's Resend quota and count as a hard bounce
+  against its sending domain. The recording transport says false, because
+  every suite mails `.test` addresses and reads them back.
 - **The e2e harness replaces the transport with a `RecordingMailTransport`
   that logs nothing; a suite reads mail with `sentMail(app)`** and takes a
-  code from the email's text, as a customer would. Its `configured` and
-  `failWith` switches stand in for an unconfigured or failing provider.
+  code from the email's text, as a customer would. Its `configured`,
+  `failWith` and `deliversToInboxes` switches stand in for an unconfigured,
+  failing or real provider.
 - **The mail frame is `cnc-mail-frame.ts`: TAY's table structure, CNC's
   colours (`cnc-frontend/app/globals.css`), the wordmark "CHEF NORO
   CULINARY" and the site's icon from `buildWebUrl('/icons/icon-192.png')`**
@@ -1037,7 +1188,10 @@ They are here so the first card that builds it starts from the rule.
   is refused (409) while a booking the customer made in the app (`APP`)
   holds a table on a date from today on, or a linked bill is open**: an
   anonymised upcoming booking would leave Reception a table held for
-  nobody. The audit log keeps what it recorded (A13).
+  nobody. The audit log keeps what it recorded (A13). *From C8-5: what
+  carries the verified email unlinked is forgotten too, stored answers
+  naming the records are removed, and the audit read withholds the guest's
+  values; see* Data retention and account deletion.
 - **An upcoming website or Reception booking linked to the account by its
   email or phone (Q35) does not refuse a deletion: it is unlinked and kept
   as the guest booking it was made as** (from the C6 review). Anyone can
@@ -1061,6 +1215,88 @@ They are here so the first card that builds it starts from the rule.
   command, the floor, the public availability, the table release and
   account deletion, so no two of them disagree about what holds a table
   or keeps a bill open.
+
+## Data retention and account deletion *(from C8-5)*
+
+- **Q36's periods are the founder's standing default: enquiries are kept
+  12 months, attendance 2 years** (`ENQUIRY_RETENTION_MONTHS`,
+  `ATTENDANCE_RETENTION_YEARS` in `src/internal/retention-sweep.service.ts`,
+  the one place they are written). The Nigeria Data Protection Act 2023
+  asks for a stated retention, and a number written twice drifts.
+- **`POST /internal/sweeps/retention` (`RetentionSweepService`, behind
+  `SweepTokenGuard`) deletes enquiries made before the start of the same
+  Lagos date 12 months ago, and finished shifts dated before the same date
+  2 years ago, with their corrections.** Lagos dates, because every period
+  a person reads here is a Jos day. A date the earlier year lacks (29
+  February) rolls forward, so a row is kept a day longer, never deleted a
+  day early.
+- **What references the rows was checked before any delete:** nothing
+  references an `Enquiry` (its email to CNC's inbox keeps only CNC's own
+  address once sent); an `AttendanceRecord` is referenced only by its
+  `AttendanceCorrection` rows, which cascade with it; the audit log names a
+  scan or correction by the person's staff number, never by the record, so
+  every audit read stays whole. **The audit log is append-only and is never
+  swept** (A13), and neither is any money record.
+- **An open shift is never deleted, however old.** It is the state the
+  person's next scan acts on (it closes it), and the partial unique index
+  allows one per person; deleting it would change what a scan does.
+- **Batches of 500, at most 20 a table a run, each selecting ids and then
+  deleting them with the cutoff repeated; idempotent; one sentence a run**
+  ("Sweep retention deleted N enquiry(ies) and M attendance record(s).",
+  plus "; more remain for the next run." at the cap). A run's request
+  stays short on a shared instance, a row written meanwhile can never be
+  caught, and a second run the same day deletes nothing. Its Scheduler
+  job's proposed schedule is in *Infrastructure*; the job waits for the
+  founder.
+- **Deleting an account (`DELETE /me`) also forgets what carries the
+  account's verified email without being linked to it**
+  (`CustomerDeletionService.forgetUnlinked`): its enquiries are deleted,
+  and its finished guest checkouts and web orders (placed before the email
+  was verified, or without saving details) lose the person as linked ones
+  do. The email was proved with a code, so these are the person's; a phone
+  is never matched, because phones are not verified while there is no SMS
+  (Q5). A guest order still active, or a checkout still waiting for or
+  holding a payment, is left as it is and refuses nothing: anyone can type
+  an email at checkout.
+- **Deletion also removes stored Idempotency-Key answers that carry the
+  account's email or name one of its records** (a Reception booking's
+  create, an Online Orders edit, kept 7 days). The cost is only the replay
+  of a request about a record that no longer names anyone; a retry comes
+  within seconds, not after a deletion.
+- **The audit log keeps what it recorded, so the read withholds it**
+  (`AuditQueryService`): a row written by a deleted customer, or about a
+  booking, a bill or a checkout that deletion anonymised, shows its
+  customer actor as "Deleted customer" and each guest field
+  (`CONTACT_FIELDS`: name, phone, email, notes, address, a bill's guest, a
+  transfer's sender) as "<Field> not shown: the customer deleted their
+  account." or "<Field> changed, not shown: …" (new sentences). The staff
+  app's describeChange printed every value, so a manager reading a
+  deleted guest's booking history would otherwise read their number. Free
+  text a person typed into a `reason` cannot be told apart and is shown.
+- **A checked-in booking's seating is anonymised with it, and its
+  release row is withheld at the read** (C8 review). Check-in copies the
+  booking's name into `TableSession.guest`, and `table.release` writes it
+  into an audit row under the table's ref (`D-B1`), not the booking's, so
+  matching by ref alone missed it. Deletion sets the seating's guest to
+  "Deleted customer"; the release row carries `sessionId` (never
+  described), and the read withholds the row when that seating's booking
+  is anonymised. A release written before the row carried `sessionId`
+  cannot be joined and is shown as recorded: only local and staging test
+  data has one, as production had no guests yet. A transfer's sender (or
+  refund recipient) on the deleted person's bills becomes "Deleted
+  customer" too (*decision*: Daily Transfers still lists the payment, its
+  amount and its bank reference, which is what matching it to the bank
+  statement needs; the name is the guest's). A card payment's brand and
+  last four digits stay: they identify no one without the bank.
+- **What still holds a deleted person's details, by decision:** the audit
+  log's rows (append-only, withheld at the read, above); a web docket's
+  note (a docket revision is never changed; the founder's standing
+  default); CNC's own inbox, where enquiries and held-payment alerts were
+  emailed; and the rate-limit counts' keys, which are SHA-256 hashes and
+  end with their window. `test/account-deletion.e2e-spec.ts` searches every
+  other table for the person's email, phones, name and address after a
+  deletion (a guest web order refunded by transfer, a cancelled booking
+  and a booking checked in and released among them) and finds none.
 
 ## The public reads *(from C6)*
 
@@ -1102,7 +1338,10 @@ They are here so the first card that builds it starts from the rule.
 - **The public reads are not throttled.** They are cheap reads, the
   cacheable ones are served from caches, and the venue's Wi-Fi puts many
   guests behind one address, which an in-memory per-address limit (A18)
-  would lock out together.
+  would lock out together. *From C8-3 the counts are stored, which makes
+  each counted request a database write; the reads stay unthrottled for
+  that reason too. `POST /ordering/quote` is a write by method and now has
+  a limit (see* Rate limits*).*
 
 ## Money controls and the audit log *(from C3)*
 
@@ -1142,7 +1381,40 @@ They are here so the first card that builds it starts from the rule.
 - **`ApprovalLedger` is append-only by trigger, like `AuditLog`, and an
   amount is always positive.** A deleted or lowered row is a manager's limit
   quietly raised. A refund counts by its size, so the writer stores the
-  absolute amount.
+  absolute amount. *Amended by C8-0 below: a release row is the one
+  negative row.*
+- **A decision whose money never moved is given back by a release row,
+  never by touching the row that counted it** (C8-0, the founder's
+  decision of 2026-10-24: a card refund Paystack refused, or one a manager
+  resolves as not in Paystack's dashboard). The limit caps the money a
+  manager moves in a day, and a refusal moves none. `withinLimit` answers
+  the row it wrote, the refund keeps it (`OnlineRefund.ledgerEntryId`), and
+  `releaseCounted` appends `online.refundRelease` with a negative amount,
+  `releasesId` naming the row, and that row's person, business date and
+  ref, in the transaction that records the refusal. So the day lowered is
+  the day that counted it, whenever and by whomever the refusal is
+  recorded, and the release commits with the refusal or not at all.
+- **A release gives back at most what its row counted, and a row is
+  released once** (`ApprovalLedger_amount_check` lets only a row with
+  `releasesId` be negative; the unique `releasesId` and the
+  `ApprovalLedger_release_shape` trigger refuse a second release, a larger
+  one, one on another person, date or ref, and a release of a release).
+  The service computes the amount, but only the database can stop a
+  mistaken or concurrent writer; a release above its row would raise a
+  manager's limit for unrelated decisions.
+- **`releaseCounted` takes no ledger lock.** A release only lowers a day,
+  so a decision summing that day while it commits sees the higher total
+  and can at worst be refused, never pass above the limit; and taking the
+  lock after the refund's own rows could deadlock against a decision that
+  holds the lock and waits for those rows (`online.balance` settling the
+  same adjustments).
+- **`standing()` and `approvalRefusal` need nothing new for releases:**
+  the day's `bigint` sum already includes the negative rows, so the
+  Approvals screen predicts on what the manager actually moved.
+- **A plain `TRUNCATE "ApprovalLedger"` now stops at the foreign keys that
+  name its rows; the append-only test truncates with `CASCADE` to reach the
+  trigger**, as the stock movements' test does. The trigger fires before
+  anything is emptied, so the cascade empties nothing.
 - **The last-Owner rule takes one advisory lock before it counts the other
   active Owners.** Two Owners demoting each other at once would otherwise
   both see the other still active and leave CNC with none. An advisory lock
@@ -1568,8 +1840,9 @@ They are here so the first card that builds it starts from the rule.
   a role whose pages include Tasks** (the demo's `staffNotifications`; the C5
   gate's step 2). The page rule keeps every bell item openable. The demo
   hides a manager's own review tasks while the approvals alert is on,
-  because the Purchase Approval item stands in for them; that item is C8-2's,
-  so until it exists the review task shows as an assigned task.
+  because the Purchase Approval item stands in for them. *From C8-2 the
+  Purchase Approval item exists and the rule is applied (see* The staff
+  bell*); a review task shows only while the approvals alert is off.*
 
 ## Waste *(from C5)*
 
@@ -1743,7 +2016,8 @@ They are here so the first card that builds it starts from the rule.
 - **The demo's "manager bell contains pending approvals and removes each
   when it is resolved" is ported onto this read
   (`test/approvals.e2e-spec.ts`); the bell item itself is C8-2's**
-  (plan §9.1), and the C5 gate does not need it.
+  (plan §9.1), and the C5 gate does not need it. *Built in C8-2:* see
+  *The staff bell*.
 
 ## Tasks *(from C5)*
 
@@ -2205,7 +2479,9 @@ They are here so the first card that builds it starts from the rule.
   the latest revision of every ref dated in the range (every revision of a
   ref carries its bill's date), in the order those revisions were written.
   One pure function, so the overview's Needs Attention count (C8) and the
-  report can never disagree.
+  report can never disagree. Both read through one loader
+  (`KitchenCrosscheckService.rows`, a range or every date): the report
+  over its range, `notMatchedCount()` over every date (*The overview*).
 - **A cash count's expected figure is the date's non-reversed `CASH`
   payments, refunds included, summed as `bigint` when the count is
   recorded, and the count keeps it** (plan §4.3; `src/cash/`). Payments are
@@ -2223,7 +2499,9 @@ They are here so the first card that builds it starts from the rule.
 - **The two reports built with these cards sit under `staff/reports` and
   take `from`/`to` through `resolveDateRange` (today when absent, at most
   366 days).** C8's other reports join them there with the same range rule,
-  so every report answers a bad range in the same words.
+  so every report answers a bad range in the same words. *From C8-1:* all
+  nine share `ReportPeriodQuery` (`src/common/dto/report-period.query.ts`)
+  and `reportPeriod` (`src/common/report-period.ts`); see *Reports*.
 - **A suite that closes a kitchen day or pins a date's cash figures runs on
   `createIsolatedDatabase`** (`test/kitchen.e2e-spec.ts`,
   `test/cash-count.e2e-spec.ts`). A close is one row for the whole database
@@ -2231,6 +2509,288 @@ They are here so the first card that builds it starts from the rule.
   there would make every later kitchen save that day a manager's
   correction; and every suite takes cash on the shared database, so no
   expected figure could be pinned.
+
+## Reports *(from C8-1)*
+
+- **The nine reports are JSON reads under `/staff/reports/*`, computed on
+  read from the stored rows the way the staff app's `reports.tsx` computes
+  them from its local store** (plan §10, A20): `sales`, `payments`,
+  `kitchen-crosscheck`, `stock-movements`, `waste`, `cash`, `transfers`,
+  `maintenance`, `vendor-spend`. The screen keeps building its CSV from the
+  rows (`staff/lib/exports.ts`), so the API never builds a file.
+- **Every report takes one query class (`ReportPeriodQuery`) and one range
+  rule (`reportPeriod`): `from` and `to` as Lagos business dates,
+  inclusive, today when absent, at most 366 days, refused with
+  `resolveDateRange`'s sentences.** The demo's `validatePeriod` checks the
+  same two things (real dates, an end not before the start) on the screen,
+  in its own words, before it asks; the API keeps the words its first two
+  reports already answer, so all nine say a bad range the same way.
+- **A record dated by an instant (a settlement, a movement, a waste entry,
+  a requisition) is in the range from 00:00 in Jos on `from` to 00:00 in
+  Jos the day after `to` (`ReportPeriod.start`/`end`, `watDayBounds`); one
+  dated by a business date column (a payment, a cash count, a repair's
+  reported date) is matched on the dates.** A bill settled at 00:30 in Jos
+  is the next day's sale, though its UTC date is the day before; the e2e
+  suite pins both sides of the midnight and fails with UTC day bounds.
+- **An instant in a report's raw SQL is bound as ISO text and read as UTC
+  (`(…::timestamptz AT TIME ZONE 'UTC')`, `utcInstant` in
+  `reports.service.ts`), never as a Date parameter.** The columns hold UTC
+  without a zone (*Data and migrations*); a zoned parameter would be cast
+  in the session's zone, the hour-long drift TAY once shipped.
+- **Every report pages its table like the first two
+  (`{ data, page, pageSize, total, from, to }` and its own figures), and
+  every figure beside the table covers the whole range, never the page.**
+  The screen's Stat cards are range totals; a page-sized sum would change
+  as the user pages.
+- **Money is summed as `bigint` in SQL (plan §10), and a bill's VAT and
+  service are rounded per bill by the till's own formula
+  (`totalsFromSubtotal` in `order-totals.ts`, which `orderTotals` calls).**
+  The demo rounds each bill's figures and adds the bills; summing VAT over
+  the range first would differ by a kobo per bill, and a second copy of
+  the formula in SQL would be one that drifts.
+- **Sales departments are each line's (`departmentShares`): a bill whose
+  lines are one department is wholly that department's, and a mixed web
+  order gives the Bar its drinks' own totals at the bill's rates (the
+  discount shared by subtotal), the bill's own department the rest** (plan
+  §10, D30: "web drinks count as Bar"). *Decision (the plan leaves the
+  split open):* the remainder rule makes the departments add up to
+  Completed Sales to the kobo. With a department chosen, a bill appears
+  when it has a line in it, with that department's share of every figure;
+  the row's `department` stays the bill's own (its number's), and
+  `departments` lists its lines'.
+- **Q21: delivery fees are their own line (`deliveryFeesKobo`,
+  `deliveryOrders`), never inside a sales figure, and they are reported
+  whatever department is chosen**: a fee belongs to no department, and the
+  bill's totals exclude it (*Staff Online Orders*: "the fee stays its own
+  line outside the bill").
+- **Still Owed is every open bill (Open or Payment) of any date, by the
+  bill's department, after part payments (`balanceDueKobo`)**, as the
+  demo's stat is: it is what is owed now, not what the range sold.
+- **Sales by Item and by Category follow the menu's order (`MENU_ORDER`)
+  and name each dish and staff category as they stand now**, as the demo
+  reads them from its menu; quantities and money are the lines as sold,
+  before order-level discounts.
+- **Payments Received is every non-reversed payment dated in the range,
+  refunds (negative) included, newest first, with the demo's kind:
+  `PART_PAYMENT` for a part payment, `ONLINE_CHECKOUT` for any other
+  `ONLINE` payment, `FINAL_PAYMENT` otherwise.** The demo's own rule, so a
+  card refund shows as `ONLINE_CHECKOUT` with a negative amount, as the
+  demo would show it. Daily Transfers is the `TRANSFER` rows of the same
+  read, oldest first (the demo's list order).
+- **Stock Movements, Waste and Maintenance History are answered by their
+  own modules' services (`StockService.movements` with a time window,
+  `WasteService.reportPage`, `MaintenanceService.reportPage`)**, so a row
+  reads the same in the report as on its screen. Waste adds the Lagos day
+  it was logged (the Date column) and lists every status, oldest first.
+- **Vendor Spend lists every vendor in the order they were added, zero
+  rows included; Purchases Received is the Fulfilled requisitions raised
+  in the range, by line vendor (received packs × cost per pack), and
+  Maintenance Cost the repairs reported in the range.** *Decision:* the
+  demo dates a requisition by when it was raised (`p.at`), and the record
+  has no received-at column; dating by the receipt would need the
+  `PURCHASE_RECEIPT` movement, which the demo does not read.
+- **Who reads which is the staff app's (plan §6.1): managers all nine; the
+  Cashier Payments Received, Cash Reconciliation and Daily Transfers
+  (`@Roles(CASHIER)`); every other role none (`@Roles()`).** The e2e suite
+  walks every role over every report.
+- **`test/reports.e2e-spec.ts` runs on `createIsolatedDatabase` and writes
+  its bills, payments, movements, waste, purchases and repairs directly at
+  chosen instants.** Every report sums the whole range, so another suite's
+  row in the shared database would move its figures; the commands stamp
+  the server's clock, and the suite is about how the reports read the
+  records, not how the commands write them.
+- **"Settled in the range" and "still owed" are one query each
+  (`settledBills`, `openBills` in `src/reports/sales-records.ts`), shared
+  by the Sales report and the overview**, with `utcInstant` and `kobo`.
+  Two copies of either query would be two answers to "what did we sell
+  today", and a manager reads both screens side by side.
+
+## The overview *(from C8-1)*
+
+- **`GET /staff/overview?from&to` is open to every active staff member,
+  as the Overview page is (`canAccess`), and the role decides what comes
+  back** (plan §5.3, §6.1; `src/overview/`). `scope` is `FULL` for the
+  Owner and Managers (the manager overview, `overview.tsx`) and `BASIC`
+  for every other role (the staff app's staff `Overview` in
+  `workspace.tsx`). The demo shows the two screens to the same split.
+- **A manager gets only the widgets their saved layout shows
+  (`ShellService.overviewPreferences`: the Service preset when none is
+  saved), in the layout's order; a hidden widget is `null` and costs no
+  query.** The layout is already per person on the server (*Optimistic
+  concurrency*), so the poll computes what is on that person's screen and
+  nothing else. After `PUT /staff/me/preferences/overview` the screen reads
+  the overview again.
+- **Every other role gets the Service preset's eight widgets for today,
+  whatever `from` and `to` say, with plan §6.1's row filters:** a
+  Bartender's Settled Sales, Outstanding Bills and Open Orders are the
+  Bar's (*decision*: §6.1 says "Overview ✓ (Bar)"; the demo filtered only
+  the bills owed, and §6.1 is the approved record); Kitchen gets today's
+  kitchen entries (`kitchenEntries`) in place of sales, as the demo does.
+  The staff screen has no period, so a range would be a figure nobody
+  sees.
+- **Needs Attention lists a line only for a role whose page the line
+  opens, and counts what that page would show the reader** (the demo's
+  `canAccess(actor.role, x.page)` filter, then §6.1's row filters):
+  Purchase Requisitions and Waste Awaiting Review (Approvals; managers;
+  the approvals counts, `pendingCount()`); Kitchen Crosscheck (managers
+  only: *decision*, the Cashier opens Reports but may not read that
+  report); Open Stock Requests (Pending or Partially Issued, a Bartender's
+  or Kitchen user's own location, `scopedStockLocation`); Tasks in
+  Progress (not Done, as Tasks shows them to the reader, `visibleTasks`;
+  *decision*: only for roles that open Tasks, so a Waiter or Bartender is
+  never sent to a page that refuses them, the bell's rule).
+- **Kitchen Crosscheck counts the rows that are not Matched dated from
+  366 days back (today included) on** (`notMatchedCount`, the report's
+  `REPORT_MAX_DAYS`; later dates too, as a web order's slot may be
+  tomorrow): an exception stays until someone puts it right or it is a
+  year old, and a manager may record an entry for an old date. It reuses
+  the report's loader, never a second copy of the comparison.
+  *Decision* (C8 review): the demo's `crosscheck(s)` ran over its whole
+  store, which a browser kept small; over every date the count read every
+  docket ever written, with its items, on every manager's poll (*measured,
+  C8-1:* about 50 ms for a month of history, 3,100 dockets, and about
+  520 ms for a year, 36,500, growing without end). Bounded, it stops
+  growing after the first year, at about the year's figure. If it must be
+  cheaper still, count it in SQL with a parity test against
+  `crosscheck()`; do not hand-copy the rules.
+- **Settled Sales, the Sales Trend and Restaurant and Bar Sales read the
+  bills settled in the range by their Lagos settlement date
+  (`settledBills`); departments are each line's (`departmentShares`), as
+  the Sales report's are** (*decision*: the demo split by the bill's own
+  department, which is the same for every till bill; D30's web orders mix
+  both, and the overview must agree with the Sales report to the kobo). A
+  bill's total includes VAT and service and excludes the delivery fee
+  (Q21), the chart's own note.
+- **The trend is hourly for one day, daily up to 62 days and monthly
+  beyond, in Lagos time (`overview-trend.ts`, the demo's loop and labels:
+  `00:00`, `1 Oct`, `Oct 26` from `toLocaleDateString('en-GB', { timeZone:
+  'UTC', … })`).** A sale is filed by its Lagos hour or settlement date,
+  so 00:30 in Jos is the new day's `00`. The labels come from the server's
+  ICU; September is `Sep` or `Sept` by ICU version, as in browsers.
+- **Payment Methods is the non-reversed payments dated in the range on
+  the bills settled in the range, by method, in the order each method was
+  first taken** (the demo's `Map`): refunds and delivery fees included,
+  reservation credit excluded (it is not a payment). Bestselling Items is
+  the top five dishes by quantity, under the name first sold in the range,
+  ties by name (`localeCompare`).
+- **The "now" widgets ignore the range:** Outstanding Bills and Open
+  Orders are every open bill of any date (`openBills`, newest first, five
+  shown); Occupied Positions and Service at a Glance are the active tables
+  as Reception's floor shows them today (`floorStatus`, so a Checked In
+  booking holds a table as Reserved, the floor's rule); Expected and Next
+  Arrivals are today's Confirmed bookings by time, with no phone or email;
+  Low Stock is each Kitchen item's Kitchen balance and Bar item's Bar
+  balance below its minimum, lowest first, ties in the order added, eight
+  shown and the total; Tasks in Progress the six oldest not Done.
+- **Range rules are the reports' (`reportPeriod`, "The overview", at most
+  366 days)** (*decision*: the demo's custom range had no cap; one rule
+  for every range read keeps one set of sentences, and a year is the
+  longest range the reports read too).
+- **Cost: every widget is a fixed number of queries, whatever the data,
+  run one after another, never in parallel.** A poll must not hold all
+  three pooled connections the till needs. A fixed number of queries is
+  not a fixed cost: each read's time follows the rows it must reach, so
+  every range read goes through an index on what it filters by (the
+  settled bills by `Order(status, settledAt)`, C8 review) and the one
+  read without a range, the crosscheck count, is bounded to a year.
+  *Measured (C8 review, local Postgres 16, a year of history: 54,900
+  settled bills, 109,800 lines):* the settled bills query for today took
+  1.3 to 1.6 ms through `Order_status_settledAt_idx` and 11.6 to 31.8 ms
+  scanning every bill without it, a cost that grew with every day of
+  history; 25 days took 20 to 28 ms with it. That is the query alone,
+  not the whole poll. *Measured (C8-1, local
+  Postgres, a seeded month: 4,650 bills, 10,912 lines, 4,640 payments,
+  3,100 dockets):* the full layout is 25 queries (two of them the guard
+  and the layout); Today median 66 ms, This Month 114 ms, 31 days 136 ms;
+  five at once about 200 to 460 ms. The Service preset is 19 queries,
+  58 ms. The costly reads are the range's settled bills (about 45 ms for a
+  month) and the crosscheck count (about 50 ms); every other widget is
+  under 25 ms.
+- **`test/overview.e2e-spec.ts` runs on `createIsolatedDatabase` with a
+  fixed clock (12:00 in Jos on 21 October 2026) and writes its records
+  directly.** Its "now" widgets read the whole database (open bills,
+  tables, stock, tasks, the crosscheck over the last year), so another
+  suite's row would move them; it retires the seeded tables and zeroes the
+  seeded stock minimums for the same reason.
+
+## The staff bell *(from C8-2)*
+
+- **`GET /staff/notifications` ports `staff/lib/notifications.ts` item by
+  item, in the demo's order and words, with the items built before it in
+  the places C7-7 gave them** (plan §9.1; `src/notifications/`). The
+  order: Purchase Approval, Waste Approval, Low Stock, Unsettled From a
+  Previous Day, Online Order, New Web Docket, Checkout Needs Attention,
+  Stock Request, Free Table Reminder, Expected Guest Arrival, Assigned
+  Task; within a kind, oldest first (the demo's lists in the order they
+  were added; Low Stock by item, the Store before the item's own
+  location). The screen shows the list as it comes, so the order is the
+  contract.
+- **Who gets what is the demo's, with §9.1's table:** approvals for
+  managers; Low Stock for managers and the Storekeeper; unsettled bills
+  for managers and the Cashier; online orders for the Cashier; the New
+  Web Docket for the Kitchen and managers; held checkouts for managers;
+  open stock requests (Pending or Partially Issued, every location) for
+  the Storekeeper only; the Free Table Reminder and arrivals for
+  Reception and managers; tasks for whoever they are assigned to. A
+  Bartender and a Waiter get none of these, as in the demo.
+- **Every kind is offered only to a role whose `pagesFor` includes the
+  kind's page, so every item opens.** The role conditions above already
+  say so; the filter keeps it true if a role's pages change, and it is
+  what keeps a task held by an account re-roled to Waiter off a bell
+  whose Tasks page would refuse it.
+- **The four switches are `Settings.alertApprovals`, `alertLowStock`,
+  `alertUnsettled` and `alertArrivals`, read on every poll** (the demo's
+  `ALERTS`, saved by `settings.save`). A switch hides its kind for every
+  reader at the next poll. The Free Table Reminder, the online items,
+  stock requests and tasks have no switch, as in the demo.
+- **While the approvals alert is on, a manager's bell leaves out a task
+  linked to a purchase whose title starts "Review"** (the demo's rule):
+  the Purchase Approval already asks for that decision, and two items
+  for one decision would be counted twice on the badge. With the alert
+  off the review task comes back, because then it is the only reminder.
+  Other purchase tasks ("Receive goods for …") always show.
+- **Low Stock follows `isLow` and the demo's loop: every stock item,
+  active or not, at the Store (under one pack) and at its own location
+  (the Kitchen, or the Bar for a Bar item; under its reorder level), a
+  missing balance being zero.** The detail is the demo's: "Rice · 0 bags
+  left" at the Store, "Rice · 3 portions left, reorder level 15"
+  elsewhere, with the demo's plural (an "s" unless exactly one). The
+  Bartender is not given it, as in the demo; the Stock screen shows the
+  Bar its own low flags.
+- **Unsettled From a Previous Day is an Open or Payment bill
+  (`UNSETTLED_ORDER_STATUSES`) whose business date is before today's in
+  Lagos (`watToday`)**, both departments; Expected Guest Arrival is a
+  booking Confirmed for today, "Name · 19:00 · 4 guests" (the demo says
+  "guests" for one too), in the order the bookings were taken.
+- **The filters are the owning modules' own** (`AWAITING_APPROVAL` from
+  Purchasing, the Approvals count's; `OPEN_REQUEST_STATUSES`, which the
+  overview now uses too; `UNSETTLED_ORDER_STATUSES`;
+  `ACTIVE_ONLINE_STATUSES`), so "pending" on the bell and on the screen it
+  opens are one definition. The new items' words are
+  `src/notifications/staff-bell-items.ts`.
+- **A poll is bounded by construction: one settings read, then for each
+  kind the reader gets an indexed `COUNT` and, only for the kinds the
+  requested page overlaps, an `OFFSET`/`LIMIT` read** (`pageOfSources`,
+  `bell-sources.ts`). `total` stays exact and at most `pageSize` (100 at
+  most) rows are read, whatever is pending; the kinds run one after
+  another, never in parallel, so a poll holds one pooled connection.
+  Every signed-in device polls every 30 seconds, and a bell that loaded
+  every row would cost what the backlog is. The Free Table Reminder is
+  loaded whole (at most one per table). *Not measured:* the New Web Docket
+  count checks every web docket of a day not closed against the kitchen
+  entries; a day the kitchen never closes keeps its dockets in that
+  count. If it ever shows in a poll's time, bound it to the open kitchen
+  days rather than change what rings.
+- **`test/staff-bell.e2e-spec.ts` runs on `createIsolatedDatabase` with a
+  fixed clock and the real seeds**, because the bell reads the whole
+  database: it gives the seeded Bar items one Store pack and a zero
+  reorder level so only its own items are low, places the web order and
+  the held checkout through the real checkout and the signed fake
+  webhook, and checks every role's whole bell, each switch, the paging
+  and the items leaving. **A suite looking for one bell item reads every
+  page (`test/staff-bell.ts`, `readBell`)**: with the seeds, a manager's
+  or the Storekeeper's bell starts with a Low Stock item for every seeded
+  Bar item (none holds stock), more than one page.
 
 ## Reception: bookings, table sessions and the floor *(from C4)*
 
@@ -2292,8 +2852,9 @@ They are here so the first card that builds it starts from the rule.
   minutes under an hour (D37), and served on `GET /staff/notifications`**
   (`src/notifications/`). The bell is C8-2's card, but the C4 gate's step
   11 needs the reminder, so the route starts with this one item and C8-2
-  adds the rest of plan §9.1 beside it, each with its own roles; the floor's
-  seating carries `reminderDue` for the same rule.
+  adds the rest of plan §9.1 beside it, each with its own roles (done:
+  *The staff bell*); the floor's seating carries `reminderDue` for the
+  same rule.
 - **A guest's phone is kept as `guestPhone` writes it: a Nigerian mobile
   number in its one form (`0` plus 10 digits) however it was typed, any
   other number as typed; a guest's email is trimmed and lower-cased.** The
@@ -2362,7 +2923,7 @@ They are here so the first card that builds it starts from the rule.
   from the same address. It is limited to 30 bookings per address in 15
   minutes in memory (`BookingThrottle`, 429 "Too many attempts…"), the
   first line only: it needs no sign-in, holds a table for a whole date
-  and sends an email.
+  and sends an email. *From C8-3 the count is stored, not in memory.*
 - **The real limits are stored caps on website and app bookings (from the
   C6 review): 20 a day per client address (`Reservation.ipHash`, the
   address hashed by `hashClientAddress`) and 10 a day per email, from any
@@ -2554,7 +3115,8 @@ They are here so the first card that builds it starts from the rule.
   without the lock); and 20 requests per address per form in fifteen
   minutes in memory (`EnquiryThrottle`), which also counts refused bodies
   and honeypot hits. Both are 429 "Too many attempts. Wait a few minutes
-  and try again.". Each accepted enquiry is an email into CNC's one inbox;
+  and try again.". *From C8-3 the second count is stored, not in memory,
+  and its 429 carries `Retry-After`.* Each accepted enquiry is an email into CNC's one inbox;
   a person writes once or twice.
 - **The sentences are the website's where it has them**
   (`lib/enquiries.ts`): "Please add your name, your email and a message."
@@ -2568,7 +3130,8 @@ They are here so the first card that builds it starts from the rule.
   queue's default day**: with no staff list the email is how CNC reads it,
   so a late one beats none.
 - **No audit row**: an enquiry is not a command in the staff app's record.
-  Q36's twelve-month retention of enquiries is C8-5's.
+  Q36's twelve-month retention of enquiries is C8-5's: *built*, see *Data
+  retention* below.
 
 ## Online checkout and Paystack *(from C7)*
 
@@ -2659,6 +3222,9 @@ They are here so the first card that builds it starts from the rule.
   tests), and a 120-a-minute ceiling per address.** Paystack retries a
   slow or non-2xx delivery, so the work cannot sit inside the request, and
   a 429 is a retry too, so the limit is a ceiling, not a budget.
+  *Replaced in C8-3: the ceiling counts only deliveries with a bad
+  signature, after the check; a correctly signed delivery is never
+  counted or refused for volume (see* Rate limits*).*
   *From the C7 review:* **the request waits up to five seconds for its own
   handling (`dispatchWithin`, `WEBHOOK_INLINE_WAIT_MS`) and answers then
   whatever happens; slower work carries on after the answer.** Cloud Run's
@@ -2710,6 +3276,9 @@ They are here so the first card that builds it starts from the rule.
   ttl)` (`src/auth/auth-throttle.ts`)**: the bookings, the enquiries, the
   checkout (30 in fifteen minutes) and the webhook. One decorator names
   the three counts once, so a new route cannot forget to skip one.
+  *From C8-3 the quote uses it too, the webhook does not (it counts its
+  bad signatures by hand, after the check), and a signed-in customer's
+  write uses its mirror, `CustomerWriteThrottle(limit, ttl)`.*
 
 ## Paid web orders and the payment sweeps *(from C7-3, C7-5)*
 
@@ -2914,6 +3483,10 @@ They are here so the first card that builds it starts from the rule.
   §6.2: edit, cancel, balance: L, D; zone per Q27's "under the limits").
   So a refund decided by an edit and paid by a balance counts twice
   toward one manager's day, as in the demo; the Owner is never counted.
+  *From C8-0:* a card refund Paystack refused releases only its own
+  `online.balance` row, never the edit's or the cancel's: the change to the
+  order was a real decision and still stands; only the money that never
+  moved is given back.
 - **`online.balance` records the whole balance in one payment, as the
   demo does: extra money due is `CASH` or `TRANSFER` only (Q34); a refund
   is `CASH`, `TRANSFER` or `PAYSTACK` (Q26), and a card refund is never
@@ -2947,14 +3520,26 @@ They are here so the first card that builds it starts from the rule.
   means no money moved; a lost answer may mean Paystack queued it, and a
   second send could pay the customer twice. A 5xx or a malformed success
   from Paystack's refund API counts as no answer, never as a refusal. The
-  ledger row of a refused refund stays (append-only). *From the C7
+  ledger row of a refused refund stays (append-only); *from C8-0* a
+  release row beside it gives back what it counted (see *Money controls*),
+  so the Cash or Transfer that pays the refund counts once. *From the C7
   review:* **a manager resolves an `UNCONFIRMED` refund, or one left
   `SENDING` for over two minutes (`REFUND_SENDING_STUCK_MS`), by what
   Paystack's dashboard shows: `POST /staff/online-orders/:id/refunds/
   :refundId/resolve` (M+r, the order's `version`, audited
   `online.resolveRefund`). `SENT` with the dashboard's refund id is
   accepted as Paystack's answer would be (the customer is told); `NOT_SENT`
-  is undone as a refusal is, so the refund is owed again.** Without it an
+  is undone as a refusal is, so the refund is owed again.** *From C8-0:*
+  **an `UNCONFIRMED` refund keeps counting toward the Daily Approval Limit
+  until it is resolved; `SENT` keeps counting (the money moved); `NOT_SENT`
+  releases the count on the deciding manager's original business date,
+  whoever resolves it and on whatever day. Undoing a refund is one
+  conditional move out of the status the caller read (`SENDING` for
+  Paystack's refusal, the read status for a resolve), so a refusal and a
+  "not sent" arriving together undo and release once; a resolve that loses
+  is 409 "Only a card refund Paystack has not confirmed can be resolved."
+  (`REFUND_NOT_UNCONFIRMED_MESSAGE`).** Without the condition the second
+  would reverse the payment again and release twice. Without it an
   unanswered refund left the balance at 0 and no way to record the money
   if Paystack never had it. Two minutes is far past the client's
   10-second timeout, so a send still waiting is never resolved under it.
@@ -3054,6 +3639,126 @@ They are here so the first card that builds it starts from the rule.
   payment never becomes one without a person. A new state rather than
   `FAILED`, because `FAILED` is settleable and a replayed report would
   hold it again.
+
+## Load testing *(from C8-4)*
+
+- **`npm run load:till` (`scripts/load/till-and-booking.ts`) is plain
+  Node: `fetch` (undici, in Node 22) and `pg` for the connection sampler,
+  so it adds no package.** A load tool pinned for one card is a dependency
+  to keep current for nothing else. How to run it, and the founder's steps
+  for staging, are in `docs/load-testing.md`.
+- **It runs only against a backend started locally on a throwaway
+  database, created and dropped for the run, or against CNC staging by the
+  founder with TAY idle** (plan §19, risk 1: the shared db-f1-micro allows
+  about 25 connections and TAY alone can open 40). Never against
+  `cnc_db` or `cnc_test`, whose rows other work reads; never against
+  production. The connection sampler (`CNC_LOAD_DB_URL`) refuses anything
+  but a local database (`databaseTarget`).
+- **The script enforces where it runs (`scripts/load/load-targets.ts`,
+  C8 review):** every base URL must be `localhost`, `127.0.0.1` or
+  `[::1]`, or exactly `https://api-cnc-staging.tayxcnc.com` with
+  `CNC_LOAD_CONFIRM_STAGING` set to that host; any other host is refused
+  before a request is sent, and `CNC_LOAD_SPOOF_ADDRESSES` is refused with
+  a staging origin. A host copied from the docs and edited by mistake, with
+  an Owner's password in the shell, would otherwise create staff accounts
+  and settle cash bills that, as money records, are never deleted.
+- **A refused or failed step waits for `Retry-After` (2 s on the busy
+  database's 503, a 429's window), or a second, before the next
+  (`backoffMs`); the summary counts the waits.** Retrying at once would
+  multiply the load on the shared instance at the moment it is slowing,
+  the moment the founder is watching its connections.
+- **The load test sends no email anywhere.** Its guests are
+  `@example.com`, which the outbound queue gives up unsent on Resend
+  (*Mail and the outbound queue*), and locally the recording transport
+  sends nothing; so the local figures include no mail send, and neither
+  will staging's.
+- **The mix is the venue's busy hour, compressed:** cashiers opening,
+  filling, sending and settling Restaurant bills in cash; Reception reading
+  the floor, booking and reading the day; website guests reading
+  availability and booking; managers and cashiers polling the bell, the
+  overview and Online Orders. Restaurant dishes only, because a Bar sale is
+  refused without Bar stock and a load test must not count stock. Bookings
+  are 400 days or more ahead, one table and date each, cancelled at the
+  end; bills stay, because money records are never deleted.
+- **It reports how long the load generator itself was paused** (a 100 ms
+  timer's lateness). On the founder's 8 GB machine a run was seen paused
+  for 15.9 s by memory pressure, and every timing and error in such a
+  window is the machine's, not the server's. A run whose pause is more
+  than a second is read with that in mind.
+- **Measured locally (2026-10-24, two instances on one throwaway database,
+  Postgres 16 on the same machine).** The default mix (4 cashiers, 1
+  receptionist, 2 website guests, 4 pollers every second, 60 s): 42,120
+  requests, 691 a second, p50 9 ms, p95 23 ms, p99 38 ms, no errors, the
+  generator never paused; the database held at most 6 client connections,
+  exactly the pools' 3 × 2. A heavier mix (8, 2, 4 and 8 pollers every
+  half second) during a 15.9 s machine stall: 514 a second, p50 17 ms,
+  p95 65 ms, p99 121 ms, 13 errors all inside the stall, 6 connections at
+  most. The errors were transaction and pool timeouts answered 500: the
+  defect fixed in *Errors* (now 503 with `Retry-After`). The default mix
+  again after the fix: 37,597 requests, 617 a second, p50 9 ms, p95 27 ms,
+  p99 53 ms, no errors, 6 connections at most.
+- **The pool cap holds under load: CNC never exceeded 3 connections an
+  instance.** Each instance held its three open for the whole run (the
+  pool keeps an idle one 300 s), and a fourth concurrent query waits in
+  the pool (up to 5 s, then 503) rather than opening a connection the
+  shared instance does not have. The overview poll is the slowest read (p50 88 ms with the day's
+  3,600 test bills). *Correction (C8 review):* that run's database held
+  one seeded month, so it could not show that the settled bills read
+  scanned every settled bill in history, growing with every day, not
+  only with the day's bills; `Order(status, settledAt)` now bounds it to
+  the range's bills, and the crosscheck count is bounded to a year
+  (*The overview*). The load test was not rerun after the index; the
+  query alone was measured on a year of history.
+- **Not measured: CNC staging.** Cloud Run, the Cloud SQL proxy and the
+  shared db-f1-micro (with TAY idle) are the founder's run.
+
+## The acceptance list *(from C8-6)*
+
+- **`test/c8-acceptance.e2e-spec.ts` runs the Backend Brief's §12 list,
+  one test per line in the brief's order, on its own database with the
+  real seeds**, with the plan's two restatements: line 1 holds
+  `docs/demo-tests-map.md` to the specs (107 rows, the suites' counts,
+  every named spec present and every mapped title opening a plain `it(`
+  or `test(` call, or an `.each(…)(` one, and no spec under `src`,
+  `test`, `scripts` or `prisma` skipped, left to do or focused; C8
+  review: a title found anywhere in the file passed for a skipped test or
+  a comment, and Jest reports a skip without failing), and line 3 compares the
+  public menu, ordering config and quote with the staff menu and settings
+  through the API. A test per line makes a failure name the promise that
+  broke.
+- **The 107 demo tests are 97 backend tests and 10 browser-only ones**
+  (`docs/demo-tests-map.md`): those ten have no server counterpart. Four
+  (one screen choice and the three file tests) stay in the staff app's own
+  suite; six of the demo's browser storage are marked `retired with the
+  demo store (C8-5)`, because the staff app removed that store and its
+  tests (C8 review: the map still called them the staff app's, and line 1
+  skipped them unchecked, so it passed while six rows named tests that no
+  longer exist anywhere). Line 1 counts both kinds exactly. Where a demo
+  test's assertions are split over several backend tests, the map lists
+  each; no demo test needed a new port in C8-6. The bell's two rows
+  (`attendance.test.cjs`) are held by the approvals test, which drives the
+  waste and purchase approvals through their routes and reads the
+  manager's Approval items 2, 1, 0, and by the staff bell's exact per-role
+  bells (C8 review: the map first named tests that read only the
+  approvals screen).
+- **"No API response contains card numbers, sign-in codes or other
+  customers' data" is tested by calling every route in the published
+  OpenAPI document as two signed-in customers, every staff role and an
+  anonymous caller: every GET with the walk's real ids, every write with
+  an empty body, plus every response the walk received.** Searched for: a
+  13 to 19 digit Luhn-valid run (not a decimal's digits), every sign-in
+  code mailed, every stored code, password and refresh-token hash and any
+  `*Hash` field, every refresh token set in a cookie, the other customer's
+  id, email, phone and street, and either customer's contact in any
+  response to the Waiter, Bartender, Kitchen, Storekeeper or nobody (plan
+  §6.1 gives those roles no page with a customer's contact; Reception, the
+  Cashier and managers read them by design). The search is proved by
+  planting each kind once. Writes that end the caller's session or account
+  are left out of the sweep; their suites prove them.
+- **A checkout's reference is the confirmation page's capability**: each
+  customer reads only their own in the sweep, and a guessed reference
+  finds nothing. The reference is 122 random bits (*Online checkout*), so
+  holding it is what lets the page show the name and address.
 
 ## CORS
 
@@ -3155,9 +3860,11 @@ They are here so the first card that builds it starts from the rule.
 - **A placeholder secret is literally `PLACEHOLDER_NOT_SET`.** Never format
   one to resemble the real thing: a placeholder Resend key beginning `re_`
   passed every check, deployed cleanly and failed silently at the first send.
-  On staging only `CNC_PAYSTACK_SECRET_KEY` (until C7), `CNC_RESEND_API_KEY`
-  and `CNC_MAIL_FROM` (until C6) may hold it; every other secret is real from
-  the start.
+  On staging only `CNC_PAYSTACK_SECRET_KEY` (until the founder stores CNC's
+  test key, Q18), `CNC_RESEND_API_KEY` and `CNC_MAIL_FROM` (until C6) may
+  hold it; every other secret is real from the start. *Corrected in C8-5:
+  this said "until C7"; the payment routes shipped in C7 and answer 503
+  while the key is the placeholder.*
 - **Secrets are created with `printf`, never `echo`** (see *Local
   environment*).
 - **The Artifact Registry repository `tayxcnc-cnc` must exist before the
@@ -3207,9 +3914,16 @@ They are here so the first card that builds it starts from the rule.
   | `cnc-staging-sweep-reminders` | `*/15 * * * *` | `reminders` | C6-8 | a reminder goes at most 15 minutes after its 24-hour mark |
   | `cnc-staging-sweep-checkouts` | `*/10 * * * *` | `checkouts` | C7-5 | plan §5.5; a checkout lives 30 minutes, so an abandoned one is expired, or a paid one whose webhook was lost gets its order, within 40 |
   | `cnc-staging-sweep-payments` | `*/15 * * * *` | `payments` | C7-5 | plan §5.5; a delivery is handled within seconds, so one still unprocessed after 5 minutes failed, and 15 bounds how long a paid order can wait on a verify outage |
+  | `cnc-staging-sweep-retention` | `30 3 * * *` | `retention` | C8-5 (**proposed; the founder is asked before it is created**) | Q36: periods counted in months and years need a daily run at most; 03:30, after the tokens sweep and far from service, so its deletes never meet the till's pool |
 
   The two C7 jobs are created after the C7 deploy is live, as the C6 ones
-  were.
+  were. The retention job is created only on the founder's go-ahead, after
+  the C8 deploy is live: it deletes personal data, and no code depends on
+  it having run. **The prod job must exist before the site's account page
+  reaches production**: its privacy note (cnc-frontend
+  `components/account/panels.tsx`, Q36) tells customers enquiries are
+  deleted from CNC's records after 12 months, and only this job deletes
+  them (C8 review).
 
   Create the two C6 jobs **after the C6 deploy is live** (the rule
   above), each with `gcloud scheduler jobs create http <job> --location

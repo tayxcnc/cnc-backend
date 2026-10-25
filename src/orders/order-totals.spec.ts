@@ -1,5 +1,10 @@
-import { OrderStatus } from '../../generated/cnc-client';
-import { balanceDueKobo, orderTotals } from './order-totals';
+import { Department, OrderStatus } from '../../generated/cnc-client';
+import {
+  balanceDueKobo,
+  departmentShares,
+  orderTotals,
+  totalsFromSubtotal,
+} from './order-totals';
 
 describe('orderTotals (the demo’s totals())', () => {
   const bill = (
@@ -83,5 +88,102 @@ describe('balanceDueKobo (the demo’s balanceDue)', () => {
   it('is zero on a settled or cancelled bill', () => {
     expect(balanceDueKobo(OrderStatus.SETTLED, 10000, 0)).toBe(0);
     expect(balanceDueKobo(OrderStatus.CANCELLED, 10000, 0)).toBe(0);
+  });
+});
+
+describe('totalsFromSubtotal and departmentShares (the Sales report, C8-1)', () => {
+  const rates = {
+    discountKobo: 0,
+    depositKobo: 0,
+    vatBps: 750,
+    serviceBps: 0,
+  };
+
+  it('computes what orderTotals computes from the summed lines', () => {
+    const lines = [
+      { qty: 2, unitPriceKobo: 450_000 },
+      { qty: 3, unitPriceKobo: 133_333 },
+    ];
+    const withRates = { ...rates, discountKobo: 70_001, serviceBps: 1000 };
+
+    expect(totalsFromSubtotal(1_299_999, withRates)).toEqual(
+      orderTotals({ lines, ...withRates }),
+    );
+  });
+
+  it('gives a one-department bill wholly to that department, a drinks-only web order to the Bar', () => {
+    expect(
+      departmentShares(
+        { ...rates, department: Department.RESTAURANT },
+        new Map([[Department.BAR, 1_000_000]]),
+      ),
+    ).toEqual([
+      {
+        department: Department.BAR,
+        netItemsKobo: 1_000_000,
+        serviceKobo: 0,
+        vatKobo: 75_000,
+        totalKobo: 1_075_000,
+      },
+    ]);
+    expect(
+      departmentShares(
+        { ...rates, department: Department.RESTAURANT },
+        new Map(),
+      ),
+    ).toEqual([
+      {
+        department: Department.RESTAURANT,
+        netItemsKobo: 0,
+        serviceKobo: 0,
+        vatKobo: 0,
+        totalKobo: 0,
+      },
+    ]);
+  });
+
+  it('splits a mixed bill so the shares add up to the bill to the kobo', () => {
+    const bill = {
+      ...rates,
+      discountKobo: 10_001,
+      serviceBps: 1000,
+      department: Department.RESTAURANT,
+    };
+    const subtotals = new Map([
+      [Department.RESTAURANT, 333_333],
+      [Department.BAR, 166_667],
+    ]);
+    const whole = totalsFromSubtotal(500_000, bill);
+    const shares = departmentShares(bill, subtotals);
+    const sum = (
+      key: 'netItemsKobo' | 'serviceKobo' | 'vatKobo' | 'totalKobo',
+    ) => shares.reduce((n, share) => n + share[key], 0);
+
+    expect(shares.map((share) => share.department)).toEqual([
+      Department.RESTAURANT,
+      Department.BAR,
+    ]);
+    // The Bar's own lines at the bill's rates, with its share of the
+    // discount: round(10,001 × 166,667 / 500,000) = 3,334.
+    expect(shares[1]).toEqual({
+      department: Department.BAR,
+      ...(() => {
+        const bar = totalsFromSubtotal(166_667, {
+          ...bill,
+          discountKobo: 3334,
+        });
+
+        return {
+          netItemsKobo: bar.subtotalKobo - bar.discountKobo,
+          serviceKobo: bar.serviceKobo,
+          vatKobo: bar.vatKobo,
+          totalKobo: bar.totalKobo,
+        };
+      })(),
+    });
+    expect(sum('netItemsKobo')).toBe(whole.subtotalKobo - whole.discountKobo);
+    expect(sum('serviceKobo')).toBe(whole.serviceKobo);
+    expect(sum('vatKobo')).toBe(whole.vatKobo);
+    expect(sum('totalKobo')).toBe(whole.totalKobo);
   });
 });

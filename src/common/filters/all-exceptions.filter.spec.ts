@@ -6,8 +6,12 @@ import {
   HttpStatus,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Prisma } from '../../../generated/cnc-client';
 import { runWithRequestContext } from '../request-context';
-import { AllExceptionsFilter } from './all-exceptions.filter';
+import {
+  AllExceptionsFilter,
+  DATABASE_BUSY_MESSAGE,
+} from './all-exceptions.filter';
 
 /**
  * The filter's whole reason for existing is the duck-type leak, so that is the
@@ -18,11 +22,13 @@ import { AllExceptionsFilter } from './all-exceptions.filter';
 interface Captured {
   status?: number;
   body?: Record<string, unknown>;
+  headers?: Record<string, string>;
 }
 
-/** The two methods the filter calls, chained as Express chains them. */
+/** The methods the filter calls, chained as Express chains them. */
 interface FakeResponse {
   status(code: number): FakeResponse;
+  setHeader(name: string, value: string): FakeResponse;
   json(body: Record<string, unknown>): FakeResponse;
 }
 
@@ -33,6 +39,10 @@ function hostFor(
   const response: FakeResponse = {
     status(code) {
       captured.status = code;
+      return response;
+    },
+    setHeader(name, value) {
+      captured.headers = { ...captured.headers, [name]: value };
       return response;
     },
     json(body) {
@@ -60,6 +70,50 @@ describe('AllExceptionsFilter', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  describe('the database not in time (C8-4)', () => {
+    const prismaError = (code: string) =>
+      new Prisma.PrismaClientKnownRequestError(
+        'Transaction API error: secret query text',
+        { code, clientVersion: '7.10.0' },
+      );
+
+    beforeEach(() => {
+      jest.spyOn(filter['logger'], 'warn').mockImplementation(() => undefined);
+    });
+
+    it.each(['P2024', 'P2028'])(
+      'answers %s with 503, the sentence and Retry-After, never Prisma’s message',
+      (code) => {
+        filter.catch(prismaError(code), hostFor(captured));
+
+        expect(captured.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+        expect(captured.body).toEqual({
+          statusCode: 503,
+          message: DATABASE_BUSY_MESSAGE,
+        });
+        expect(captured.headers).toEqual({ 'Retry-After': '2' });
+        expect(JSON.stringify(captured.body)).not.toContain('secret');
+      },
+    );
+
+    it('answers pg’s pool timeout with 503 too', () => {
+      filter.catch(
+        new Error('timeout exceeded when trying to connect'),
+        hostFor(captured),
+      );
+
+      expect(captured.status).toBe(503);
+      expect(captured.headers).toEqual({ 'Retry-After': '2' });
+    });
+
+    it('keeps every other Prisma error the generic 500', () => {
+      filter.catch(prismaError('P2002'), hostFor(captured));
+
+      expect(captured.status).toBe(500);
+      expect(captured.headers).toBeUndefined();
+    });
   });
 
   it('turns an object that merely looks like an HTTP error into a generic 500', () => {

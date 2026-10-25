@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import {
   OnlineRefundStatus,
   OrderChannel,
@@ -6,6 +6,7 @@ import {
 } from '../../generated/cnc-client';
 import { AuditService, staffActor } from '../audit/audit.service';
 import type { StaffPrincipal } from '../auth/staff-principal';
+import { MoneyControlService } from '../money-control/money-control.service';
 import {
   PAYSTACK_CLIENT,
   type PaystackClient,
@@ -13,6 +14,7 @@ import {
 } from '../payments/paystack-client';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { OnlineOrderMail } from './online-order-mail';
+import { REFUND_NOT_UNCONFIRMED_MESSAGE } from './online-order-messages';
 
 type Tx = Prisma.TransactionClient;
 
@@ -50,11 +52,18 @@ export const REFUND_PROVIDER_REF_PREFIX = 'paystack-refund-';
  * - **Refused** (`REFUSED`): nothing was refunded, so the payment is
  *   reversed (never deleted) and the adjustments it settled are open
  *   again: the refund is owed once more, and a manager records it as
- *   Cash or Transfer. The ledger row of the first decision stays: the
- *   ledger is append-only.
+ *   Cash or Transfer. By the founder's decision of 2026-10-24 (C8-0) the
+ *   refusal no longer counts toward the Daily Approval Limit: in the same
+ *   transaction, a release row gives back exactly what the decision's
+ *   ledger row counted, on that row's person and business date
+ *   (`MoneyControlService.releaseCounted`). The ledger stays append-only:
+ *   the first row stays and the release is a new one. The Cash or
+ *   Transfer that pays the refund then counts once, as the real decision.
  * - **No answer** (`UNCONFIRMED`): Paystack may have queued the refund,
  *   so the payment stays recorded and nothing resends it; a person checks
- *   Paystack's dashboard.
+ *   Paystack's dashboard. It keeps counting until a manager resolves it:
+ *   shown in the dashboard, it still counts; not shown, it is undone and
+ *   released as a refusal is.
  *
  * CNC absorbs Paystack's fee (Q26): the customer gets back exactly what
  * they are owed, and nothing is added or taken off.
@@ -68,6 +77,7 @@ export class OnlineRefundsService {
     private readonly audit: AuditService,
     @Inject(PAYSTACK_CLIENT) private readonly paystack: PaystackClient,
     private readonly mail: OnlineOrderMail,
+    private readonly money: MoneyControlService,
   ) {}
 
   /**
@@ -166,7 +176,16 @@ export class OnlineRefundsService {
     );
 
     await this.prisma.$transaction(async (tx) => {
-      const refund = await this.undone(tx, refundId, error.providerMessage);
+      const refund = await this.undone(
+        tx,
+        refundId,
+        [OnlineRefundStatus.SENDING],
+        error.providerMessage,
+      );
+
+      // A manager resolved it first (stuck past `REFUND_SENDING_STUCK_MS`):
+      // their record stands, and nothing is undone or released twice.
+      if (refund === null) return;
 
       await this.recordOutcome(tx, actor, orderNumber, ipAddress, {
         status: OnlineRefundStatus.REFUSED,
@@ -182,7 +201,11 @@ export class OnlineRefundsService {
    * in the caller's transaction, after the order's claim: shown there,
    * it is `SENT` with Paystack's id and the customer is told; not shown,
    * it is undone as a refusal is, so the money is owed again for Cash or
-   * Transfer. Answers the notice's key, or null.
+   * Transfer, and its count toward the Daily Approval Limit is released
+   * (C8-0). Shown, it keeps counting: the money moved. Answers the
+   * notice's key, or null. A late answer from Paystack that moved the
+   * refund out of the status the caller read is 409 with
+   * {@link REFUND_NOT_UNCONFIRMED_MESSAGE}, and nothing is undone.
    */
   async resolve(
     tx: Tx,
@@ -190,7 +213,16 @@ export class OnlineRefundsService {
     shown: { providerRefundId: string } | null,
   ): Promise<string | null> {
     if (shown === null) {
-      await this.undone(tx, refund.id, NOT_SENT_PROVIDER_MESSAGE);
+      const undone = await this.undone(
+        tx,
+        refund.id,
+        [refund.status],
+        NOT_SENT_PROVIDER_MESSAGE,
+      );
+
+      if (undone === null) {
+        throw new ConflictException(REFUND_NOT_UNCONFIRMED_MESSAGE);
+      }
 
       return null;
     }
@@ -233,19 +265,29 @@ export class OnlineRefundsService {
   private async undone(
     tx: Tx,
     refundId: string,
+    from: readonly OnlineRefundStatus[],
     providerMessage: string,
-  ): Promise<Prisma.OnlineRefundGetPayload<object>> {
+  ): Promise<Prisma.OnlineRefundGetPayload<object> | null> {
+    // One conditional move out of the status the caller saw, so a refusal
+    // and a manager's "not sent" arriving together undo the refund, and
+    // release its count, once (C8-0); the loser changes nothing.
     const before = await tx.onlineRefund.findUniqueOrThrow({
       where: { id: refundId },
       select: { sentAt: true },
     });
-    const refund = await tx.onlineRefund.update({
-      where: { id: refundId },
+    const moved = await tx.onlineRefund.updateMany({
+      where: { id: refundId, status: { in: [...from] } },
       data: {
         status: OnlineRefundStatus.REFUSED,
         providerMessage: providerMessage.slice(0, PROVIDER_MESSAGE_MAX_LENGTH),
         sentAt: before.sentAt ?? new Date(),
       },
+    });
+
+    if (moved.count === 0) return null;
+
+    const refund = await tx.onlineRefund.findUniqueOrThrow({
+      where: { id: refundId },
     });
 
     await tx.payment.update({
@@ -256,6 +298,13 @@ export class OnlineRefundsService {
       where: { settledPaymentId: refund.paymentId },
       data: { settledAt: null, settledPaymentId: null },
     });
+    // No money moved, so the Daily Approval Limit gives back what the
+    // refund's `online.balance` counted, on that decision's own day.
+    await this.money.releaseCounted(
+      tx,
+      refund.ledgerEntryId,
+      refund.amountKobo,
+    );
 
     return refund;
   }

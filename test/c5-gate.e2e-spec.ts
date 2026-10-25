@@ -22,6 +22,7 @@ import {
   createIsolatedDatabase,
   type IsolatedDatabase,
 } from './isolated-database';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -309,13 +310,7 @@ describe('the C5 gate (e2e)', () => {
   });
 
   it('2. the receive task appears for the Storekeeper', async () => {
-    const bell = (
-      await request(server())
-        .get('/api/v1/staff/notifications')
-        .query({ pageSize: 100 })
-        .set(as('storekeeper'))
-        .expect(200)
-    ).body as { data: { title: string; detail: string; page: string }[] };
+    const bell = await readBell(server(), as('storekeeper'));
 
     expect(bell.data).toContainEqual(
       expect.objectContaining({

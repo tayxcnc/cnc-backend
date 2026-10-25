@@ -168,10 +168,11 @@ function words(name: string): string {
  * server's own (`updatedAt`, `version`, `singleton`, the credential
  * columns). A credential should never reach an audit row at all
  * (`AuditService` refuses one); this keeps one that slipped through out of
- * every sentence.
+ * every sentence. `sessionId` is the seating a `table.release` row ended
+ * (C8 review), kept for the audit read's join, not for staff to read.
  */
 const HIDE =
-  /^(id|history|at|createdAt|updatedAt|version|sessionVersion|singleton|qrToken|passwordHash|tokenHash|codeHash|photo|hasPhoto|confirmed|revision|vat|lines|items|seq)$/;
+  /^(id|history|at|createdAt|updatedAt|version|sessionVersion|sessionId|singleton|qrToken|passwordHash|tokenHash|codeHash|photo|hasPhoto|confirmed|revision|vat|lines|items|seq)$/;
 
 /** Money is every `*Kobo` field (A5). */
 const MONEY = /Kobo$/;
@@ -281,6 +282,24 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * The fields of a row that name or reach a guest: the booking's and the web
+ * order's name, phone, email, notes and address, a bill's guest and a
+ * transfer's sender (card C8-5). Their values are withheld from the
+ * sentences of a row about a record whose customer deleted their account
+ * (Q36): the audit log is append-only and keeps what it recorded (A13), so
+ * the read is the only place the person can be taken out of it.
+ */
+export const CONTACT_FIELDS =
+  /^(name|phone|email|note|guestNote|guest|notes|sender|contactName|contactPhone|contactEmail|addressText|addressStreet|addressArea|addressTown|addressLandmark)$/;
+
+/** The sentence a withheld field gets, in place of its value. New (C8-5). */
+export function withheldSentence(key: string, changed: boolean): string {
+  return changed
+    ? `${label(key)} changed, not shown: the customer deleted their account.`
+    : `${label(key)} not shown: the customer deleted their account.`;
+}
+
+/**
  * The demo's `describeChange`: plain sentences for what a change did, so
  * staff never read raw data.
  *
@@ -295,8 +314,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * The fields are taken in the stored object's key order. `before` and
  * `after` are `jsonb`, which keeps keys shortest first rather than in the
  * order the command wrote them, so the sentences come out in that order.
+ *
+ * `withholdContacts` (C8-5): the row is about a deleted customer's record,
+ * so each {@link CONTACT_FIELDS} field that would be described gets
+ * {@link withheldSentence} instead of its values.
  */
-export function describeChange(before: unknown, after: unknown): string[] {
+export function describeChange(
+  before: unknown,
+  after: unknown,
+  options: { withholdContacts?: boolean } = {},
+): string[] {
   if (!isObject(before) && !isObject(after)) {
     if (before == null && after == null) {
       return ['No further details were recorded for this change.'];
@@ -319,6 +346,11 @@ export function describeChange(before: unknown, after: unknown): string[] {
     const y = a[key];
 
     if (JSON.stringify(x) === JSON.stringify(y)) continue;
+
+    if (options.withholdContacts === true && CONTACT_FIELDS.test(key)) {
+      out.push(withheldSentence(key, isObject(before)));
+      continue;
+    }
 
     out.push(
       isObject(before)

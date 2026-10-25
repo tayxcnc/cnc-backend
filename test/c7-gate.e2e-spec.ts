@@ -40,6 +40,7 @@ import {
   type IsolatedDatabase,
 } from './isolated-database';
 import { chargeSuccessBody, postSignedWebhook } from './paystack-webhooks';
+import { readBell } from './staff-bell';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 interface Sums {
@@ -266,16 +267,7 @@ describe('The C7 gate walk: online ordering and Paystack (e2e)', () => {
   };
 
   const bell = async (role: StaffRole) =>
-    (
-      (
-        await request(server())
-          .get('/api/v1/staff/notifications?pageSize=100')
-          .set(auth(role))
-          .expect(200)
-      ).body as {
-        data: { id: string; title: string; detail: string; ref?: string }[];
-      }
-    ).data;
+    (await readBell(server(), auth(role))).data;
 
   const tracker = async (number: string) =>
     (

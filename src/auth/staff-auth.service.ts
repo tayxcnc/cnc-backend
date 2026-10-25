@@ -272,9 +272,9 @@ export class StaffAuthService {
    * never deleted and passwords cannot be read back, so without this a
    * forgotten password is permanent.
    *
-   * TAY emails the new password inside the transaction; CNC has no mail
-   * until C6, so it is returned to the caller once, for handing over in
-   * person (`TemporaryPasswordResponse`).
+   * TAY emails the new password inside the transaction; CNC returns it to
+   * the caller once, for handing over in person
+   * (`TemporaryPasswordResponse`, `generateTemporaryPassword`).
    *
    * The target is locked while the rules are checked, so a role change that
    * lands at the same moment cannot slip a Manager account past the

@@ -6,6 +6,17 @@ import {
 } from '../../generated/cnc-client';
 
 /**
+ * The staff app's words for each location ("Store", "Kitchen", "Bar"), for
+ * text the server writes itself, such as the bell's items. The wire carries
+ * the enum; a sentence carries these.
+ */
+export const STOCK_LOCATION_LABELS: Readonly<Record<StockLocation, string>> = {
+  [StockLocation.STORE]: 'Store',
+  [StockLocation.KITCHEN]: 'Kitchen',
+  [StockLocation.BAR]: 'Bar',
+};
+
+/**
  * The Store-side movement type for an issue to each location (the demo's
  * "Issue to Kitchen", "Issue to Bar"). One map for the direct issue
  * (`stock.issue`) and a request's issue (`request.issue`), so the same
