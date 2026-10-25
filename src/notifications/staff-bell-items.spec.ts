@@ -87,6 +87,17 @@ describe('staff bell items (C8-2), in the demo’s words', () => {
           .detail,
       ).toBe('Rice · 1 portion left, reorder level 15');
     });
+
+    it('adds "es" to a word ending in s, x, z, ch or sh', () => {
+      const store = (pack: string) =>
+        lowStockItem({ ...item, location: StockLocation.STORE, qty: 0, pack })
+          .detail;
+
+      expect(store('batch')).toBe('Rice · 0 batches left');
+      expect(store('box')).toBe('Rice · 0 boxes left');
+      expect(store('glass')).toBe('Rice · 0 glasses left');
+      expect(store('crate')).toBe('Rice · 0 crates left');
+    });
   });
 
   it('Unsettled From a Previous Day: the number and the label', () => {

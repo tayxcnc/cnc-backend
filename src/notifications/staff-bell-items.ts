@@ -50,13 +50,21 @@ export function wasteApprovalItem(entry: {
   };
 }
 
+/** A unit or pack word for `qty` of it: "bag", "bags", "batches". */
+function countedWord(word: string, qty: number): string {
+  if (qty === 1) return word;
+
+  return /(s|x|z|ch|sh)$/i.test(word) ? `${word}es` : `${word}s`;
+}
+
 /**
  * "Low Stock · Store" or "· Kitchen" or "· Bar": one location of one item
  * below its line (`isLow`), for managers and the Storekeeper while the
  * low-stock alert is on. The Store counts packs ("Rice · 0 bags left"),
  * the Kitchen and the Bar units, with the reorder level ("Rice · 3
- * portions left, reorder level 15"). The plural is the demo's: an "s"
- * unless exactly one.
+ * portions left, reorder level 15"). The plural is the demo's, an "s"
+ * unless exactly one, except that a unit ending in s, x, z, ch or sh
+ * takes "es" ("0 batches left", where the demo wrote "batchs").
  */
 export function lowStockItem(row: {
   stockItemId: string;
@@ -74,7 +82,7 @@ export function lowStockItem(row: {
     id: `low:${row.stockItemId}:${row.location}`,
     title: `Low Stock · ${STOCK_LOCATION_LABELS[row.location]}`,
     detail:
-      `${row.name} · ${row.qty} ${word}${row.qty === 1 ? '' : 's'} left` +
+      `${row.name} · ${row.qty} ${countedWord(word, row.qty)} left` +
       (store ? '' : `, reorder level ${row.minimum}`),
     page: 'inventory',
     category: 'Stock',
