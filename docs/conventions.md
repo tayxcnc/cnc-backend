@@ -4286,6 +4286,57 @@ digests instead: a push at midnight would wake people).
 - **Production provisioning runs from Google Cloud Shell, not a development
   machine.** Production credentials never sit on a machine where an agent has
   a shell.
+- **Production deploys only from a `v*` tag pushed by the founder's account,
+  on its first run attempt** (`.github/workflows/deploy-production.yml`, go-live
+  plan D14, D15). The job carries `if: github.triggering_actor == 'tayxcnc' &&
+  github.run_attempt == '1'`, and the production WIF provider (pool
+  `github-cnc-prod`, provider `cnc-backend-tags`) accepts only this
+  repository's id, a `refs/tags/v…` ref, a `push` event, actor `312678855`
+  and run attempt 1. GitHub tag rulesets are unavailable on this plan, and a
+  re-run keeps the original actor, so without the attempt rule anyone's
+  "Re-run" would pass the actor check. **Never re-run a production deploy;
+  a fix is always a new tag.** The image tag is the commit SHA, as on
+  staging.
+- **The production deploy creates the revision with `--no-traffic --tag rc`,
+  checks `/api/v1/health/ready` on the `rc` address, then moves all traffic
+  to the latest revision and checks that it is the one serving** (D8). A
+  bad revision then never serves anyone; and after a rollback has pinned
+  traffic to an old revision, a plain deploy would get 0% while its
+  readiness check passed against the old one. The move to latest is also
+  what un-pins a rollback.
+- **An API rollback is `gcloud run services update-traffic` to the previous
+  revision, never a re-run or a redeploy of an old tag**, followed by a fixed
+  `v1.0.x` tag (D15). It is instant and needs no workflow. It is not safe
+  after a release whose migration breaks the old code, so every release
+  record states "rollback-safe: yes/no".
+- **Production mounts every secret at a fixed version (`NAME:1`), never
+  `:latest`** (D9). Cloud Run reads a `:latest` secret at each instance start,
+  not once per revision, and with min 0 instances start all the time: a wrong
+  value added by mistake would break the service at the next cold start, and
+  a traffic rollback would not undo it. Pinned, a rollback brings back the
+  old values too. A changed value is a new secret version, a one-line change
+  to the workflow and a new tag. Staging keeps `:latest`, where a value is
+  meant to change without a release.
+- **Production mounts the same 13 `CNC_` secrets as staging, and nothing
+  else** (D22). `CNC_PAYSTACK_LOCAL_MODE` (a laptop-only setting the deployed
+  boot rules refuse), every `TAY_` name and every `SEED_`, `CNC_SEED_` and
+  `CNC_LOAD_` name are absent: the seeds and the load test are run by hand,
+  never by the service. `check:env-names` therefore warns that
+  `CNC_PAYSTACK_LOCAL_MODE` is read and never mounted, and that warning is
+  expected. It reads both workflows together, so a secret missing from only
+  one of them is not caught there: compare the two `--set-secrets` lists by
+  name when either changes.
+- **The actions in the production workflow are pinned to full commit SHAs,
+  with the release named in the comment above each** (D17). The job holds
+  `id-token: write`, so a moved major-version tag would run new code with the
+  right to deploy production. A bump is a deliberate change: look the release
+  up (`gh api repos/<owner>/<action>/commits/<tag> --jq .sha`) and change the
+  SHA and its comment together.
+- **Production runs `--max-instances 3` against staging's 2** (D6). With
+  CNC's pool at `max: 3` that is 9 connections, and TAY's 3 instances at 5
+  are 15, so both together stay well inside the production instance's
+  limit of about 100. A change to either pool or either cap is checked
+  against that budget first.
 
 ### Never touched from CNC work
 
