@@ -1100,9 +1100,14 @@ They are here so the first card that builds it starts from the rule.
   (plan §9.2). With no web URL it shows the wordmark alone.
 
 - **Every email carries Reply-To `CNC_CONTACT_EMAIL`** (from C6-3,
-  `OutboundMessagesService`). The sender `cnc@tayxcnc.com` only sends
+  `OutboundMessagesService`). The sender `cnc@mail.tayxcnc.com` only sends
   (Q19), so a customer's reply would otherwise reach no inbox; the
   founder's 2026-10-22 note asked for it.
+- **The sender is on `mail.tayxcnc.com`, the domain verified with Resend,
+  never on `tayxcnc.com` itself** (`CNC_MAIL_FROM`, 2026-10-26). Resend
+  refuses a sender on a domain the key is not authorised for ("API key not
+  authorized for this domain"), the send fails, and the queue retries it to
+  the same refusal. Staging's first sign-in codes were lost this way.
 - **A template may name its own Reply-To (`RenderedMail.replyTo`); only the
   enquiry emails do, with the sender's address** (from C6-7). They go to
   CNC's inbox, so the default would make Reply answer CNC itself; with the
