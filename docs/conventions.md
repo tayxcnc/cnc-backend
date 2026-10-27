@@ -4336,7 +4336,15 @@ digests instead: a push at midnight would wake people).
   CNC's pool at `max: 3` that is 9 connections, and TAY's 3 instances at 5
   are 15, so both together stay well inside the production instance's
   limit of about 100. A change to either pool or either cap is checked
-  against that budget first.
+  against that budget first. **The rest of D7's shape is stated in the
+  command too: `--concurrency 80 --cpu 1 --memory 512Mi --timeout 300
+  --cpu-boost --cpu-throttling`.** `gcloud run deploy` keeps any setting it
+  is not given, so a flag left out would inherit whatever the G6 placeholder
+  was created with. CPU stays throttled (request-based) because the
+  webhook's five-second inline wait (*Online checkout and Paystack*) is
+  built for it, and
+  always-allocated CPU is a cost decision; the timeout stays above the
+  Scheduler's 180-second deadline.
 
 ### Never touched from CNC work
 

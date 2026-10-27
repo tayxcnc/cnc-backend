@@ -73,6 +73,11 @@ jobs:
       # --max-instances 3 with the pool's max 3 is CNC's share of the shared
       # instance's connection budget (9 of about 100, beside TAY's 15).
       #
+      # --cpu-boost and --cpu-throttling are D7's shape, stated here because
+      # `gcloud run deploy` keeps any setting it is not given: left out, they
+      # would be whatever the G6 placeholder was created with. Throttled CPU
+      # is what the webhook's five-second inline wait is built for.
+      #
       # These comments stay above the step, never inside the command. A `#`
       # line between backslash-continued flags would comment out every flag
       # after it, and the deploy would run with silently wrong settings.
@@ -83,6 +88,7 @@ jobs:
             --no-traffic --tag rc \
             --service-account "tayxcnc-cnc-prod-run@${PROJECT_ID}.iam.gserviceaccount.com" \
             --min-instances 0 --max-instances 3 --concurrency 80 --cpu 1 --memory 512Mi --timeout 300 \
+            --cpu-boost --cpu-throttling \
             --allow-unauthenticated \
             --add-cloudsql-instances "${PROJECT_ID}:europe-west1:tayxcnc-prod-pg" \
             --labels brand=cnc,env=prod \
