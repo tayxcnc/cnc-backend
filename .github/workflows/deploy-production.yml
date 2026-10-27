@@ -9,8 +9,11 @@
 # A release is a `v*` tag pushed by the founder's account, and nothing else.
 # Never re-run a production deploy: the job refuses a second attempt, and a
 # fix is always a new tag. A rollback never needs this workflow: it is
-# `gcloud run services update-traffic` to the previous revision, then a fixed
-# tag, whose deploy moves traffic back to the latest revision.
+# `gcloud run services update-traffic "$SERVICE" --region "$REGION"
+# --to-revisions=PREV=100 --remove-tags=rc`, then a fixed tag, whose deploy
+# moves traffic back to the latest revision and puts `rc` on it again. The
+# `rc` tag must go: a tagged revision answers at its tag address whatever
+# its traffic share, so the bad revision would stay callable in public.
 #
 # Migrations are deliberately absent, as on staging. `prisma migrate deploy`
 # is run by a person from Cloud Shell, before the tag that needs it: Cloud Run

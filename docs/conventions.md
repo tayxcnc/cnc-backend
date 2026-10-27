@@ -4304,11 +4304,17 @@ digests instead: a push at midnight would wake people).
   traffic to an old revision, a plain deploy would get 0% while its
   readiness check passed against the old one. The move to latest is also
   what un-pins a rollback.
-- **An API rollback is `gcloud run services update-traffic` to the previous
-  revision, never a re-run or a redeploy of an old tag**, followed by a fixed
-  `v1.0.x` tag (D15). It is instant and needs no workflow. It is not safe
-  after a release whose migration breaks the old code, so every release
-  record states "rollback-safe: yes/no".
+- **An API rollback is `gcloud run services update-traffic "$SERVICE"
+  --region "$REGION" --to-revisions=PREV=100 --remove-tags=rc`, never a
+  re-run or a redeploy of an old tag**, followed by a fixed `v1.0.x` tag
+  (D15). It is instant and needs no workflow. **The `--remove-tags=rc` is
+  not optional:** a tagged revision answers at its tag address
+  (`https://rc---…run.app`) whatever its traffic share, and the service is
+  public, so without it the rolled-back revision, holding the production
+  database and the live Paystack key, stays callable until the next deploy.
+  That deploy's `--tag rc` puts the tag back. A rollback is not safe after
+  a release whose migration breaks the old code, so every release record
+  states "rollback-safe: yes/no".
 - **Production mounts every secret at a fixed version (`NAME:1`), never
   `:latest`** (D9). Cloud Run reads a `:latest` secret at each instance start,
   not once per revision, and with min 0 instances start all the time: a wrong
