@@ -4297,6 +4297,14 @@ digests instead: a push at midnight would wake people).
   "Re-run" would pass the actor check. **Never re-run a production deploy;
   a fix is always a new tag.** The image tag is the commit SHA, as on
   staging.
+- **The production deploy refuses a tagged commit that is not on `main`
+  (`git merge-base --is-ancestor "$GITHUB_SHA" origin/main`), before the
+  auth step.** The job guard and WIF check who pushed the tag and the
+  attempt, not what the tag points at, so a `v*` tag on a feature branch or
+  an unreviewed local commit would otherwise deploy code that never went
+  through a PR or CI. Checking before auth means a refused tag never
+  obtains credentials. A release is therefore tagged on `main` after the
+  `develop` to `main` merge, never on `develop`.
 - **The production deploy creates the revision with `--no-traffic --tag rc`,
   checks `/api/v1/health/ready` on the `rc` address, then moves all traffic
   to the latest revision and checks that it is the one serving** (D8). A

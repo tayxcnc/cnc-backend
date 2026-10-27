@@ -47,7 +47,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `GET /me/notifications`, what writes an item, unread, the booking reminders (Q32) and `reminderSentAt` | The customer's in-app list and booking reminders |
 | `POST /enquiries`, `POST /group-enquiries`: honeypot, the two limits, the inbox email (Q20) | Enquiries |
 | The Cloud Scheduler sweep jobs, their schedules and how to create them | Infrastructure |
-| The production deploy: `v*` tags by `tayxcnc` only, never re-run, no-traffic then check then move, rollback by traffic, secrets pinned at `:1`, actions pinned by SHA | Infrastructure |
+| The production deploy: `v*` tags by `tayxcnc` only, on a commit already on `main`, never re-run, no-traffic then check then move, rollback by traffic with the `rc` tag removed, secrets pinned at `:1`, the same names as staging, actions pinned by SHA | Infrastructure |
 | `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
 | Q36's periods, `POST /internal/sweeps/retention`, what deletion also forgets (unlinked records under the email, stored answers), the audit read withholding a deleted guest's values, what still holds a deleted person's details | Data retention and account deletion |
 | Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |

@@ -50,7 +50,16 @@ jobs:
     steps:
       # actions/checkout v7.0.1, pinned by commit. This job holds
       # id-token: write, so a moved tag must never run new code with it.
+      # The full history, so the next step can see main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { fetch-depth: 0 }
+      # Only a commit already on main deploys. The guard and WIF check who
+      # pushed the tag and the attempt, not what it points at: a `v*` tag on
+      # a feature branch or an unreviewed local commit would otherwise reach
+      # production without the review and CI that main's merges carry. It
+      # runs before the auth step, so a refused tag never gets credentials.
+      - name: The tagged commit must be on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       # google-github-actions/auth v3.0.0, pinned by commit
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
