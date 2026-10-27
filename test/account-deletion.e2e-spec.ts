@@ -31,6 +31,7 @@ import {
   type IsolatedDatabase,
 } from './isolated-database';
 import { chargeSuccessBody, postSignedWebhook } from './paystack-webhooks';
+import { testSubscription } from './push-devices';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 import { clientAddress } from './staff-sessions';
 
@@ -73,6 +74,7 @@ describe('deleting an account forgets the person (e2e)', () => {
   let onlineId: string;
   let bookingNumber: string;
   let tableRef: string;
+  let deletedCustomerId: string;
 
   beforeAll(async () => {
     database = await createIsolatedDatabase();
@@ -268,6 +270,14 @@ describe('deleting an account forgets the person (e2e)', () => {
       SubjectType.CUSTOMER,
     );
 
+    // Notifications on, so the bookings below push to this device (C10).
+    deletedCustomerId = customer.id;
+    await request(server())
+      .post('/api/v1/me/push/subscriptions')
+      .set({ Authorization: `Bearer ${accessToken}` })
+      .send(testSubscription())
+      .expect(204);
+
     const table = await prisma.diningTable.findFirstOrThrow({
       where: { active: true },
       orderBy: [{ venueId: 'asc' }, { code: 'asc' }],
@@ -342,10 +352,30 @@ describe('deleting an account forgets the person (e2e)', () => {
       .send({ sessionId: seated.session.id, version: seated.session.version })
       .expect(200);
 
+    // Reception's booking for them, and its cancellation, pushed.
+    expect(
+      await prisma.pushMessage.count({
+        where: { customerId: customer.id },
+      }),
+    ).toBeGreaterThanOrEqual(2);
+
     await request(server())
       .delete('/api/v1/me')
       .set({ Authorization: `Bearer ${accessToken}` })
       .expect(204);
+  });
+
+  it('leaves no push device and no push row of the person (C10)', async () => {
+    expect(
+      await prisma.customerPushSubscription.count({
+        where: { customerId: deletedCustomerId },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.pushMessage.count({
+        where: { customerId: deletedCustomerId },
+      }),
+    ).toBe(0);
   });
 
   it('leaves the email, phones, name and address in no table but the audit log', async () => {

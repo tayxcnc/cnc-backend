@@ -4,6 +4,8 @@ import { formatKobo } from '../common/money';
 import { CncConfigService } from '../config/cnc.config';
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { asId } from '../push/push-input-types';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import {
   ANONYMISED_CHECKOUT_REASON,
   SETTLEABLE_CHECKOUT_STATUSES,
@@ -72,6 +74,7 @@ export class CheckoutPaymentsService {
     private readonly outbound: OutboundMessagesService,
     private readonly config: CncConfigService,
     private readonly placement: OnlineOrderPlacementService,
+    private readonly push: PushQueueService,
   ) {}
 
   /**
@@ -83,8 +86,9 @@ export class CheckoutPaymentsService {
   async confirm(
     reference: string,
     event: VerifiedTransaction | undefined,
+    pushes?: PushTopics,
   ): Promise<ConfirmOutcome> {
-    return this.settle(reference, { reported: true, event });
+    return this.settle(reference, { reported: true, event }, pushes);
   }
 
   /**
@@ -95,13 +99,27 @@ export class CheckoutPaymentsService {
    * Paystack never saw) is `unpaid` and changes nothing; a success is
    * settled or held exactly as a webhook's. Paystack unreachable throws.
    */
-  async recheck(reference: string): Promise<ConfirmOutcome> {
-    return this.settle(reference, { reported: false, event: undefined });
+  async recheck(
+    reference: string,
+    pushes?: PushTopics,
+  ): Promise<ConfirmOutcome> {
+    return this.settle(
+      reference,
+      { reported: false, event: undefined },
+      pushes,
+    );
   }
 
+  /**
+   * `pushes` (C10, D14): given by a sweep, which collects every settle's
+   * pushes and sends them once at the end of its run under one deadline;
+   * left out by a request (the webhook, the confirmation read), whose
+   * pushes are sent here, after the commit.
+   */
   private async settle(
     reference: string,
     report: { reported: boolean; event: VerifiedTransaction | undefined },
+    pushes: PushTopics | undefined,
   ): Promise<ConfirmOutcome> {
     const { event } = report;
     const checkout = await this.prisma.checkout.findUnique({
@@ -142,7 +160,7 @@ export class CheckoutPaymentsService {
       verified,
     );
 
-    if (problem !== null) return this.hold(checkout.id, problem);
+    if (problem !== null) return this.hold(checkout.id, problem, pushes);
 
     const cardBrand =
       verified.card === undefined ? null : cardBrandName(verified.card.type);
@@ -199,7 +217,7 @@ export class CheckoutPaymentsService {
     if (placed === null) return 'unchanged';
 
     if (placed === 'anonymised') {
-      return this.hold(checkout.id, ANONYMISED_CHECKOUT_REASON);
+      return this.hold(checkout.id, ANONYMISED_CHECKOUT_REASON, pushes);
     }
 
     this.logger.log(
@@ -210,16 +228,24 @@ export class CheckoutPaymentsService {
     // The receipt (Q31, C7-6), queued with the order; never fails the
     // settle, and the messages sweep sends it if this send does not.
     await this.outbound.dispatchByKey(placed.receiptKey);
+    // The staff pushes (C10): never fail the settle either; the push sweep
+    // sends what this does not.
+    await this.sendPushes(placed.pushTopics, pushes);
 
     return 'paid';
   }
 
-  /** Hold the checkout for a person, and tell CNC's inbox. */
+  /**
+   * Hold the checkout for a person, tell CNC's inbox, and push the
+   * managers (C10, PS3: urgent, so never held off-hours).
+   */
   private async hold(
     checkoutId: string,
     reason: string,
+    pushes: PushTopics | undefined,
   ): Promise<ConfirmOutcome> {
     const inbox = this.config.contactEmail;
+    let attention: string | null = null;
 
     const messageId = await this.prisma.$transaction(async (tx) => {
       const { count } = await tx.checkout.updateMany({
@@ -232,6 +258,13 @@ export class CheckoutPaymentsService {
       });
 
       if (count === 0) return undefined;
+
+      attention = await this.push.enqueueStaff(
+        tx,
+        'checkout.needs_attention',
+        () => ({ checkoutId: asId(checkoutId) }),
+        { managers: true },
+      );
 
       if (inbox === undefined) return null;
 
@@ -275,6 +308,23 @@ export class CheckoutPaymentsService {
       await this.outbound.dispatch(messageId);
     }
 
+    await this.sendPushes([attention], pushes);
+
     return 'needs-attention';
+  }
+
+  /**
+   * A settle's pushes: added to a sweep's `collected`, to send once at the
+   * end of its run, or sent now, after this request's commit (D14).
+   */
+  private async sendPushes(
+    topics: PushTopics,
+    collected: PushTopics | undefined,
+  ): Promise<void> {
+    if (collected === undefined) {
+      await this.push.dispatchTopics(topics);
+    } else {
+      collected.push(...topics);
+    }
   }
 }

@@ -43,6 +43,7 @@ import {
 } from '../idempotency/idempotency-key.decorator';
 import { idempotencyScope } from '../idempotency/idempotency-scope';
 import { IdempotencyService } from '../idempotency/idempotency.service';
+import type { PushTopics } from '../push/push-queue.service';
 import { BookingThrottle } from './booking-throttle';
 import { CustomerReservationsService } from './customer-reservations.service';
 import {
@@ -153,6 +154,7 @@ export class PublicReservationsController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<CustomerReservationResponse> {
     const ipAddress = clientAddressOf(httpRequest);
+    const pushes: PushTopics = [];
     const result = await this.idempotency.execute({
       ...idempotency,
       scope:
@@ -160,10 +162,11 @@ export class PublicReservationsController {
           ? idempotencyScope.anonymous(ipAddress)
           : idempotencyScope.customer(customer.id),
       status: HttpStatus.CREATED,
-      work: (tx) => this.reservations.book(tx, customer, request, ipAddress),
+      work: (tx) =>
+        this.reservations.book(tx, customer, request, ipAddress, pushes),
     });
 
-    await this.reservations.sendConfirmation(result.body.id);
+    await this.reservations.sendConfirmation(result.body.id, pushes);
     response.status(result.status);
 
     return result.body;

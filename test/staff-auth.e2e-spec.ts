@@ -39,6 +39,7 @@ import { StructuredLogger } from '../src/common/logging/structured-logger';
 import { OWNER_ONLY_MANAGER_ACCOUNTS_MESSAGE } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp } from './create-test-app';
+import { testSubscription } from './push-devices';
 import { createStaffAccount } from './staff-fixtures';
 import {
   clientAddress,
@@ -566,6 +567,29 @@ describe('staff auth (e2e)', () => {
     it('needs a bearer token', async () => {
       await request(server()).post('/api/v1/auth/staff/sign-out').expect(401);
     });
+
+    it('forgets the account’s push devices, and the old access token cannot bind one again (C10)', async () => {
+      const account = await createStaff(StaffRole.KITCHEN);
+      const session = await signIn(account);
+      const subscribe = (status: number) =>
+        request(server())
+          .post('/api/v1/staff/push/subscriptions')
+          .set('Authorization', `Bearer ${session.accessToken}`)
+          .send(testSubscription())
+          .expect(status);
+      const devices = () =>
+        prisma.staffPushSubscription.count({ where: { staffId: account.id } });
+
+      await subscribe(204);
+      expect(await devices()).toBe(1);
+
+      await signOutCall(session.accessToken).expect(204);
+      expect(await devices()).toBe(0);
+
+      // The access token is still valid for minutes; the session is not.
+      await subscribe(401);
+      expect(await devices()).toBe(0);
+    });
   });
 
   describe('change-password', () => {
@@ -604,6 +628,28 @@ describe('staff auth (e2e)', () => {
       await expect(verifyPassword(row.passwordHash, newPassword)).resolves.toBe(
         true,
       );
+    });
+
+    it('forgets the account’s push devices with its old sessions (C10)', async () => {
+      const account = await createStaff(StaffRole.CASHIER);
+      const before = await signIn(account);
+
+      await request(server())
+        .post('/api/v1/staff/push/subscriptions')
+        .set('Authorization', `Bearer ${before.accessToken}`)
+        .send(testSubscription())
+        .expect(204);
+
+      await changePasswordCall(before.accessToken, {
+        currentPassword: account.password,
+        newPassword: `new-${randomUUID()}`,
+      }).expect(200);
+
+      expect(
+        await prisma.staffPushSubscription.count({
+          where: { staffId: account.id },
+        }),
+      ).toBe(0);
     });
 
     it('refuses a wrong current password, a short one, and the same one', async () => {

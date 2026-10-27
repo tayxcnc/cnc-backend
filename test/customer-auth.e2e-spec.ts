@@ -62,6 +62,7 @@ import { SWEEP_TOKEN_HEADER } from '../src/internal/sweep-token.guard';
 import { MAIL_NOT_CONFIGURED } from '../src/mail/outbound-messages.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp, sentMail } from './create-test-app';
+import { testSubscription } from './push-devices';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 import { clientAddress } from './staff-sessions';
 
@@ -622,6 +623,47 @@ describe('customer auth (e2e)', () => {
         expect(refused.status).toBe(401);
         expect(messageOf(refused)).toBe(INVALID_REFRESH_TOKEN_MESSAGE);
       }
+    });
+
+    it('forgets the push devices and the pushes not yet sent, and the old access token cannot bind a device again (C10)', async () => {
+      const session = await signIn();
+      const customerId = session.body.customer.id;
+      const subscribe = (status: number) =>
+        request(server())
+          .post('/api/v1/me/push/subscriptions')
+          .set('Authorization', `Bearer ${session.body.accessToken}`)
+          .send(testSubscription())
+          .expect(status);
+
+      await subscribe(204);
+      await prisma.pushMessage.create({
+        data: {
+          customerId,
+          event: 'order.preparing',
+          topic: `auth-suite:${customerId}`,
+          dedupeKey: `auth-suite:${customerId}`,
+          title: 'Order WEB-000001 is being prepared',
+          body: 'The kitchen has started on your order.',
+          tag: `auth-suite:${customerId}`,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+
+      await request(server())
+        .post('/api/v1/auth/sign-out')
+        .set('Authorization', `Bearer ${session.body.accessToken}`)
+        .expect(204);
+
+      expect(
+        await prisma.customerPushSubscription.count({ where: { customerId } }),
+      ).toBe(0);
+      expect(await prisma.pushMessage.count({ where: { customerId } })).toBe(0);
+
+      // The access token is still valid for minutes; the session is not.
+      await subscribe(401);
+      expect(
+        await prisma.customerPushSubscription.count({ where: { customerId } }),
+      ).toBe(0);
     });
   });
 

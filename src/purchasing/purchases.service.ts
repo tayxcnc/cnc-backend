@@ -28,6 +28,8 @@ import {
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
+import { asId, asPurchaseRef } from '../push/push-input-types';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import { StockLedgerService } from '../stock/stock-ledger.service';
 import {
   closeOpenTasks,
@@ -175,6 +177,11 @@ function purchaseSearch(q: string): Prisma.PurchaseWhereInput {
  * (A8), applies the money rules through `MoneyControlService`, moves stock
  * only through `StockLedgerService`, and writes its audit row in the same
  * transaction, under the purchase number.
+ *
+ * **Web push (C10).** A requisition that comes to await approval (raised,
+ * or put back to Pending) pushes the managers (PS5, behind the approvals
+ * alert), and each automatic task pushes its assignee (PS9), both sent
+ * after the command commits.
  */
 @Injectable()
 export class PurchasesService {
@@ -183,6 +190,7 @@ export class PurchasesService {
     private readonly ledger: StockLedgerService,
     private readonly audit: AuditService,
     private readonly money: MoneyControlService,
+    private readonly push: PushQueueService,
   ) {}
 
   /** `GET /staff/purchases`: newest first, with the screen's three figures. */
@@ -301,13 +309,15 @@ export class PurchasesService {
    * vendor (its own, or the requisition's) and an item, at a cost per pack
    * above zero, checked line by line in the demo's order. Runs inside the
    * idempotency service's transaction: a retry after a lost response
-   * replays the first requisition instead of raising a second.
+   * replays the first requisition instead of raising a second. `pushes`
+   * collects its pushes, for the controller to send after the commit.
    */
   async create(
     tx: Tx,
     actor: StaffPrincipal,
     request: CreatePurchaseRequest,
     ipAddress: string,
+    pushes: PushTopics = [],
   ): Promise<PurchaseResponse> {
     const lines = await this.checkLines(tx, request.lines, {
       defaultVendorId: request.vendorId,
@@ -326,7 +336,8 @@ export class PurchasesService {
     });
 
     await this.writeLines(tx, row.id, lines, false);
-    await this.raiseTaskFor(tx, row, PurchaseStatus.PENDING, actor.id);
+    await this.raiseTaskFor(tx, row, PurchaseStatus.PENDING, actor.id, pushes);
+    pushes.push(await this.queueAwaitingApproval(tx, row, actor.id));
 
     await this.audit.record(
       {
@@ -511,7 +522,8 @@ export class PurchasesService {
     request: PurchaseStatusRequest,
     ipAddress: string,
   ): Promise<PurchaseResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const pushes: PushTopics = [];
+    const answer = await this.prisma.$transaction(async (tx) => {
       const current = await this.claim(tx, id, request.version);
       const lines = await this.linesOf(tx, id);
 
@@ -535,7 +547,13 @@ export class PurchasesService {
         select: PURCHASE_COLUMNS,
       });
 
-      if (changed) await this.moveTasks(tx, updated, actor.id);
+      if (changed) await this.moveTasks(tx, updated, actor.id, pushes);
+
+      // Back to Pending awaits a decision again: the managers hear of it
+      // as of a new requisition (its version keys a second push).
+      if (changed && status === PurchaseStatus.PENDING) {
+        pushes.push(await this.queueAwaitingApproval(tx, updated, actor.id));
+      }
 
       await this.audit.record(
         {
@@ -552,6 +570,10 @@ export class PurchasesService {
 
       return this.answer(tx, updated);
     });
+
+    await this.push.dispatchTopics(pushes);
+
+    return answer;
   }
 
   /**
@@ -685,7 +707,7 @@ export class PurchasesService {
   }
 
   /** Approve or reject a Pending requisition: the shared half of both commands. */
-  private review(
+  private async review(
     actor: StaffPrincipal,
     id: string,
     version: number,
@@ -696,8 +718,9 @@ export class PurchasesService {
       status === PurchaseStatus.APPROVED
         ? 'purchase.approve'
         : 'purchase.reject';
+    const pushes: PushTopics = [];
 
-    return this.prisma.$transaction(async (tx) => {
+    const answer = await this.prisma.$transaction(async (tx) => {
       const current = await this.claim(tx, id, version);
 
       if (current.archived || current.status !== PurchaseStatus.PENDING) {
@@ -720,7 +743,7 @@ export class PurchasesService {
         select: PURCHASE_COLUMNS,
       });
 
-      await this.moveTasks(tx, updated, actor.id);
+      await this.moveTasks(tx, updated, actor.id, pushes);
 
       await this.audit.record(
         {
@@ -737,6 +760,10 @@ export class PurchasesService {
 
       return this.answer(tx, updated);
     });
+
+    await this.push.dispatchTopics(pushes);
+
+    return answer;
   }
 
   /**
@@ -771,23 +798,29 @@ export class PurchasesService {
     tx: Tx,
     purchase: PurchaseRow,
     staffId: string,
+    pushes: PushTopics,
   ): Promise<void> {
     await closeOpenTasks(
       tx,
       { purchaseId: purchase.id, automaticOnly: true },
       staffId,
     );
-    await this.raiseTaskFor(tx, purchase, purchase.status, staffId);
+    await this.raiseTaskFor(tx, purchase, purchase.status, staffId, pushes);
   }
 
-  /** Open the automatic task a status waits on, if it waits on one. */
+  /**
+   * Open the automatic task a status waits on, if it waits on one; its
+   * assignee's push (PS9) joins `pushes`.
+   */
   private async raiseTaskFor(
     tx: Tx,
     purchase: Pick<PurchaseRow, 'id' | 'number' | 'vendorId'>,
     status: PurchaseStatus,
     staffId: string,
+    pushes: PushTopics,
   ): Promise<void> {
     const kind = taskForStatus(status);
+    const taskPushes = { queue: this.push, topics: pushes };
 
     if (kind === 'REVIEW') {
       const vendor = await tx.vendor.findUniqueOrThrow({
@@ -795,22 +828,51 @@ export class PurchasesService {
         select: { name: true },
       });
 
-      await raiseAutomaticTask(tx, {
-        title: reviewTaskTitle(purchase.number, vendor.name),
-        type: TaskType.PURCHASE,
-        assignedToId: await managerForTask(tx, staffId),
-        raisedById: staffId,
-        purchaseId: purchase.id,
-      });
+      await raiseAutomaticTask(
+        tx,
+        {
+          title: reviewTaskTitle(purchase.number, vendor.name),
+          type: TaskType.PURCHASE,
+          assignedToId: await managerForTask(tx, staffId),
+          raisedById: staffId,
+          purchaseId: purchase.id,
+        },
+        taskPushes,
+      );
     } else if (kind === 'RECEIVE') {
-      await raiseAutomaticTask(tx, {
-        title: receiveTaskTitle(purchase.number),
-        type: TaskType.PURCHASE,
-        assignedToId: await storekeeperForTask(tx, staffId),
-        raisedById: staffId,
-        purchaseId: purchase.id,
-      });
+      await raiseAutomaticTask(
+        tx,
+        {
+          title: receiveTaskTitle(purchase.number),
+          type: TaskType.PURCHASE,
+          assignedToId: await storekeeperForTask(tx, staffId),
+          raisedById: staffId,
+          purchaseId: purchase.id,
+        },
+        taskPushes,
+      );
     }
+  }
+
+  /**
+   * Tell the managers a requisition awaits their approval (C10, PS5),
+   * behind the approvals alert, never the person who put it there.
+   */
+  private queueAwaitingApproval(
+    tx: Tx,
+    purchase: Pick<PurchaseRow, 'id' | 'number' | 'version'>,
+    actorId: string,
+  ): Promise<string | null> {
+    return this.push.enqueueStaff(
+      tx,
+      'purchase.awaiting_approval',
+      () => ({
+        purchaseId: asId(purchase.id),
+        purchaseRef: asPurchaseRef(purchase.number),
+        version: purchase.version,
+      }),
+      { managers: true, except: [actorId] },
+    );
   }
 
   /**

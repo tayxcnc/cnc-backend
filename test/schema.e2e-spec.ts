@@ -334,4 +334,50 @@ describe('C3 core schema (e2e)', () => {
       ).rejects.toThrow(/StockItem_values_check/);
     });
   });
+
+  describe('web pushes (C10)', () => {
+    const push = (owners: { customerId?: string; staffId?: string }) => {
+      const key = `probe:${randomUUID()}`;
+
+      return prisma.pushMessage.create({
+        data: {
+          ...owners,
+          event: 'task.assigned',
+          topic: key,
+          dedupeKey: key,
+          title: 'New task assigned to you',
+          body: 'Open Tasks to see it.',
+          tag: key,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+    };
+
+    it('holds exactly one recipient on a push: a customer or a staff member', async () => {
+      const customer = await prisma.customer.create({
+        data: {
+          memberNo: await drawNumber(prisma, 'customer'),
+          name: 'Probe Push',
+        },
+      });
+      const staff = await prisma.staff.create({
+        data: {
+          staffNo: await drawNumber(prisma, 'staff'),
+          name: 'Probe Push',
+          email: `probe-push-${randomUUID()}@cnc.test`,
+          role: 'KITCHEN',
+          passwordHash: 'not-a-real-hash',
+          qrToken: randomUUID(),
+          joinedOn: new Date('2026-10-20T00:00:00.000Z'),
+        },
+      });
+
+      await expect(push({ customerId: customer.id })).resolves.toBeTruthy();
+      await expect(push({ staffId: staff.id })).resolves.toBeTruthy();
+      await expect(
+        push({ customerId: customer.id, staffId: staff.id }),
+      ).rejects.toThrow(/PushMessage_one_recipient_check/);
+      await expect(push({})).rejects.toThrow(/PushMessage_one_recipient_check/);
+    });
+  });
 });

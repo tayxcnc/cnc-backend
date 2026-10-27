@@ -2,11 +2,15 @@ import type { CncPrismaService } from '../prisma/cnc-prisma.service';
 import {
   ATTENDANCE_RETENTION_YEARS,
   ENQUIRY_RETENTION_MONTHS,
+  PUSH_MESSAGE_RETENTION_DAYS,
+  PUSH_SUBSCRIPTION_UNUSED_DAYS,
   RETENTION_BATCH,
   RETENTION_MAX_BATCHES,
   RetentionSweepService,
   attendanceCutoff,
   enquiryCutoff,
+  pushMessageCutoff,
+  pushSubscriptionCutoff,
 } from './retention-sweep.service';
 
 describe('retention cutoffs (Q36)', () => {
@@ -75,15 +79,28 @@ describe('RetentionSweepService', () => {
     };
   }
 
-  function harness(enquiries: number, shifts: number) {
+  function harness(enquiries: number, shifts: number, pushes = 0, devices = 0) {
     const enquiry = table(enquiries);
     const attendanceRecord = table(shifts);
+    const pushMessage = table(pushes);
+    const customerPushSubscription = table(devices);
+    const staffPushSubscription = table(devices);
     const service = new RetentionSweepService({
       enquiry,
       attendanceRecord,
+      pushMessage,
+      customerPushSubscription,
+      staffPushSubscription,
     } as unknown as CncPrismaService);
 
-    return { service, enquiry, attendanceRecord };
+    return {
+      service,
+      enquiry,
+      attendanceRecord,
+      pushMessage,
+      customerPushSubscription,
+      staffPushSubscription,
+    };
   }
 
   it('reports each table’s count and whether rows remain', async () => {
@@ -92,8 +109,58 @@ describe('RetentionSweepService', () => {
     await expect(service.sweep(NOW)).resolves.toEqual({
       enquiries: 3,
       attendanceRecords: 0,
+      pushMessages: 0,
+      pushSubscriptions: 0,
       more: false,
     });
+  });
+
+  it('keeps push rows 30 days and devices 180 days unused (C10)', () => {
+    expect(PUSH_MESSAGE_RETENTION_DAYS).toBe(30);
+    expect(PUSH_SUBSCRIPTION_UNUSED_DAYS).toBe(180);
+    expect(pushMessageCutoff(NOW)).toEqual(
+      new Date('2026-09-24T09:00:00.000Z'),
+    );
+    expect(pushSubscriptionCutoff(NOW)).toEqual(
+      new Date('2026-04-27T09:00:00.000Z'),
+    );
+  });
+
+  it('deletes push rows written before the cutoff, in any status, and counts them (C10)', async () => {
+    const { service, pushMessage } = harness(0, 0, 4);
+
+    await expect(service.sweep(NOW)).resolves.toMatchObject({
+      pushMessages: 4,
+      more: false,
+    });
+    expect(pushMessage.finds[0]).toEqual({
+      where: { createdAt: { lt: new Date('2026-09-24T09:00:00.000Z') } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: RETENTION_BATCH,
+      select: { id: true },
+    });
+    expect(pushMessage.deletes[0]).toMatchObject({
+      where: { createdAt: { lt: new Date('2026-09-24T09:00:00.000Z') } },
+    });
+  });
+
+  it('deletes devices neither seen nor delivered to for 180 days, in both realms, and counts them (C10)', async () => {
+    const { service, customerPushSubscription, staffPushSubscription } =
+      harness(0, 0, 0, 2);
+    const cutoff = new Date('2026-04-27T09:00:00.000Z');
+    const unused = {
+      lastSeenAt: { lt: cutoff },
+      OR: [{ lastSuccessAt: null }, { lastSuccessAt: { lt: cutoff } }],
+    };
+
+    await expect(service.sweep(NOW)).resolves.toMatchObject({
+      pushSubscriptions: 4,
+    });
+    for (const devices of [customerPushSubscription, staffPushSubscription]) {
+      expect(devices.finds[0]).toMatchObject({ where: unused });
+      // The delete repeats the conditions: a device seen meanwhile stays.
+      expect(devices.deletes[0]).toMatchObject({ where: unused });
+    }
   });
 
   it('deletes only finished shifts dated before the cutoff, by date', async () => {
@@ -145,6 +212,8 @@ describe('RetentionSweepService', () => {
     await expect(service.sweep(NOW)).resolves.toEqual({
       enquiries: 0,
       attendanceRecords: cap,
+      pushMessages: 0,
+      pushSubscriptions: 0,
       more: true,
     });
     expect(attendanceRecord.findMany).toHaveBeenCalledTimes(

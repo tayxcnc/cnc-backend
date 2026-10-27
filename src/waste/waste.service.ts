@@ -28,6 +28,8 @@ import {
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
+import { asId } from '../push/push-input-types';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import { StockLedgerService } from '../stock/stock-ledger.service';
 import { locationHolds } from '../stock/stock-locations';
 import { stockValueAtKobo } from '../stock/stock-value';
@@ -162,6 +164,10 @@ function auditFields(
  *
  * Every command after the create claims the entry's `version` first (A8)
  * and writes its audit row in the same transaction.
+ *
+ * An entry that comes to await approval (logged, or put back to Pending)
+ * pushes the managers (C10, PS6, behind the approvals alert), sent after
+ * the command commits.
  */
 @Injectable()
 export class WasteService {
@@ -170,6 +176,7 @@ export class WasteService {
     private readonly ledger: StockLedgerService,
     private readonly audit: AuditService,
     private readonly money: MoneyControlService,
+    private readonly push: PushQueueService,
   ) {}
 
   /**
@@ -235,13 +242,15 @@ export class WasteService {
    * holds. The entry is Pending, and no stock moves until it is approved.
    * Runs inside the idempotency service's transaction: a retry after a
    * lost response replays the first entry instead of logging the loss
-   * twice.
+   * twice. The managers' push joins `pushes`, for the controller to send
+   * after the commit.
    */
   async create(
     tx: Tx,
     actor: StaffPrincipal,
     request: CreateWasteRequest,
     ipAddress: string,
+    pushes: PushTopics = [],
   ): Promise<WasteResponse> {
     const location = request.location;
     const ownLocation = ownLocationProblem(actor.role, location);
@@ -294,7 +303,27 @@ export class WasteService {
       tx,
     );
 
+    pushes.push(await this.queueAwaitingApproval(tx, row, actor.id));
+
     return this.answer(tx, row);
+  }
+
+  /**
+   * Tell the managers an entry awaits their approval (C10, PS6), behind
+   * the approvals alert, never the person who put it there. No item, no
+   * quantity: "A waste entry needs your approval."
+   */
+  private queueAwaitingApproval(
+    tx: Tx,
+    entry: Pick<WasteRow, 'id' | 'version'>,
+    actorId: string,
+  ): Promise<string | null> {
+    return this.push.enqueueStaff(
+      tx,
+      'waste.awaiting_approval',
+      () => ({ wasteId: asId(entry.id), version: entry.version }),
+      { managers: true, except: [actorId] },
+    );
   }
 
   /**
@@ -517,7 +546,8 @@ export class WasteService {
     request: WasteStatusRequest,
     ipAddress: string,
   ): Promise<WasteResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    let pushTopic: string | null = null;
+    const answer = await this.prisma.$transaction(async (tx) => {
       const current = await this.claim(tx, id, request.version);
       const status = request.status;
       const move = statusMove(current.status, status);
@@ -553,8 +583,18 @@ export class WasteService {
         tx,
       );
 
+      // Back to Pending awaits a decision again (its version keys a second
+      // push).
+      if (status === WasteStatus.PENDING && current.status !== status) {
+        pushTopic = await this.queueAwaitingApproval(tx, updated, actor.id);
+      }
+
       return this.answer(tx, updated);
     });
+
+    await this.push.dispatchTopics([pushTopic]);
+
+    return answer;
   }
 
   /**

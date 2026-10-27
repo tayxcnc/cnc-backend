@@ -23,6 +23,7 @@ import { watToday } from '../common/wat';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import {
   closeOpenTasks,
   managerForTask,
@@ -119,6 +120,7 @@ export class MaintenanceService {
   constructor(
     private readonly prisma: CncPrismaService,
     private readonly audit: AuditService,
+    private readonly push: PushQueueService,
   ) {}
 
   /** `GET /staff/maintenance`: newest first, with status and search filters. */
@@ -195,14 +197,17 @@ export class MaintenanceService {
    * `maintenance.save` logging a repair. Runs inside the idempotency
    * service's transaction: a retry after a lost response replays the
    * first repair instead of logging a second, with a second follow-up.
+   * The follow-up's push to its manager (C10, PS9) joins `pushes`, for the
+   * controller to send after the commit.
    */
   create(
     tx: Tx,
     actor: StaffPrincipal,
     request: CreateRepairRequest,
     ipAddress: string,
+    pushes: PushTopics = [],
   ): Promise<RepairResponse> {
-    return this.save(tx, actor, null, request, ipAddress);
+    return this.save(tx, actor, null, request, ipAddress, pushes);
   }
 
   /** `maintenance.save` on a repair that exists: claims its version first. */
@@ -225,7 +230,9 @@ export class MaintenanceService {
         select: REPAIR_COLUMNS,
       });
 
-      return this.save(tx, actor, current, request, ipAddress);
+      // An update raises no task (only a new repair does), so it pushes
+      // nothing.
+      return this.save(tx, actor, current, request, ipAddress, []);
     });
   }
 
@@ -240,6 +247,7 @@ export class MaintenanceService {
     current: RepairRow | null,
     request: CreateRepairRequest | UpdateRepairRequest,
     ipAddress: string,
+    pushes: PushTopics,
   ): Promise<RepairResponse> {
     const assetId = sentId(request.assetId);
     const vendorId = sentId(request.vendorId);
@@ -324,13 +332,17 @@ export class MaintenanceService {
     if (taskId !== undefined) {
       await this.linkTask(tx, actor, taskId, saved.id);
     } else if (current === null) {
-      await raiseAutomaticTask(tx, {
-        title: followUpTitle(saved.number, asset.name),
-        type: TaskType.MAINTENANCE,
-        assignedToId: await managerForTask(tx, actor.id),
-        raisedById: actor.id,
-        maintenanceId: saved.id,
-      });
+      await raiseAutomaticTask(
+        tx,
+        {
+          title: followUpTitle(saved.number, asset.name),
+          type: TaskType.MAINTENANCE,
+          assignedToId: await managerForTask(tx, actor.id),
+          raisedById: actor.id,
+          maintenanceId: saved.id,
+        },
+        { queue: this.push, topics: pushes },
+      );
     }
 
     if (isResolved(status)) {

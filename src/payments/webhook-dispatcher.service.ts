@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import type { PushTopics } from '../push/push-queue.service';
 import { CheckoutPaymentsService } from './checkout-payments.service';
 import { PaymentEventService } from './payment-event.service';
 import {
@@ -101,11 +102,13 @@ export class WebhookDispatcherService implements OnModuleDestroy {
 
   /**
    * Handle one delivery and mark it processed. Also the payments sweep's
-   * entry for an unprocessed event (C7-5), which has the reference only.
+   * entry for an unprocessed event (C7-5), which has the reference only,
+   * and passes `pushes` to send its run's pushes once at the end (C10).
    */
   async dispatch(
     envelope: PaystackEnvelope,
     paymentEventId: string,
+    pushes?: PushTopics,
   ): Promise<void> {
     if (envelope.event === CHARGE_SUCCESS) {
       const reference = referenceOf(envelope.data);
@@ -113,7 +116,11 @@ export class WebhookDispatcherService implements OnModuleDestroy {
       if (reference === undefined) {
         this.logger.warn('A charge.success delivery carried no reference.');
       } else {
-        await this.checkouts.confirm(reference, readTransaction(envelope.data));
+        await this.checkouts.confirm(
+          reference,
+          readTransaction(envelope.data),
+          pushes,
+        );
       }
     } else {
       this.logger.log(`Ignoring unhandled event ${envelope.event}.`);

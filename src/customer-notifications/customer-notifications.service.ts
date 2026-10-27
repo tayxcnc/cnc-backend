@@ -7,6 +7,11 @@ import {
   type PaginationQuery,
 } from '../common/dto/pagination.query';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import type {
+  CustomerPushEvent,
+  CustomerPushInputs,
+} from '../push/push-catalogue';
+import { type PushInput, PushQueueService } from '../push/push-queue.service';
 import type { NotificationText } from './customer-notification-texts';
 import type {
   CustomerNotificationPageResponse,
@@ -18,6 +23,12 @@ type NotificationWriter = Pick<
   Prisma.TransactionClient,
   'customer' | 'customerNotification'
 >;
+
+/** The web push an item carries to the customer's devices (C10). */
+export interface CustomerPushRequest<E extends CustomerPushEvent> {
+  event: E;
+  input: PushInput<CustomerPushInputs[E]>;
+}
 
 /**
  * The customer's in-app list (plan §4.8, §9.2; card C6-8): written by the
@@ -34,24 +45,52 @@ type NotificationWriter = Pick<
  * - What is unread is what was created after `Customer.notificationsReadAt`
  *   (plan §4.2); `markRead` moves that instant to the server's now (A11),
  *   never backwards.
+ * - **An item may carry a web push** (C10): `record`'s last argument names
+ *   the catalogue's event, queued in the same transaction
+ *   (`PushQueueService.enqueueCustomer`), which applies the customer's
+ *   switch, so the list stays ungated (D62) while the push follows Order
+ *   Updates or Reservation Reminders (D7). Only the events the catalogue
+ *   names push: the caller decides which items do.
  */
 @Injectable()
 export class CustomerNotificationsService {
-  constructor(private readonly prisma: CncPrismaService) {}
+  constructor(
+    private readonly prisma: CncPrismaService,
+    private readonly push: PushQueueService,
+  ) {}
 
-  /** Write one item for the customer, in the caller's transaction. */
+  /**
+   * Write one item for the customer, in the caller's transaction, and queue
+   * its push when `push` names one. Answers the push's topic, for the
+   * caller to dispatch after the commit, or null when no push was queued
+   * (none asked for, the switch off, no device, or a deleted account).
+   */
   async record(
     tx: NotificationWriter,
     customerId: string,
     text: NotificationText,
     dedupeKey: string,
-  ): Promise<void> {
+  ): Promise<null>;
+  async record<E extends CustomerPushEvent>(
+    tx: Prisma.TransactionClient,
+    customerId: string,
+    text: NotificationText,
+    dedupeKey: string,
+    push: CustomerPushRequest<E> | null,
+  ): Promise<string | null>;
+  async record<E extends CustomerPushEvent>(
+    tx: NotificationWriter | Prisma.TransactionClient,
+    customerId: string,
+    text: NotificationText,
+    dedupeKey: string,
+    push: CustomerPushRequest<E> | null = null,
+  ): Promise<string | null> {
     const customer = await tx.customer.findUnique({
       where: { id: customerId },
       select: { deletedAt: true },
     });
 
-    if (customer === null || customer.deletedAt !== null) return;
+    if (customer === null || customer.deletedAt !== null) return null;
 
     await tx.customerNotification.createMany({
       data: [
@@ -70,6 +109,16 @@ export class CustomerNotificationsService {
       ],
       skipDuplicates: true,
     });
+
+    if (push === null) return null;
+
+    // Only the second overload passes `push`, and it takes a transaction.
+    return this.push.enqueueCustomer(
+      tx as Prisma.TransactionClient,
+      push.event,
+      customerId,
+      push.input,
+    );
   }
 
   /** `GET /me/notifications`: newest first, with what is unread. */

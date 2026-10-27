@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   Prisma,
+  StaffRole,
   StockLocation,
   StockMovementType,
   StockRequestStatus,
@@ -24,6 +25,8 @@ import {
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
+import { asId } from '../push/push-input-types';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import type {
   CreateStockRequestRequest,
   IssueStockRequestRequest,
@@ -134,6 +137,7 @@ export class StockRequestsService {
     private readonly ledger: StockLedgerService,
     private readonly audit: AuditService,
     private readonly money: MoneyControlService,
+    private readonly push: PushQueueService,
   ) {}
 
   /**
@@ -218,13 +222,15 @@ export class StockRequestsService {
    * or a manager for either, asks the Store for whole packs of an item the
    * location holds. Runs inside the idempotency service's transaction: a
    * retry after a lost response replays the first request instead of
-   * asking twice.
+   * asking twice. The Store's push (C10, PS7) joins `pushes`, for the
+   * controller to send after the commit.
    */
   async create(
     tx: Tx,
     actor: StaffPrincipal,
     request: CreateStockRequestRequest,
     ipAddress: string,
+    pushes: PushTopics = [],
   ): Promise<StockRequestResponse> {
     const location = requestLocationFor(actor.role, request.location);
 
@@ -267,6 +273,18 @@ export class StockRequestsService {
         ipAddress,
       },
       tx,
+    );
+
+    // The Store hears of it: the Storekeeper on duty, else every active
+    // one, else the managers (D8); held off-hours for whoever is not at
+    // work (D6). A request names one item, so the push counts one.
+    pushes.push(
+      await this.push.enqueueStaff(
+        tx,
+        'stock_request.new',
+        () => ({ requestId: asId(row.id), location, itemCount: 1 }),
+        { roles: [StaffRole.STOREKEEPER], except: [actor.id] },
+      ),
     );
 
     return toResponse(row, item, actor.name);

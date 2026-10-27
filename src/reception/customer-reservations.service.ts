@@ -21,6 +21,7 @@ import {
 } from '../common/dto/pagination.query';
 import { customerPhone } from '../customers/profile-rules';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import type { PushTopics } from '../push/push-queue.service';
 import type {
   CustomerReservationChangeRequest,
   CustomerReservationPageResponse,
@@ -112,13 +113,16 @@ export class CustomerReservationsService {
    * `POST /reservations`, inside the idempotency service's transaction.
    * Signed in, the booking is the app's (`APP`) and the customer's own;
    * otherwise it is the website's (`WEB`), made by a guest, and links to a
-   * customer only on a verified exact match (Q35, A15).
+   * customer only on a verified exact match (Q35, A15). `pushes` collects
+   * Reception's push for a booking for today (PS10), for
+   * `sendConfirmation`.
    */
   async book(
     tx: Tx,
     customer: CustomerPrincipal | null,
     request: WebReservationRequest,
     ipAddress: string,
+    pushes: PushTopics = [],
   ): Promise<CustomerReservationResponse> {
     const table = await tx.diningTable.findFirst({
       where: { code: request.table, venue: { slug: request.venue } },
@@ -147,28 +151,36 @@ export class CustomerReservationsService {
             customerId: customer.id,
             name: await this.customerName(tx, customer.id, request.name),
           };
-    const made = await this.reservations.book(tx, {
-      actor,
-      source: customer === null ? ReservationSource.WEB : ReservationSource.APP,
-      customerId: customer?.id ?? null,
-      name: request.name,
-      phone: customerPhone(request.phone)!,
-      email: request.email,
-      tableId: table.id,
-      businessDate: request.businessDate,
-      time: request.time,
-      party: request.party,
-      note: request.note ?? '',
-      ipAddress,
-      ipHash,
-    });
+    const made = await this.reservations.book(
+      tx,
+      {
+        actor,
+        source:
+          customer === null ? ReservationSource.WEB : ReservationSource.APP,
+        customerId: customer?.id ?? null,
+        name: request.name,
+        phone: customerPhone(request.phone)!,
+        email: request.email,
+        tableId: table.id,
+        businessDate: request.businessDate,
+        time: request.time,
+        party: request.party,
+        note: request.note ?? '',
+        ipAddress,
+        ipHash,
+      },
+      pushes,
+    );
 
     return this.read(tx, made.id, new Date());
   }
 
-  /** Send the confirmation once `book`'s transaction has committed. */
-  sendConfirmation(reservationId: string): Promise<void> {
-    return this.reservations.sendConfirmation(reservationId);
+  /** Send the confirmation, and `pushes`, once `book` has committed. */
+  sendConfirmation(
+    reservationId: string,
+    pushes: PushTopics = [],
+  ): Promise<void> {
+    return this.reservations.sendConfirmation(reservationId, pushes);
   }
 
   /**
@@ -233,6 +245,7 @@ export class CustomerReservationsService {
     ipAddress: string,
   ): Promise<CustomerReservationResponse> {
     let mailKey: string | null = null;
+    let arrival: string | null = null;
     let takenMessage = '';
 
     const response = await insertOrClash(
@@ -379,6 +392,12 @@ export class CustomerReservationsService {
             mailKey = await this.mail.enqueue(tx, 'changed', id);
           }
 
+          // Moved onto today: Reception hears of it (PS10); the customer,
+          // who made the change, is not pushed.
+          arrival = dateMoved
+            ? await this.reservations.queueArrivalToday(tx, id, now, [])
+            : null;
+
           return this.read(tx, id, now);
         }),
       // The index met by a race past the check above: the app's sentence,
@@ -386,7 +405,7 @@ export class CustomerReservationsService {
       () => takenMessage,
     );
 
-    await this.mail.dispatch(mailKey);
+    await this.mail.dispatch(mailKey, { alsoPush: [arrival] });
 
     return response;
   }

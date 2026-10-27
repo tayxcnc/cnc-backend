@@ -442,6 +442,24 @@ export class TableSessionsService {
    * bell of Reception and managers; no alert switch, as in the demo.
    */
   async freeTableReminders(now: Date): Promise<StaffBellItem[]> {
+    return (await this.seatingsDueReminder(now)).map((seating) =>
+      freeTableReminderItem(seating, now),
+    );
+  }
+
+  /**
+   * The seatings the Free Table Reminder asks about now, oldest first: the
+   * bell's items (`freeTableReminders`) and the push sweep's (C10, PS12)
+   * come from this one read, so the two never disagree on what is due.
+   */
+  async seatingsDueReminder(now: Date): Promise<
+    {
+      tableId: string;
+      tableName: string;
+      guest: string;
+      since: Date;
+    }[]
+  > {
     const { freeTableReminderMinutes } =
       await this.prisma.settings.findUniqueOrThrow({
         where: { singleton: true },
@@ -463,17 +481,12 @@ export class TableSessionsService {
       },
     });
 
-    return due.map((row) =>
-      freeTableReminderItem(
-        {
-          tableId: row.tableId,
-          tableName: row.table.name,
-          guest: row.guest,
-          since: row.since,
-        },
-        now,
-      ),
-    );
+    return due.map((row) => ({
+      tableId: row.tableId,
+      tableName: row.table.name,
+      guest: row.guest,
+      since: row.since,
+    }));
   }
 
   /** A table that exists and is in use, else "Table not found." (404). */

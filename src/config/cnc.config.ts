@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { readVapid, type VapidDetails } from './vapid';
 
 const OWN_PREFIX = 'CNC_';
 const FOREIGN_PREFIX = 'TAY_';
@@ -95,11 +96,64 @@ export class CncConfigService {
   /** Validated once at construction; the getter below just hands it out. */
   private readonly cachedJwtSecret: string;
 
+  /** Validated once at construction, like the JWT secret; null locally when unset. */
+  private readonly cachedVapid: VapidDetails | null;
+
   constructor() {
     this.assertForeignNamespaceAbsent();
     this.cachedJwtSecret = this.readJwtSecret();
     this.assertDeployedConfiguration();
     this.assertProductionConfiguration();
+    this.cachedVapid = this.readVapidAtBoot();
+  }
+
+  /**
+   * The web push key pair and contact, or null where push is not configured
+   * (C10). Null only locally: staging and production refuse to boot without
+   * all three.
+   */
+  vapid(): VapidDetails | null {
+    return this.cachedVapid;
+  }
+
+  /**
+   * The CNC_VAPID_* trio, checked at boot, last, after every other rule.
+   *
+   * Malformed anywhere (`PLACEHOLDER_NOT_SET` included), partly set
+   * anywhere, or a private key that does not derive the public key: refuses
+   * to boot (`readVapid`). None set on staging or production is reported
+   * with the other deployed problems (`assertDeployedConfiguration`), so one
+   * failed deploy shows them all. None set locally: push is skipped, with
+   * one warning here.
+   */
+  private readVapidAtBoot(): VapidDetails | null {
+    const vapid = readVapid('CNC', {
+      CNC_VAPID_PUBLIC_KEY: this.ownOptional('VAPID_PUBLIC_KEY'),
+      CNC_VAPID_PRIVATE_KEY: this.ownOptional('VAPID_PRIVATE_KEY'),
+      CNC_VAPID_SUBJECT: this.ownOptional('VAPID_SUBJECT'),
+    });
+
+    if (vapid !== null) {
+      return vapid;
+    }
+
+    // Unreachable while `assertDeployedConfiguration` refuses first; kept so
+    // that moving either check can never let a deployed service boot unable
+    // to sign a push.
+    if (this.cncEnv !== 'local') {
+      throw new Error(
+        `CNC service refusing to boot in ${this.cncEnv}: ` +
+          'CNC_VAPID_PUBLIC_KEY, CNC_VAPID_PRIVATE_KEY and CNC_VAPID_SUBJECT ' +
+          'are not set.',
+      );
+    }
+
+    new Logger(CncConfigService.name).warn(
+      'CNC_VAPID_* not set: web push is skipped. In-app and email are ' +
+        'unaffected.',
+    );
+
+    return null;
   }
 
   /**
@@ -176,6 +230,10 @@ export class CncConfigService {
    *   check perfectly and refuses every browser. That failure looks healthy
    *   from everywhere except a real page, so it is refused at boot on staging
    *   too, not only in production as TAY's backend did.
+   * - **`CNC_VAPID_*`, all three** (C10). Without the pair no web push can be
+   *   signed, and each would fail silently, per device, long after the
+   *   deploy. A partial or malformed trio is refused everywhere, local
+   *   included, by `readVapidAtBoot`; only the trio missing is listed here.
    */
   private assertDeployedConfiguration(): void {
     if (this.cncEnv === 'local') return;
@@ -238,6 +296,20 @@ export class CncConfigService {
         `CNC_CORS_ORIGINS holds ${malformed.length} entr(ies) that are not ` +
           'a bare origin (scheme://host[:port], no path or trailing slash); ' +
           'they can never match.',
+      );
+    }
+
+    // The same three literal reads as `readVapidAtBoot`, so the env-name
+    // check sees each name wherever it is read.
+    if (
+      this.ownOptional('VAPID_PUBLIC_KEY') === undefined &&
+      this.ownOptional('VAPID_PRIVATE_KEY') === undefined &&
+      this.ownOptional('VAPID_SUBJECT') === undefined
+    ) {
+      problems.push(
+        'CNC_VAPID_PUBLIC_KEY, CNC_VAPID_PRIVATE_KEY and CNC_VAPID_SUBJECT ' +
+          'are not set: no web push could be signed, and every push would ' +
+          'fail silently.',
       );
     }
 

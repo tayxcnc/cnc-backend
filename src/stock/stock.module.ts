@@ -4,6 +4,7 @@ import { AuditModule } from '../audit/audit.module';
 import { CncAuthModule } from '../auth/cnc-auth.module';
 import { MoneyControlModule } from '../money-control/money-control.module';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { PushModule } from '../push/push.module';
 import { KitchenMappingService } from './kitchen-mapping.service';
 import { KitchenMappingsController } from './kitchen-mappings.controller';
 import { StockLedgerService } from './stock-ledger.service';
@@ -30,9 +31,12 @@ import { StockService } from './stock.service';
  * reader is registered for the stock core's refs (a stock item, a
  * location, a dish's slug): none is on §4.8's list, so the registry's
  * fail-closed answer is the rule.
+ *
+ * `PushModule` (C10): a new request pushes the Store (PS7), and the ledger
+ * queues the low-stock push when a movement crosses an item's line (PS8).
  */
 @Module({
-  imports: [CncAuthModule, AuditModule, MoneyControlModule],
+  imports: [CncAuthModule, AuditModule, MoneyControlModule, PushModule],
   controllers: [
     StockController,
     StockRequestsController,

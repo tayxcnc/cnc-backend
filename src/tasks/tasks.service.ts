@@ -17,6 +17,7 @@ import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
 import { isClosedPurchase } from '../purchasing/purchase-rules';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import type {
   CreateTaskRequest,
   TasksQuery,
@@ -30,6 +31,7 @@ import {
   RAISE_TO_MESSAGE,
   TASK_NOT_FOUND_MESSAGE,
 } from './task-messages';
+import { queueTaskAssigned } from './task-push';
 import {
   isAssignable,
   linksFor,
@@ -99,12 +101,16 @@ function saveOf(request: CreateTaskRequest | UpdateTaskRequest): TaskSave {
  * Every save writes a `TaskHistory` row and its audit row in the same
  * transaction; an update claims the task's `version` first (A8), so a
  * save from a screen read before an automatic close is refused as stale.
+ *
+ * A task raised for someone, or reassigned to them, pushes them (C10, PS9,
+ * `queueTaskAssigned`), sent after the commit.
  */
 @Injectable()
 export class TasksService {
   constructor(
     private readonly prisma: CncPrismaService,
     private readonly audit: AuditService,
+    private readonly push: PushQueueService,
   ) {}
 
   /**
@@ -170,13 +176,15 @@ export class TasksService {
    * assignee who may hold a task. The description, type and status were
    * checked by the DTO. Runs inside the idempotency service's transaction:
    * a retry after a lost response replays the first task instead of
-   * raising a second.
+   * raising a second. The assignee's push joins `pushes`, for the
+   * controller to send after the commit.
    */
   async create(
     tx: Tx,
     actor: StaffPrincipal,
     request: CreateTaskRequest,
     ipAddress: string,
+    pushes: PushTopics = [],
   ): Promise<TaskResponse> {
     const save = saveOf(request);
 
@@ -230,6 +238,13 @@ export class TasksService {
       tx,
     );
 
+    await queueTaskAssigned(
+      { queue: this.push, topics: pushes },
+      tx,
+      row,
+      actor.id,
+    );
+
     return answer;
   }
 
@@ -246,7 +261,8 @@ export class TasksService {
     request: UpdateTaskRequest,
     ipAddress: string,
   ): Promise<TaskResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const pushes: PushTopics = [];
+    const response = await this.prisma.$transaction(async (tx) => {
       await claimVersion(tx, {
         table: 'Task',
         id,
@@ -305,8 +321,23 @@ export class TasksService {
         tx,
       );
 
+      // Given to someone new: they hear of it (its version keys a repeat,
+      // so a task handed back to an earlier assignee pushes them again).
+      if (updated.assignedToId !== current.assignedToId) {
+        await queueTaskAssigned(
+          { queue: this.push, topics: pushes },
+          tx,
+          updated,
+          actor.id,
+        );
+      }
+
       return answer;
     });
+
+    await this.push.dispatchTopics(pushes);
+
+    return response;
   }
 
   /**

@@ -8,6 +8,7 @@ import {
   OrderStatus,
   PaymentMethod,
   type Prisma,
+  StaffRole,
   StockKind,
   StockLocation,
   StockMovementType,
@@ -20,6 +21,8 @@ import { CustomerService } from '../customers/customer.service';
 import { parseCheckoutLines } from '../ordering/cart-pricing';
 import { DocketsService } from '../orders/dockets.service';
 import { drawNumber } from '../prisma/sequences';
+import { asId, asOrderNumber } from '../push/push-input-types';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import { verifiedCustomerId } from '../reception/customer-link';
 import { StockLedgerService } from '../stock/stock-ledger.service';
 import { OnlineOrderMail } from './online-order-mail';
@@ -29,6 +32,7 @@ import {
   webDocketItems,
   webSalePlan,
 } from './online-order-rules';
+import { queueWebDocketPush } from './web-docket-push';
 
 type Tx = Prisma.TransactionClient;
 
@@ -52,6 +56,8 @@ export interface PlacedOnlineOrder {
   docketRef: string | null;
   /** The receipt email's dedupe key, to send after the commit (C7-6). */
   receiptKey: string;
+  /** The staff pushes queued (C10, PS1 and PS2), to send after the commit. */
+  pushTopics: PushTopics;
 }
 
 /**
@@ -83,7 +89,11 @@ export interface PlacedOnlineOrder {
  *   ledger **with `allowNegative`** (§7.4): the money is taken, so stock
  *   never refuses a paid order; a shortfall shows in Low Stock;
  * - the receipt email (always, Q31) and the customer's in-app item
- *   (`OnlineOrderMail.receipt`, C7-6), sent by the caller after the commit.
+ *   (`OnlineOrderMail.receipt`, C7-6), sent by the caller after the commit;
+ * - the staff pushes (C10): the new web order to the Cashier's devices
+ *   (PS1) and its docket to the Kitchen's (PS2), both urgent, queued in
+ *   their savepoint so a push defect never rolls the payment back (D1),
+ *   and sent by the caller after the commit (`pushTopics`).
  */
 @Injectable()
 export class OnlineOrderPlacementService {
@@ -95,6 +105,7 @@ export class OnlineOrderPlacementService {
     private readonly ledger: StockLedgerService,
     private readonly customers: CustomerService,
     private readonly mail: OnlineOrderMail,
+    private readonly push: PushQueueService,
   ) {}
 
   async place(
@@ -240,6 +251,22 @@ export class OnlineOrderPlacementService {
     // with the order so a payment that commits always has its receipt.
     const receiptKey = await this.mail.receipt(tx, online.id, paidWith);
 
+    const pushTopics: PushTopics = [
+      await this.push.enqueueStaff(
+        tx,
+        'online_order.received',
+        () => ({
+          onlineOrderId: asId(online.id),
+          orderNumber: asOrderNumber(orderNumber),
+          mode,
+        }),
+        { roles: [StaffRole.CASHIER] },
+      ),
+      docket === null
+        ? null
+        : await queueWebDocketPush(this.push, tx, docket, []),
+    ];
+
     return {
       orderId: order.id,
       customerId,
@@ -248,6 +275,7 @@ export class OnlineOrderPlacementService {
       paymentNumber,
       docketRef: docket?.ref ?? null,
       receiptKey,
+      pushTopics,
     };
   }
 
