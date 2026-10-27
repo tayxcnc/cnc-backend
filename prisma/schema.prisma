@@ -1,0 +1,2181 @@
+// CNC schema — the one schema in this repository.
+//
+// There is no `url` here. Prisma 7 rejects it in the schema: the CLI reads the
+// database URL from `prisma.config.ts` and the running service passes a driver
+// adapter to PrismaClient in CncPrismaService. CNC_DB_URL is the variable's
+// name in both places.
+
+datasource db {
+  provider = "postgresql"
+}
+
+// `prisma-client-js`, kept deliberately. Prisma 7 deprecates it in favour of
+// `prisma-client`, which emits TypeScript instead of a prebuilt JavaScript
+// bundle. A .ts file under generated/ pulls that directory into the build and
+// moves every entry point from dist/ to dist/src/, which is not where the
+// image runs it. That move is its own card at a later boundary; the
+// deprecated generator compiles and runs cleanly under 7.10.1.
+//
+// The output is a path of its own, imported by that path everywhere
+// (`generated/cnc-client`), never through `@prisma/client`.
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/cnc-client"
+}
+
+// ---------------------------------------------------------------------------
+// Conventions
+//
+// Money   Int, in kobo. Never Float, never Decimal-as-string. ₦20,000 is
+//         2000000. Field names carry the `Kobo` suffix so a bare number is
+//         never mistaken for naira at a call site.
+// Time    DateTime is UTC everywhere. Raw SQL writes `now() AT TIME ZONE
+//         'UTC'`, never a bare `now()`, so a session timezone cannot shift it.
+// Dates   `@db.Date` marks every business date (the day an order belongs to,
+//         the day a reservation is for). A business date must not carry a
+//         time or shift across a timezone boundary; it is computed in
+//         Africa/Lagos by src/common/wat.ts and stored at UTC midnight.
+// Clock   Wall-clock times of day are String "HH:mm" in 24h form. They are a
+//         schedule, not an instant, and must not drift with UTC conversion.
+// Keys    Every model: id String @id @default(cuid()), createdAt, updatedAt.
+//         Human numbers (`CNCR-000001`, `CNC-S001`…) are separate columns
+//         drawn from one Postgres sequence per prefix (nextSequenceCode),
+//         never derived from the id.
+// Version Every row two devices can edit carries `version Int @default(0)`,
+//         and a write naming a stale version is a 409 (plan A8).
+// Names   camelCase fields with no underscores: uniqueViolationTargets
+//         recovers a P2002's fields by splitting the constraint name on `_`.
+//
+// Nigerian phone validation lives in the DTO layer, not here:
+//   /^(\+234|0)[789][01]\d{8}$/
+// A phone that is stored to be compared (Customer.phone) is written in one
+// form, `0` plus 10 digits (plan §4.2), by canonicalNigerianPhone, and a
+// CHECK in the migration refuses any other spelling.
+//
+// Raw SQL in the migrations adds what Prisma cannot express: CHECK
+// constraints, the case-insensitive StockItem name index, the append-only
+// trigger on AuditLog and the human-number sequences. Each is described on
+// its model below and in the migration that creates it.
+//
+// Deletion policy — every relation states onDelete explicitly; no Prisma
+// default is accepted silently.
+//   Staff       required attribution restricts; optional attribution nulls.
+//               A record that cannot exist without an actor blocks the delete;
+//               a record that merely records who touched it survives without.
+//   Ledgers     Payments, stock movements and the audit log restrict their
+//               parents. History is not deletable. An order line restricts
+//               its menu item for the same reason — the price it captured
+//               must outlive the item.
+//   Children    A row meaningless without its parent (an order's lines)
+//               cascades from that parent, and says so.
+//   onUpdate    Left at Prisma's default CASCADE on every foreign key. Every
+//               key references an immutable cuid() primary key that no code
+//               path updates, so the action is unreachable. Considered and
+//               left alone — not an oversight.
+// ---------------------------------------------------------------------------
+
+// ============================== ENUMS ======================================
+//
+// Enums travel as UPPER_SNAKE (plan A5); each frontend maps them to its own
+// labels in one adapter.
+
+enum Department {
+  RESTAURANT
+  BAR
+}
+
+enum MenuCategoryKind {
+  FOOD
+  DRINKS
+  SLUSH
+}
+
+enum TableKind {
+  BOOTH
+  DINING
+  WINDOW
+  COUNTER
+  SOFA
+  TWO
+}
+
+/// The receipt printer's paper. The staff app's labels are `80mm`, `58mm`
+/// and `A4`; an enum value cannot start with a digit.
+enum PrinterWidth {
+  MM80
+  MM58
+  A4
+}
+
+/// One role per person, as the staff app has (plan §4.2).
+enum StaffRole {
+  OWNER
+  MANAGER
+  RECEPTION
+  CASHIER
+  WAITER
+  BARTENDER
+  KITCHEN
+  STOREKEEPER
+}
+
+enum AddressZone {
+  JOS
+  PLATEAU
+}
+
+/// How a message reaches a customer: a customer's preferred channel, and the
+/// channel an outbound message is sent on.
+enum ContactChannel {
+  EMAIL
+  SMS
+}
+
+enum OtpPurpose {
+  SIGN_IN
+  CHANGE_EMAIL
+}
+
+/// Which realm a refresh token belongs to (TAY's model).
+enum SubjectType {
+  CUSTOMER
+  STAFF
+}
+
+/// Replaces the staff demo's `bar-` id prefix (D45).
+enum StockKind {
+  KITCHEN
+  BAR
+}
+
+enum AuditActorKind {
+  STAFF
+  CUSTOMER
+  SYSTEM
+}
+
+enum CustomerNotificationKind {
+  ORDER
+  BOOKING
+  ACCOUNT
+}
+
+enum OutboundMessageStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum EnquiryKind {
+  CONTACT
+  GROUP
+}
+
+enum EnquiryStatus {
+  NEW
+  HANDLED
+}
+
+/// Where an order came from: the till, or the website and app (plan §4.3).
+enum OrderChannel {
+  POS
+  WEB
+}
+
+/// The staff app's order states: Open, Payment, Settled, Cancelled.
+enum OrderStatus {
+  OPEN
+  PAYMENT
+  SETTLED
+  CANCELLED
+}
+
+/// Cash, Card and Transfer at the till; Online for a Paystack payment.
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  ONLINE
+}
+
+/// How a web order leaves the kitchen. Carried by a web docket so a
+/// pre-order prints as one (plan §4.3); the checkout uses it from C7.
+enum Fulfilment {
+  DELIVERY
+  PICKUP
+}
+
+/// A web checkout's life (plan §4.4, C7): waiting for Paystack, paid,
+/// abandoned past its expiry, refused by Paystack before the customer saw
+/// a payment page, or held for a person because a signed payment did not
+/// match it (§7.4 step 3), and a held one a manager has since dealt with
+/// in Paystack's dashboard (`RESOLVED`, final).
+enum CheckoutStatus {
+  PENDING
+  PAID
+  EXPIRED
+  FAILED
+  NEEDS_ATTENTION
+  RESOLVED
+}
+
+/// When a web order is wanted: as soon as possible, or at a chosen slot.
+enum CheckoutTiming {
+  ASAP
+  SCHEDULED
+}
+
+/// Where a checkout was placed: the website (a guest), or the signed-in
+/// customer app.
+enum CheckoutSource {
+  WEB
+  APP
+}
+
+/// How a paid web order leaves CNC (plan §4.4): the staff app's "Pickup",
+/// "Within Jos" and "Outside Jos". Delivery within Jos is the checkout's
+/// `JOS` zone, outside Jos its `PLATEAU` zone.
+enum OnlineOrderMode {
+  PICKUP
+  WITHIN_JOS
+  OUTSIDE_JOS
+}
+
+/// A paid web order's progress (plan §4.4, D31). The staff and customer
+/// labels are both mapped from this one value: Received (Paid), Preparing,
+/// On the way (Out for Delivery), Ready (for pickup), Delivered or
+/// Collected (Completed), Cancelled.
+enum OnlineFulfilmentStatus {
+  RECEIVED
+  PREPARING
+  ON_THE_WAY
+  READY
+  DELIVERED
+  COLLECTED
+  CANCELLED
+}
+
+/// Where stock is held: the store counts packs, the kitchen and the bar
+/// count units (plan §7.6).
+enum StockLocation {
+  STORE
+  KITCHEN
+  BAR
+}
+
+/// Why a stock balance moved: the 15 types the staff app writes
+/// (`staff/lib/domain.ts`, every `move()` call, with "Issue to Kitchen" and
+/// "Issue to Bar" as two), plus `WEB_SALE` for a paid web order's drinks
+/// (plan §4.6, §7.4). The demo's seeded "Opening balance" is not a type:
+/// opening balances are entered by stock count (Q11, the C4 gate). Its dead
+/// "Unit conversion adjustment" label is dropped (D40).
+enum StockMovementType {
+  ISSUE_TO_KITCHEN
+  ISSUE_TO_BAR
+  STOCK_RECEIVED
+  STOCK_COUNT
+  ADMIN_ADJUSTMENT
+  KITCHEN_ENTRY
+  KITCHEN_CORRECTION
+  BAR_SALE
+  SETTLEMENT_REVERSAL
+  PURCHASE_RECEIPT
+  PURCHASE_CORRECTION
+  WASTE
+  WASTE_CORRECTION_RETURN
+  WASTE_CORRECTION_DEDUCTION
+  WASTE_APPROVAL_CORRECTION
+  WEB_SALE
+  /// Drinks a manager took off a paid web order, or its cancellation,
+  /// returned to the Bar (C7-4, D30).
+  WEB_SALE_RETURN
+}
+
+/// A card refund sent through Paystack's refund API (C7-4, Q26):
+/// recorded (`PENDING`), claimed by the one request that calls Paystack
+/// (`SENDING`), accepted by Paystack (`SENT`), refused by it (`REFUSED`,
+/// the refund's payment then reversed), or sent with no answer
+/// (`UNCONFIRMED`: Paystack may have it; a person checks the dashboard).
+enum OnlineRefundStatus {
+  PENDING
+  SENDING
+  SENT
+  REFUSED
+  UNCONFIRMED
+}
+
+/// A booking's lifecycle (D22). Availability is derived from it, never
+/// stored: see plan §7.5.
+enum ReservationStatus {
+  CONFIRMED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+/// Who took a booking. All three run the one command (plan §7.5).
+enum ReservationSource {
+  WEB
+  APP
+  RECEPTION
+}
+
+/// A table's allocation: guests seated, or locked with a reason.
+enum TableSessionStatus {
+  OCCUPIED
+  LOCKED
+}
+
+/// A Kitchen or Bar request for stock from the Store (plan §4.6). The
+/// staff app's Pending, Partially Issued, Issued and Rejected.
+enum StockRequestStatus {
+  PENDING
+  PARTIALLY_ISSUED
+  ISSUED
+  REJECTED
+}
+
+/// A purchase requisition's state (plan §4.6). The documented "Partially
+/// Received" is left out: no command sets it, and receiving is all at once
+/// (D39).
+enum PurchaseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  FULFILLED
+}
+
+/// Why stock was written off: the staff app's six reasons.
+enum WasteReason {
+  SPOILED
+  BURNT
+  SPILLED
+  BROKEN
+  EXPIRED
+  OTHER
+}
+
+/// A waste entry's review state. Stock moves only on approval (plan §7.8).
+enum WasteStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// What a task is about (plan §4.7): a link to a purchase or a repair, or
+/// neither.
+enum TaskType {
+  GENERAL
+  MAINTENANCE
+  PURCHASE
+}
+
+/// The staff app's Open, In Progress and Done.
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+/// An asset's condition, set by its repairs (plan §4.7): Under Repair while
+/// one is Pending or In Progress, Active when Fixed, Inactive when Not Fixed.
+enum AssetStatus {
+  ACTIVE
+  UNDER_REPAIR
+  INACTIVE
+}
+
+/// A repair's state (plan §4.7).
+enum MaintenanceStatus {
+  PENDING
+  IN_PROGRESS
+  FIXED
+  NOT_FIXED
+}
+
+/// How an attendance record was made. The staff app writes "Reception QR"
+/// only; a correction keeps the record's source and records itself as an
+/// `AttendanceCorrection`.
+enum AttendanceSource {
+  RECEPTION_QR
+}
+
+// ============================== REFERENCE DATA (§4.1) ======================
+
+/// The one settings row: VAT, service, fees, approval limits, the printer,
+/// the bell's switches and the ordering times (plan §4.1).
+///
+/// **One row only.** `singleton` is unique and a CHECK in the migration holds
+/// it true, so a second row cannot be inserted by any path. Reads take the
+/// row with `findUniqueOrThrow({ where: { singleton: true } })`.
+///
+/// The defaults are the values in the code today, which Q7 asks the founder
+/// to confirm; the seed (C3-2) writes the row. Which keys only the Owner may
+/// change is a service rule (plan §6.2), not a column property.
+///
+/// Rates are basis points (750 is 7.5%). Times of day are minutes after
+/// midnight, WAT: 1380 is 23:00 and 1410 is 23:30.
+model Settings {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  singleton Boolean @unique @default(true)
+
+  vatBps      Int @default(750)
+  serviceBps  Int @default(0)
+  depositKobo Int @default(0)
+
+  /// The Free Table Reminder, 15 to 1440 (a CHECK holds the range).
+  freeTableReminderMinutes Int @default(180)
+
+  deliveryJosKobo     Int @default(500000)
+  deliveryOutsideKobo Int @default(1000000)
+
+  /// The Owner Approval Limit, per decision.
+  approvalLimitKobo Int     @default(5000000)
+  /// The Daily Approval Limit, per manager per day. Approvals are recorded in
+  /// the ledger even while it is off (D36).
+  dailyLimitOn      Boolean @default(true)
+  dailyLimitKobo    Int     @default(15000000)
+
+  printerWidth PrinterWidth @default(MM80)
+
+  alertLowStock  Boolean @default(true)
+  alertApprovals Boolean @default(true)
+  alertUnsettled Boolean @default(true)
+  alertArrivals  Boolean @default(true)
+
+  lastArrivalMinutes   Int @default(1380)
+  lastOrderSlotMinutes Int @default(1410)
+  slotStepMinutes      Int @default(30)
+  leadPickupMinutes    Int @default(60)
+  leadJosMinutes       Int @default(90)
+  leadOutsideMinutes   Int @default(120)
+
+  version Int @default(0)
+}
+
+/// CNC's business details: one source for the website, receipts and the
+/// entrance (D28). One row, held by `singleton` as on Settings.
+///
+/// `phone` is stored as digits (`08022188797`); the site formats it.
+/// `addressLine` carries no country; the site appends ", Nigeria".
+/// `socialLinks` is an object keyed by network, empty until supplied.
+model Business {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  singleton Boolean @unique @default(true)
+
+  name         String
+  addressLine  String
+  addressLines String[]
+  phone        String
+  email        String
+  registration String
+  /// Coordinates for the map pin, not money: Float is right here.
+  mapLat       Float?
+  mapLng       Float?
+  socialLinks  Json     @default("{}")
+
+  version Int @default(0)
+}
+
+/// The week's opening hours: TAY's model and response shape
+/// (`GET /opening-hours`), keyed by the day, as TAY's is (D26).
+///
+/// The migration that creates the table seeds 08:00 to midnight (480 to 1440)
+/// every day with `ON CONFLICT DO NOTHING`, so applying it again never
+/// overwrites a week the Owner has saved. Two CHECKs, copied from TAY, refuse
+/// an impossible day.
+model OpeningHoursDay {
+  /// 0 = Sunday … 6 = Saturday, JavaScript's `getDay()`.
+  dayOfWeek Int      @id
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  isClosed        Boolean
+  /// Null exactly when `isClosed`.
+  opensAtMinutes  Int?
+  /// Null exactly when `isClosed`. 1440 is midnight at the end of the day.
+  closesAtMinutes Int?
+}
+
+/// A room: Dining and Lounge (D25). Both labels are stored, because the site
+/// says "Dining" where the staff app says "Diner".
+model Venue {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slug          String @unique
+  customerTitle String
+  staffName     String
+  /// The party size from which the website sends a booking to the team as a
+  /// group enquiry: 4 in Dining, 5 in the Lounge.
+  bigParty      Int
+  sort          Int
+
+  tables    DiningTable[]
+  enquiries Enquiry[]
+}
+
+/// A table. Codes repeat across rooms (TS1 to TS3 exist in both), so the code
+/// is unique per venue only (D25). Coordinates, the floor-plan drawing and
+/// descriptive copy stay in the frontends (D61).
+model DiningTable {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  venueId  String
+  code     String
+  name     String
+  kind     TableKind
+  capacity Int
+  active   Boolean   @default(true)
+
+  /// Restrict: a room with tables is not deleted.
+  venue Venue @relation(fields: [venueId], references: [id], onDelete: Restrict)
+
+  orders        Order[]
+  reservations  Reservation[]
+  tableSessions TableSession[]
+
+  @@unique([venueId, code])
+}
+
+/// A customer-facing menu category: the 12 ids the website uses (`breakfast`,
+/// `the-grill`, `slush`…).
+model MenuCategory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slug  String           @unique
+  title String
+  note  String?
+  kind  MenuCategoryKind
+  sort  Int
+
+  staffCategories StaffCategory[]
+  menuItems       MenuItem[]
+}
+
+/// What staff choose when they add a dish ("Pizza", "Tea Corner (Hot)"),
+/// mapped to the customer category it belongs to. Seeded from the 25 entries
+/// in `cnc-frontend/docs/staff-id-map.json`.
+model StaffCategory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name           String     @unique
+  department     Department
+  menuCategoryId String
+
+  /// Restrict: a customer category in use is not deleted.
+  menuCategory MenuCategory @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
+  menuItems    MenuItem[]
+}
+
+/// A dish or a drink (plan §4.1).
+///
+/// `slug` is permanent and never reused, so a link or a cart line that names
+/// it keeps meaning the same dish. `legacyStaffId` (`food-12`, `bar-3`) is the
+/// staff demo's id, kept for the one-time import; items added in the app
+/// have none. A price change applies to new order lines only: each line
+/// snapshots the price it was sold at.
+///
+/// `active` is the staff app's "Available for Sale"; `showOnline` decides
+/// whether the website lists it. `choiceLabel` and `choiceOptions` carry the
+/// 11 dishes that ask the guest to choose (an empty list means no choice).
+/// `photo` is a `gs://` URI, never a URL a browser can load (A17).
+///
+/// A Bar item has exactly one paired Bar StockItem (`stockItem`), created in
+/// the same transaction as the item (plan §5.4, Menu & Prices).
+model MenuItem {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slug            String     @unique
+  legacyStaffId   String?    @unique
+  department      Department
+  staffCategoryId String
+  menuCategoryId  String
+  groupLabel      String?
+  name            String
+  description     String     @default("")
+  /// Never negative (a CHECK in the migration).
+  priceKobo       Int
+  signature       Boolean    @default(false)
+  active          Boolean    @default(true)
+  showOnline      Boolean    @default(true)
+  photo           String?
+  photoAlt        String?
+  choiceLabel     String?
+  choiceOptions   String[]   @default([])
+  sort            Int        @default(0)
+
+  version Int @default(0)
+
+  /// Restrict on both categories: a category with dishes is not deleted.
+  staffCategory   StaffCategory    @relation(fields: [staffCategoryId], references: [id], onDelete: Restrict)
+  menuCategory    MenuCategory     @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
+  stockItem       StockItem?
+  orderLines      OrderLine[]
+  kitchenMappings KitchenMapping[]
+
+  @@index([menuCategoryId, sort])
+  @@index([department])
+}
+
+// ============================== PEOPLE AND SIGN-IN (§4.2) ==================
+
+/// A member of CNC's staff. One role per person, as the staff app has.
+///
+/// `staffNo` (`CNC-S001`) comes from `staff_no_seq`. `email` is unique and
+/// stored lower case (a CHECK refuses anything else), so two spellings of one
+/// address cannot be two accounts. `passwordHash` is argon2id (A14) and
+/// `mustChangePassword` forces a change at first sign-in.
+///
+/// **`qrToken` is a credential, never a field.** 32 random bytes, base64url;
+/// the QR payload is `CNC-ID:<staffNo>:<token>`. No response carries it at
+/// any depth: the person sees it only as a rendered image. With
+/// `passwordHash`, it is on the list of values no response, log or audit row
+/// may contain.
+///
+/// Never deleted: an account is deactivated (`isActive`). Every relation
+/// that records a staff member's act restricts the delete.
+model Staff {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staffNo            String    @unique
+  name               String
+  email              String    @unique
+  role               StaffRole
+  isActive           Boolean   @default(true)
+  passwordHash       String
+  mustChangePassword Boolean   @default(true)
+  /// A `gs://` URI, or null (A17).
+  photo              String?
+  qrToken            String    @unique
+  qrRegeneratedAt    DateTime?
+  joinedOn           DateTime  @db.Date
+  /// The manager overview's layout, saved per person (today in the
+  /// browser's localStorage). Null until first saved.
+  overviewPrefs      Json?
+
+  version Int @default(0)
+
+  passwordResetTokens PasswordResetToken[]
+  auditEntries        AuditLog[]
+  approvals           ApprovalLedger[]
+  ordersOpened        Order[]              @relation("OrderOpenedBy")
+  dockets             Docket[]
+  payments            Payment[]
+  cashCounts          CashCount[]
+  kitchenEntries      KitchenEntry[]
+  kitchenDaysClosed   KitchenDayClosed[]
+  tableSessionsOpened TableSession[]       @relation("TableSessionOpenedBy")
+  tableSessionsClosed TableSession[]       @relation("TableSessionClosedBy")
+  stockMovements      StockMovement[]
+  onlineAdjustments   OnlineAdjustment[]
+  onlineRefunds       OnlineRefund[]
+
+  stockRequests         StockRequest[]         @relation("StockRequestCreatedBy")
+  purchasesCreated      Purchase[]             @relation("PurchaseCreatedBy")
+  purchasesDecided      Purchase[]             @relation("PurchaseDecidedBy")
+  wasteCreated          WasteEntry[]           @relation("WasteCreatedBy")
+  wasteDecided          WasteEntry[]           @relation("WasteDecidedBy")
+  tasksAssigned         Task[]                 @relation("TaskAssignedTo")
+  tasksRaised           Task[]                 @relation("TaskRaisedBy")
+  taskHistory           TaskHistory[]
+  maintenanceHistory    MaintenanceHistory[]
+  attendanceRecords     AttendanceRecord[]
+  attendanceCorrections AttendanceCorrection[]
+
+  @@index([role, isActive])
+}
+
+/// A website and app customer (plan §4.2). The models exist from C3 so the
+/// audit log and customer notifications can name a customer; the routes that
+/// create and sign in customers arrive in C6.
+///
+/// `memberNo` (`CNC-000001`) comes from `customer_member_no_seq` and replaces
+/// the number the account screen derives from the id today. `email` and
+/// `phone` are each unique and nullable: a customer may have either. Email is
+/// stored lower case; phone is stored as `0` plus 10 digits (a CHECK refuses
+/// `+234…` and every other spelling), so one number cannot be two customers.
+///
+/// `prefOffers` is stored false and refused as true until the founder
+/// enables offers. Never deleted: Q36's default anonymises instead.
+///
+/// From C6: `deletedAt` is set when the customer deletes their account
+/// (`DELETE /me`). The row stays, because bookings, bills and the audit log
+/// point at it, but everything that identifies the person is cleared in the
+/// same write, and a CHECK refuses a deleted row that still holds an email,
+/// a phone, a photo or an address. The guard refuses a deleted customer
+/// like a missing one.
+model Customer {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberNo             String         @unique
+  name                 String
+  email                String?        @unique
+  phone                String?        @unique
+  emailVerifiedAt      DateTime?
+  phoneVerifiedAt      DateTime?
+  addressZone          AddressZone?
+  addressStreet        String?
+  addressArea          String?
+  addressTown          String?
+  addressLandmark      String?
+  prefOrderUpdates     Boolean        @default(true)
+  prefBookingReminders Boolean        @default(true)
+  prefOffers           Boolean        @default(false)
+  prefChannel          ContactChannel @default(EMAIL)
+  /// A `gs://` URI, or null (A17).
+  photo                String?
+  /// Notifications created after this instant are unread.
+  notificationsReadAt  DateTime?
+  /// When the customer deleted their account (Q36), or null.
+  deletedAt            DateTime?
+
+  otpCodes      OtpCode[]
+  notifications CustomerNotification[]
+  auditEntries  AuditLog[]
+  orders        Order[]
+  reservations  Reservation[]
+  checkouts     Checkout[]
+  onlineOrders  OnlineOrder[]
+}
+
+/// A one-time sign-in or email-change code (A15). The code is 6 digits and
+/// is never stored or returned: `codeHash` is `sha256(code)` as hex, so a
+/// database read never yields a usable code. The attempt limit and the
+/// 10-minute expiry are the defence against guessing, not the hash.
+///
+/// `contact` is the normalised email (or phone) the code was sent to;
+/// `customerId` is set when the contact already belongs to a customer, and
+/// nulls if that customer is ever removed (optional attribution nulls).
+model OtpCode {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purpose     OtpPurpose
+  contact     String
+  customerId  String?
+  codeHash    String
+  attempts    Int        @default(0)
+  expiresAt   DateTime
+  resendAfter DateTime
+  consumedAt  DateTime?
+  ipAddress   String?
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([contact, purpose, createdAt])
+  @@index([ipAddress, createdAt])
+  @@index([expiresAt])
+}
+
+/// Refresh tokens for both realms: TAY's model (plan §4.2).
+///
+/// `subjectId` is deliberately not a foreign key: one table serves customers
+/// and staff, and a column pointing at one of two tables by a discriminator
+/// cannot be expressed cleanly. Revocation is a `subjectId` + `subjectType`
+/// lookup, and verification re-reads the subject, so an orphaned row is
+/// unusable anyway.
+///
+/// `tokenHash` is `sha256(rawToken)` as hex, not argon2: the raw token is 256
+/// random bits with nothing to brute-force, and a deterministic digest is
+/// itself the lookup key. Single-use and rotated on every refresh.
+///
+/// `rotated` is true only on a row spent by a refresh, never on one revoked
+/// by a sign-out, a password change or an account change. A rotated token
+/// presented again is a copy being replayed (reuse detection,
+/// `CncTokenService.redeemRefreshToken`); a signed-out one is just stale.
+model RefreshToken {
+  id          String      @id @default(cuid())
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  tokenHash   String      @unique
+  subjectId   String
+  subjectType SubjectType
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  rotated     Boolean     @default(false)
+
+  @@index([subjectId, subjectType])
+  @@index([expiresAt])
+}
+
+/// A single-use staff password reset (TAY's model, staff only). The raw
+/// token is returned once and never stored; `tokenHash` is its SHA-256.
+/// `consumedAt` rather than `revokedAt`, because a reset is spent.
+///
+/// Cascade: a reset token is meaningless without its staff member, and staff
+/// are never deleted in any case.
+model PasswordResetToken {
+  id         String    @id @default(cuid())
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  tokenHash  String    @unique
+  staffId    String
+  expiresAt  DateTime
+  consumedAt DateTime?
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId])
+  @@index([expiresAt])
+}
+
+// ============================== STOCK (§4.6, the core) =====================
+
+/// A stock item (plan §4.6). The item exists from C3, because the seed
+/// pairs every Bar menu item with one and `menu.save` creates one for each
+/// new Bar item; balances, movements and the kitchen comparison rules
+/// arrive with the stock core in C4.
+///
+/// `name` is unique **case-insensitively**: the staff app refuses "Rice"
+/// beside "rice" ("This stock item already exists."). Prisma cannot express
+/// an index on `lower(name)`, so the migration creates it as
+/// `StockItem_name_key`, which `uniqueViolationTargets` reads as `["name"]`.
+///
+/// `unit` is "Used As", `pack` is "Bought As", `factor` is "How Many in One"
+/// and `minimum` is the reorder level in usage units. A CHECK holds `factor`
+/// above zero and `minimum` at zero or above.
+///
+/// `kind` replaces the demo's `bar-` id prefix (D45). **A Bar item is
+/// exactly the paired stock of one Bar menu item, and a Kitchen item has
+/// none**: a CHECK ties `kind = 'BAR'` to `menuItemId IS NOT NULL`, and
+/// `menuItemId` is unique, so no menu item has two. Restrict: a menu item
+/// with stock is never deleted (it is deactivated).
+model StockItem {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name       String
+  kind       StockKind
+  unit       String
+  pack       String
+  factor     Int
+  minimum    Int
+  menuItemId String?   @unique
+  active     Boolean   @default(true)
+
+  version Int @default(0)
+
+  menuItem MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+
+  balances        StockBalance[]
+  movements       StockMovement[]
+  kitchenMappings KitchenMapping[]
+  requests        StockRequest[]
+  purchaseLines   PurchaseLine[]
+  wasteEntries    WasteEntry[]
+
+  @@index([kind])
+}
+
+/// One item's quantity at one location (plan §4.6): whole packs at the
+/// Store, whole units in the Kitchen and at the Bar.
+///
+/// **Only `StockLedgerService.move` writes it**, in the same transaction as
+/// the `StockMovement` that explains the change, so the balance is always
+/// the running sum of the movements (checked in the e2e suite). A decrement
+/// is one conditional `UPDATE … WHERE qty + delta >= 0`: no read, so no gap
+/// in which two writers both see enough stock (TAY's `StockService`).
+///
+/// A missing row is a zero balance: rows are created on the first movement
+/// at that location, so the 87 seeded Bar items start with none (Q11).
+///
+/// There is no `qty >= 0` CHECK, deliberately: a paid web order's drinks are
+/// deducted without refusing and may take the Bar below zero (plan §7.4;
+/// the money is already taken). Every other movement refuses to go below
+/// zero in the service. Which locations an item may hold (a Kitchen item
+/// never at the Bar, a Bar item never in the Kitchen) is the service's rule
+/// too. Restrict: a stock item with a balance is never deleted.
+model StockBalance {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stockItemId String
+  location    StockLocation
+  qty         Int           @default(0)
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([stockItemId, location])
+  @@index([location])
+}
+
+/// One change to one balance, and why (plan §4.6). The movements are the
+/// truth; `StockBalance` is their running sum.
+///
+/// **Append-only**, by trigger as `AuditLog` is: a movement edited or
+/// deleted would leave a balance no history explains. A correction is a new
+/// movement. There is no `updatedAt`, because a row never changes.
+///
+/// `qty` is signed and whole, never zero (a CHECK): packs at the Store,
+/// units elsewhere. `ref` is what the screens show beside it, as the staff
+/// app writes it: an order number, a `KOT-` ref, a request or purchase
+/// number, or a direct issue's note. `staffId` is null only for a movement
+/// nobody on the staff made (a paid web order's drinks). Both relations
+/// restrict: a foreign key that set null would be an UPDATE the trigger
+/// refuses.
+model StockMovement {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  stockItemId String
+  location    StockLocation
+  qty         Int
+  type        StockMovementType
+  ref         String
+  staffId     String?
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  staff     Staff?    @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([stockItemId, location, createdAt])
+  @@index([location, createdAt])
+  @@index([ref])
+}
+
+/// A comparison rule for the kitchen crosscheck (plan §4.3, §7.10): the
+/// Kitchen portions one Restaurant menu item is expected to use. Settings →
+/// Kitchen Comparison Rules; `mapping.save` replaces an item's whole set.
+///
+/// The rules never fill in a kitchen entry or move stock. That the menu
+/// item is a Restaurant item and the stock item a Kitchen item is the
+/// service's rule ("Choose a food menu item.", "Choose a kitchen portion.");
+/// a CHECK holds `qty` above zero. Cascade from the menu item, whose rules
+/// these are; restrict the stock item, which a rule names.
+model KitchenMapping {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  menuItemId  String
+  stockItemId String
+  qty         Int
+
+  menuItem  MenuItem  @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([menuItemId, stockItemId])
+  @@index([stockItemId])
+}
+
+// ============================== STOCK (§4.6, requests, purchasing, waste) ==
+
+/// A Kitchen or Bar request for stock from the Store (plan §4.6, §7.6;
+/// `request.create`, `request.issue`, `request.reject`).
+///
+/// `number` is `SR-000001`. A request is for whole packs, as the Store
+/// counts them: `qtyPacks` asked for, `issuedPacks` sent so far. An issue
+/// moves −packs at the Store and +packs × the item's factor at `location`,
+/// through `StockLedgerService`, with the request number as the movements'
+/// ref. The location is the Kitchen or the Bar, never the Store, and the
+/// item must be one the location holds (a Kitchen item for the Kitchen, a
+/// Bar item for the Bar): the first is a CHECK, the second the service's
+/// rule, because it spans two tables.
+///
+/// The status follows the packs, held by a CHECK: Pending with nothing
+/// sent, Partially Issued with some, Issued with all; Rejected carries its
+/// reason (and may follow a partial issue, as in the demo). `rejectReason`
+/// is set exactly when Rejected. The demo appended the reason to the note;
+/// the server keeps the two apart.
+///
+/// `createdById` is who asked, for the own-record rule (`notOwn`, by id,
+/// A10). Restrict both: a request is history. Never deleted.
+model StockRequest {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number       String             @unique
+  location     StockLocation
+  stockItemId  String
+  qtyPacks     Int
+  issuedPacks  Int                @default(0)
+  status       StockRequestStatus @default(PENDING)
+  note         String             @default("")
+  rejectReason String?
+  createdById  String
+
+  version Int @default(0)
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  createdBy Staff     @relation("StockRequestCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([location, createdAt])
+  @@index([status])
+  @@index([stockItemId])
+}
+
+/// A supplier (plan §4.6; `vendor.save`): a contact, never a login.
+/// Deactivated (`isActive`), never deleted, so every purchase and repair
+/// that names one still resolves. A CHECK holds the name and phone
+/// non-blank ("Enter the vendor name and phone.").
+model Vendor {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name     String
+  service  String  @default("")
+  phone    String
+  email    String  @default("")
+  contact  String  @default("")
+  address  String  @default("")
+  notes    String  @default("")
+  isActive Boolean @default(true)
+
+  version Int @default(0)
+
+  purchases     Purchase[]
+  purchaseLines PurchaseLine[]
+  maintenance   MaintenanceRecord[]
+
+  @@index([isActive, name])
+}
+
+/// A purchase requisition (plan §4.6, §7.7): `PR-000001`.
+///
+/// `vendorId` is the header's vendor, the first line's; each line names its
+/// own. Receiving is all at once (D39), so there is no partial state.
+/// `archived` hides a requisition from the active list; archiving one with
+/// nothing received also cancels it. `decidedById` is the manager who
+/// approved or rejected it, and `createdById` the Storekeeper who raised
+/// it, for the own-record rule. Restrict the vendor and both people: a
+/// purchase is history. Never deleted.
+model Purchase {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number      String         @unique
+  vendorId    String
+  status      PurchaseStatus @default(PENDING)
+  note        String         @default("")
+  archived    Boolean        @default(false)
+  createdById String
+  decidedById String?
+
+  version Int @default(0)
+
+  vendor    Vendor @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  createdBy Staff  @relation("PurchaseCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  decidedBy Staff? @relation("PurchaseDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  lines PurchaseLine[]
+  tasks Task[]
+
+  @@index([status, archived])
+  @@index([vendorId])
+  @@index([createdAt])
+}
+
+/// One item on a purchase (plan §4.6): whole packs at a cost per pack.
+///
+/// One line per item per purchase (unique), as the demo's duplicate rule
+/// has it. `position` is the line's place in the list the screen sent, so
+/// the requisition reads back in its own order. `receivedPacks` is what
+/// reached the Store: 0 until receiving, then the whole quantity (a CHECK
+/// holds it between the two). A CHECK holds the packs and the cost above
+/// zero ("Choose a stock item and positive unit cost.").
+///
+/// The latest line for an item on a purchase that was not rejected or
+/// cancelled is the item's pack cost for valuing stock and waste
+/// (`latestPackCostKobo`, the demo's `wasteValue`, until Q25). Cascade from
+/// the purchase, whose lines these are; restrict the item and the vendor.
+model PurchaseLine {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchaseId    String
+  position      Int
+  stockItemId   String
+  vendorId      String
+  qtyPacks      Int
+  costKobo      Int
+  receivedPacks Int    @default(0)
+
+  purchase  Purchase  @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  vendor    Vendor    @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  @@unique([purchaseId, stockItemId])
+  @@index([stockItemId])
+  @@index([vendorId])
+}
+
+/// Stock written off at one location (plan §4.6, §7.8): `W-000001`.
+///
+/// Logged by the location's staff and moved only on approval. `qty` is
+/// whole and above zero: packs at the Store, units elsewhere. `valueKobo`
+/// is stored when the entry is made and again when it is edited, by the
+/// coded formula until Q25 is answered (`stockValueKobo`), so a later price
+/// change never rewrites what a write-off was worth when it was decided.
+/// `createdById` is who logged it (own-record rule), `decidedById` who
+/// approved or rejected it. Restrict the item and the logger. Never
+/// deleted.
+model WasteEntry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number      String        @unique
+  location    StockLocation
+  stockItemId String
+  qty         Int
+  reason      WasteReason
+  note        String        @default("")
+  status      WasteStatus   @default(PENDING)
+  valueKobo   Int
+  createdById String
+  decidedById String?
+
+  version Int @default(0)
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  createdBy Staff     @relation("WasteCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  decidedBy Staff?    @relation("WasteDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([location, status])
+  @@index([status, createdAt])
+  @@index([stockItemId])
+}
+
+// ============================== TILL, KITCHEN AND PAYMENTS (§4.3) ==========
+
+/// A bill (plan §4.3, §7.1–§7.3).
+///
+/// `number` is `CNCR-000001` (Restaurant) or `CNCB-000001` (Bar), drawn from
+/// one sequence per department that every channel shares (D29). A web order
+/// is one `CNCR` order whose lines carry their own department (D30).
+///
+/// `vatBps` and `serviceBps` are snapshotted from Settings when the order
+/// is opened, so a rate change applies to new bills only. `revision` is the
+/// last docket revision written (0: never confirmed); the confirmed lines
+/// are the latest docket's. `depositKobo` is the reservation credit used at
+/// settlement (D38: always 0 until a route sets a deposit).
+///
+/// A CHECK ties `settledAt` to `SETTLED`: a reversal clears both. Never
+/// deleted: a bill is cancelled.
+model Order {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number        String       @unique
+  department    Department
+  channel       OrderChannel @default(POS)
+  tableId       String?
+  label         String
+  guest         String       @default("")
+  businessDate  DateTime     @db.Date
+  status        OrderStatus  @default(OPEN)
+  revision      Int          @default(0)
+  vatBps        Int
+  serviceBps    Int
+  discountKobo  Int          @default(0)
+  depositKobo   Int          @default(0)
+  reservationId String?
+  notes         String       @default("")
+  settledAt     DateTime?
+  /// Null for a web order, which nobody on the staff opened.
+  openedById    String?
+  customerId    String?
+
+  version Int @default(0)
+
+  table       DiningTable? @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  reservation Reservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  openedBy    Staff?       @relation("OrderOpenedBy", fields: [openedById], references: [id], onDelete: SetNull)
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  lines          OrderLine[]
+  dockets        Docket[]
+  payments       Payment[]
+  kitchenEntries KitchenEntry[]
+  /// The web checkout that paid for this order, for a web order (C7).
+  checkout       Checkout?
+  /// The fulfilment record of a web order (C7-3).
+  onlineOrder    OnlineOrder?
+
+  @@index([businessDate, department])
+  @@index([status, department])
+  /// The reports' and the overview's settled bills by settlement time
+  /// (`settledIn`): without it every read scans every settled bill ever.
+  @@index([status, settledAt])
+  @@index([tableId, status])
+  @@index([customerId])
+}
+
+/// One line of a bill (plan §4.3). A line is an item plus its option, so
+/// the same dish with two choices is two lines; `option` is `""` when the
+/// dish has none (an empty string rather than null, so the unique index
+/// treats every option-less line of a dish as the same line).
+///
+/// `unitPriceKobo` and `name` are snapshots: a price change applies to new
+/// lines only. `department` is the item's, so a web order's drinks are told
+/// from its food. A CHECK holds `qty` to 1–999 and the price at zero or
+/// above. An unconfirmed line set to zero is removed; what was sent to the
+/// kitchen lives on in its docket. Cascade from the order; restrict the
+/// menu item, whose sale it records.
+model OrderLine {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderId       String
+  menuItemId    String
+  name          String
+  option        String     @default("")
+  qty           Int
+  unitPriceKobo Int
+  department    Department
+
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, menuItemId, option])
+  @@index([menuItemId])
+}
+
+/// A kitchen docket revision (plan §4.3, §7.1): `KOT-<order number>`, the
+/// full list of the order's confirmed **Restaurant** lines at that revision.
+/// Revisions are immutable; a confirm with no change reprints the latest
+/// one. A cancellation docket has no items.
+///
+/// `items` is a JSON snapshot (`[{menuItemId, name, option, qty,
+/// unitPriceKobo}]`). The web fields (`channel`, `fulfilment`,
+/// `scheduledFor`) let a pre-order print as one. `staffId` is null for a
+/// web docket. Restrict both ways: a docket is history.
+model Docket {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  ref          String
+  orderId      String
+  revision     Int
+  businessDate DateTime     @db.Date
+  items        Json
+  notes        String       @default("")
+  staffId      String?
+  channel      OrderChannel
+  fulfilment   Fulfilment?
+  scheduledFor DateTime?
+
+  order Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, revision])
+  @@index([ref, revision])
+  @@index([businessDate, channel])
+}
+
+/// Money received against a bill, or returned (plan §4.3, §7.3).
+///
+/// `number` is `PAY-000001`, shown in Daily Transfers. `amountKobo` is never
+/// zero and is negative for a refund. Split payments are several rows; a
+/// part payment is flagged `part`. A reversal flags the row (`reversed`,
+/// `reversedAt`, held together by a CHECK) and never deletes it.
+/// `providerRef` is Paystack's reference, unique when set; the card is only
+/// ever its brand and last four digits (never a card number, plan §8.5).
+/// Restrict both ways: a payment is a ledger row.
+model Payment {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number       String        @unique
+  orderId      String
+  method       PaymentMethod
+  amountKobo   Int
+  sender       String        @default("")
+  reference    String        @default("")
+  part         Boolean       @default(false)
+  reversed     Boolean       @default(false)
+  reversedAt   DateTime?
+  staffId      String?
+  providerRef  String?       @unique
+  cardBrand    String?
+  cardLast4    String?
+  businessDate DateTime      @db.Date
+
+  order Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  /// The online adjustments this payment settled (C7-4, `online.balance`).
+  settledAdjustments OnlineAdjustment[]
+  /// The card refund this payment records, for an `ONLINE` refund (C7-4).
+  onlineRefund       OnlineRefund?
+
+  @@index([orderId])
+  @@index([businessDate, method])
+}
+
+/// A cashier's drawer count for a business date (plan §4.3, §7.3):
+/// `CASH-000001`. `expectedKobo` is the date's non-reversed cash payments;
+/// several counts per date are allowed. A CHECK holds the difference to
+/// counted − expected. Restrict: a count is history.
+model CashCount {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  number         String   @unique
+  businessDate   DateTime @db.Date
+  staffId        String
+  expectedKobo   Int
+  countedKobo    Int
+  differenceKobo Int
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([businessDate])
+}
+
+/// The kitchen's own record of the portions used for a docket (plan §4.3),
+/// entered from the paper docket's number and compared with the comparison
+/// rules in the crosscheck. One entry per docket ref; the date, order and
+/// revision come from the docket. `lines` is `[{stockItemId, qty}]`.
+/// `staffId` is whoever saved it last. Restrict both ways.
+model KitchenEntry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  docketRef    String   @unique
+  orderId      String
+  revision     Int
+  businessDate DateTime @db.Date
+  lines        Json
+  staffId      String
+
+  version Int @default(0)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([businessDate])
+  @@index([orderId])
+}
+
+/// A kitchen day closed (`kitchen.close`): later saves for that date are
+/// manager corrections with a reason. Once per date (unique).
+model KitchenDayClosed {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  businessDate DateTime @unique @db.Date
+  closedById   String
+
+  closedBy Staff @relation(fields: [closedById], references: [id], onDelete: Restrict)
+}
+
+// ============================== TABLES AND RESERVATIONS (§4.5) =============
+
+/// A table booking from the website, the app or Reception: one command for
+/// all three (plan §4.5, §7.5).
+///
+/// **One active booking per table per date, for every channel**: a partial
+/// unique index on (`tableId`, `businessDate`) where the status is
+/// `CONFIRMED` or `CHECKED_IN`, written by hand in the migration as
+/// `Reservation_tableId_businessDate_key`, so two bookings racing for one
+/// table cannot both commit and the clash reads as a P2002 on those fields
+/// (D21). A booking holds its table for the whole date (D20).
+///
+/// `number` is `RSV-000001`. `startMinutes` is the arrival time in minutes
+/// after midnight, WAT. `phone` is stored normalised. `depositKobo` and
+/// `depositUsedKobo` stay 0 until a route sets a deposit (D38). How a
+/// Reception booking links to a customer is Q35. Never deleted: cancelled.
+///
+/// From C6-8: `reminderSentAt` is when the 24-hour reminder (Q32) was
+/// handled: stamped by the reminders sweep, or set at once when the booking
+/// is made, or moved to a new date or time, under 24 hours ahead (no
+/// reminder then), and cleared when it is moved further out, so the new
+/// time gets its own. The sweep reminds only rows where it is null.
+///
+/// From the C6 review: `note` is Reception's, shown to staff and edited by
+/// them; `guestNote` is what the guest typed in "Anything we should know?"
+/// on the website or in the app, and the only note a customer is shown
+/// (`GET /me/reservations`). A Reception note is staff writing to staff, and
+/// Q35 links phone bookings to accounts, so it must never reach the guest.
+/// An online booking copies the guest's text into both, so Reception still
+/// reads it. `ipHash` is the hashed client address of a website or app
+/// booking (`hashClientAddress`), null for Reception's: the stored booking
+/// caps count it.
+model Reservation {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number          String            @unique
+  tableId         String
+  customerId      String?
+  name            String
+  phone           String
+  email           String            @default("")
+  businessDate    DateTime          @db.Date
+  startMinutes    Int
+  party           Int
+  status          ReservationStatus @default(CONFIRMED)
+  source          ReservationSource
+  note            String            @default("")
+  guestNote       String            @default("")
+  depositKobo     Int               @default(0)
+  depositUsedKobo Int               @default(0)
+  cancelledAt     DateTime?
+  reminderSentAt  DateTime?
+  ipHash          String?
+
+  version Int @default(0)
+
+  table    DiningTable @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  customer Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  orders        Order[]
+  tableSessions TableSession[]
+
+  @@index([businessDate, status])
+  @@index([tableId, businessDate])
+  @@index([customerId])
+  @@index([ipHash, createdAt])
+  @@index([email, createdAt])
+}
+
+/// A table's allocation (plan §4.5): guests seated (`OCCUPIED`) or the
+/// table locked with a reason (`LOCKED`), from `since` until `endedAt`.
+///
+/// **One open allocation per table**: a partial unique index on `tableId`
+/// where `endedAt IS NULL`, written by hand as `TableSession_tableId_key`,
+/// so two allocations racing for one table cannot both commit. A release
+/// ends the session (`endedAt`, `closedById`) and keeps it as history.
+/// `note` is the lock reason. Restrict the table and the staff who opened
+/// it; the closer nulls (optional attribution).
+model TableSession {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tableId       String
+  status        TableSessionStatus
+  guest         String             @default("")
+  party         Int                @default(0)
+  note          String             @default("")
+  since         DateTime           @default(now())
+  endedAt       DateTime?
+  reservationId String?
+  openedById    String
+  closedById    String?
+
+  version Int @default(0)
+
+  table       DiningTable  @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  reservation Reservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  openedBy    Staff        @relation("TableSessionOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)
+  closedBy    Staff?       @relation("TableSessionClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+
+  @@index([tableId, endedAt])
+  @@index([endedAt, status])
+}
+
+// ============================== TASKS, ASSETS, ATTENDANCE (§4.7) ===========
+//
+// Kept by Q12 to Q15's defaults (attendance and the QR ID, assets and
+// reactive repairs, purchase requisitions, the manager approvals).
+
+/// A task (plan §4.7, §7.7, §7.9; `task.save`): `T-000001`.
+///
+/// `raisedById` is who raised it (the actor, or the command's actor for an
+/// automatic task) and `assignedToId` who must do it, by id (A10); never a
+/// Waiter or Bartender, which is the service's rule. `automatic` marks the
+/// tasks commands raise by themselves: "Review purchase…", "Receive goods
+/// for…", "Follow up repair…".
+///
+/// A task links to at most one record, and only to the kind its type names:
+/// a CHECK holds `purchaseId` to Purchase tasks and `maintenanceId` to
+/// Maintenance tasks, so a task's links and its type cannot disagree.
+/// Restrict every relation: a task is history, and so are its people and
+/// records. Never deleted.
+model Task {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number        String     @unique
+  title         String
+  type          TaskType
+  assignedToId  String
+  raisedById    String
+  status        TaskStatus @default(OPEN)
+  purchaseId    String?
+  maintenanceId String?
+  automatic     Boolean    @default(false)
+
+  version Int @default(0)
+
+  assignedTo  Staff              @relation("TaskAssignedTo", fields: [assignedToId], references: [id], onDelete: Restrict)
+  raisedBy    Staff              @relation("TaskRaisedBy", fields: [raisedById], references: [id], onDelete: Restrict)
+  purchase    Purchase?          @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  maintenance MaintenanceRecord? @relation(fields: [maintenanceId], references: [id], onDelete: Restrict)
+
+  history TaskHistory[]
+
+  @@index([assignedToId, status])
+  @@index([raisedById, status])
+  @@index([purchaseId])
+  @@index([maintenanceId])
+}
+
+/// One status a task was given, by whom and when (plan §4.7): the demo's
+/// task `history`. `automatic` marks an entry a command wrote by itself
+/// (the demo's "<name> (automatic)"); `staffId` is still the person whose
+/// command it was, and null only if no one's was. Rows are only ever
+/// added, so there is no `updatedAt`. Cascade from the task.
+model TaskHistory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  taskId    String
+  status    TaskStatus
+  staffId   String?
+  automatic Boolean    @default(false)
+
+  task  Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, createdAt])
+}
+
+/// Something CNC owns that can break (plan §4.7; `asset.save`, managers):
+/// a fridge, a POS terminal. `tag` is the label on the thing itself, unique,
+/// and the route's key (`PUT /staff/assets/:tag`). `quantity` is above zero
+/// (a CHECK: "Enter a tag, name and quantity."). The status follows its
+/// repairs. Never deleted: an asset is made Inactive.
+model Asset {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tag      String      @unique
+  name     String
+  category String      @default("")
+  location String      @default("")
+  quantity Int
+  status   AssetStatus @default(ACTIVE)
+
+  version Int @default(0)
+
+  maintenance MaintenanceRecord[]
+
+  @@index([status])
+}
+
+/// A repair (plan §4.7, §7.9; `maintenance.save`, Reception): `MT-000001`.
+/// Reactive only (Q13): no preventive schedule.
+///
+/// `reportedOn` is the business date it was first saved. **`resolvedOn` is
+/// set once, on the first move to Fixed or Not Fixed, and never reset**
+/// (plan §17, R3: the demo reset it to today on every save); a CHECK holds
+/// it present for a Fixed or Not Fixed repair and never before the report.
+/// `costKobo` is zero or more. Restrict the asset and the vendor: a repair
+/// is history. Never deleted.
+model MaintenanceRecord {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number      String            @unique
+  assetId     String
+  vendorId    String
+  description String
+  costKobo    Int               @default(0)
+  reportedOn  DateTime          @db.Date
+  resolvedOn  DateTime?         @db.Date
+  status      MaintenanceStatus @default(PENDING)
+
+  version Int @default(0)
+
+  asset  Asset  @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  history MaintenanceHistory[]
+  tasks   Task[]
+
+  @@index([assetId])
+  @@index([status])
+  @@index([reportedOn])
+}
+
+/// One status a repair was given, by whom and when (plan §4.7): the demo's
+/// maintenance `history`. Rows are only ever added. Cascade from the
+/// record; restrict the person.
+model MaintenanceHistory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  recordId String
+  status   MaintenanceStatus
+  staffId  String
+
+  record MaintenanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  staff  Staff             @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([recordId, createdAt])
+}
+
+/// One shift: a person's arrival and departure, from Reception's QR scan
+/// (plan §4.7, §7.9; Q12: timestamps only, as TAY's).
+///
+/// `businessDate` is the arrival's Lagos date; a shift that runs past
+/// midnight stays on the day it began and closes on the next scan.
+/// **One open record per person**: a partial unique index on `staffId`
+/// where `timeOut IS NULL`, written by hand as `AttendanceRecord_staffId_key`,
+/// so two scans racing for one person cannot both open a shift (the scan
+/// also takes an advisory lock, as TAY's does). A CHECK holds `timeOut` at
+/// or after `timeIn`. Restrict the person. Never deleted.
+model AttendanceRecord {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staffId      String
+  businessDate DateTime         @db.Date
+  timeIn       DateTime
+  timeOut      DateTime?
+  source       AttendanceSource @default(RECEPTION_QR)
+
+  version Int @default(0)
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  corrections AttendanceCorrection[]
+
+  @@index([staffId, timeIn])
+  @@index([businessDate])
+}
+
+/// A manager's correction of one shift (plan §4.7; `attendance.correct`,
+/// M + reason): the times it replaced, why, and who changed them. Returned
+/// with each record for the History modal, which no longer reads the audit
+/// log's before and after. Rows are only ever added. Cascade from the
+/// record; restrict the manager.
+model AttendanceCorrection {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  recordId  String
+  beforeIn  DateTime
+  beforeOut DateTime?
+  reason    String
+  staffId   String
+
+  record AttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  staff  Staff            @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@index([recordId, createdAt])
+}
+
+// ============================== MONEY CONTROLS (§4.3, the ledger only) =====
+
+/// The Daily Approval Limit's ledger (plan §4.3, §6.2): one row per money
+/// decision a manager made that counts toward their day, written by
+/// `MoneyControlService.withinLimit` in the command's own transaction.
+///
+/// **The sum is taken and the row inserted under
+/// `pg_advisory_xact_lock` on the manager and the business date**, so two
+/// approvals racing past the limit cannot both see the old total. Rows are
+/// written while the daily limit is switched off too (D36), so switching it
+/// back on counts the day's decisions already made. The Owner is never
+/// recorded: the Owner has no daily limit.
+///
+/// `amountKobo` is the amount counted (positive: a refund counts by its
+/// size); `action` is the command (`waste.approve`) and `ref` the record's
+/// human reference. **Append-only**, by trigger as `AuditLog` is: a ledger
+/// row deleted is a manager's limit quietly raised. Restrict: a manager with
+/// approvals is never deleted (staff are deactivated).
+///
+/// **A release row** (C8-0, the founder's decision of 2026-10-24) gives
+/// back what an earlier row counted for money that never moved: a card
+/// refund Paystack refused, or one a manager found missing from Paystack's
+/// dashboard. It names the row it releases (`releasesId`, unique, so a row
+/// is released once at most), carries a negative `amountKobo` no larger
+/// than that row's, and that row's person, business date and `ref`; a
+/// trigger refuses any other shape. Only a release row may be negative.
+model ApprovalLedger {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  businessDate DateTime @db.Date
+  staffId      String
+  amountKobo   Int
+  action       String
+  ref          String?
+  /// The row this one releases, for a release row only.
+  releasesId   String?  @unique
+
+  staff        Staff           @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  releases     ApprovalLedger? @relation("LedgerRelease", fields: [releasesId], references: [id], onDelete: Restrict)
+  releasedBy   ApprovalLedger? @relation("LedgerRelease")
+  /// The card refund this row counted, for `online.balance` to the card.
+  onlineRefund OnlineRefund?
+
+  @@index([staffId, businessDate])
+}
+
+// ============================== AUDIT, MESSAGES, ENQUIRIES (§4.8) ===========
+
+/// The activity history: one row per command, written by one service
+/// (`AuditService.record(entry, tx)`) inside the command's own transaction
+/// (A6, A13).
+///
+/// **Append-only, enforced by the database.** A trigger raises on every
+/// UPDATE, DELETE and TRUNCATE of this table, so no code path, mistaken
+/// migration script or console session can rewrite history; TAY enforces the
+/// same rule by convention only (D47). There is no `updatedAt`, because a
+/// row never changes. `at` is the row's creation time.
+///
+/// The actor: `actorKind` says which of `staffId` and `customerId` is set (a
+/// CHECK requires the matching id), and `actorName` and `actorRole` are
+/// snapshots, so the entry reads the same after a rename. Both relations
+/// restrict: an entry without its actor is not an entry.
+///
+/// `before` and `after` are kept for the server's plain-sentence port of
+/// `describeChange`; **no API response returns them raw** (A13), and they
+/// never hold a password hash, a QR token or a token of any kind.
+model AuditLog {
+  id String   @id @default(cuid())
+  at DateTime @default(now())
+
+  actorKind  AuditActorKind
+  staffId    String?
+  customerId String?
+  actorName  String
+  actorRole  String?
+  /// The command name, e.g. `order.settle`.
+  action     String
+  module     String
+  ref        String?
+  before     Json?
+  after      Json?
+  reason     String?
+  channel    String?
+  ipAddress  String?
+
+  staff    Staff?    @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([at])
+  @@index([ref])
+  @@index([staffId, at])
+  @@index([module, action, at])
+}
+
+/// A customer's in-app notification list. Written by the same events that
+/// send email; reads are tracked by `Customer.notificationsReadAt`.
+/// `dedupeKey` makes each event write at most one row however often it is
+/// processed. Cascade: a notification is meaningless without its customer.
+model CustomerNotification {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  customerId String
+  kind       CustomerNotificationKind
+  title      String
+  body       String
+  link       String?
+  dedupeKey  String                   @unique
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+}
+
+/// An email or SMS waiting to go, sent after the command commits: a failed
+/// send never rolls a command back (plan §4.8). `dedupeKey` makes each event
+/// enqueue at most one message. The retry sweep (C6-8) re-sends `PENDING`
+/// and `FAILED` rows up to three attempts.
+///
+/// `lastError` is the provider's reason, never the message body or subject.
+///
+/// From C6: `payload` holds what the template needs to render the message
+/// (a name, a sign-in code, a booking's details), **sealed** with
+/// AES-256-GCM under a key derived from `CNC_JWT_SECRET`
+/// (`src/mail/message-seal.ts`), so a database read never yields a usable
+/// sign-in code or a customer's details in clear. It is set to null once the
+/// message is sent or given up. `expiresAt` is when the retry sweep gives up
+/// on the message: a sign-in code's mail is worthless after the code
+/// expires, and a confirmation sent days late is worse than none.
+///
+/// From C6-8: `retryAfter` is the backoff after a failed send: the sweep
+/// does not try the message again before it (null: no wait). A provider
+/// that refused one send a moment ago is likely to refuse the next, and
+/// three attempts spent in three consecutive sweeps would give up a message
+/// over one short outage.
+model OutboundMessage {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channel    ContactChannel
+  to         String
+  template   String
+  dedupeKey  String                @unique
+  status     OutboundMessageStatus @default(PENDING)
+  attempts   Int                   @default(0)
+  sentAt     DateTime?
+  lastError  String?
+  payload    String?
+  expiresAt  DateTime?
+  retryAfter DateTime?
+
+  @@index([status, createdAt])
+}
+
+/// A contact-form message or a large-group booking enquiry (D50). Stored,
+/// then emailed to CNC. `ipHash` is a SHA-256 of the caller's address, for
+/// rate limiting and abuse review without keeping the address itself.
+/// `guests` is the form's text ("4+ guests"), not a number.
+///
+/// From C6-7: the per-address cap counts these rows by `ipHash`, so the
+/// limit holds across instances and restarts (the `[ipHash, createdAt]`
+/// index). Q20's default: there is no staff list; `status` stays `NEW`.
+model Enquiry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  kind          EnquiryKind
+  name          String
+  email         String?
+  phone         String?
+  subject       String?
+  message       String
+  venueId       String?
+  requestedDate DateTime?     @db.Date
+  guests        String?
+  status        EnquiryStatus @default(NEW)
+  ipHash        String?
+
+  venue Venue? @relation(fields: [venueId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([ipHash, createdAt])
+}
+
+// ============================== ONLINE ORDERS (§4.4) =======================
+
+/// A web or app checkout (plan §4.4, §7.4; card C7-1): the cart priced by
+/// the server, the delivery or pickup details and the timing, fixed before
+/// Paystack is called. The order number is drawn only when the payment is
+/// confirmed (C7-3, `orderId`), so an abandoned checkout burns no `CNCR`.
+///
+/// `reference` is `cnc-order-<uuid>`, chosen here and sent to Paystack, so
+/// a webhook is matched to its row by it. `lines` is the priced snapshot:
+/// `[{ menuItemId, dishId, name, option, qty, unitPriceKobo, department }]`
+/// (`dishId` is the menu slug the cart named). The money columns are the
+/// quote (Q33: CNC absorbs Paystack's charge, so the total is subtotal +
+/// VAT + delivery), and a CHECK holds that sum. `vatBps` and the zone's fee
+/// are snapshotted from Settings.
+///
+/// The address is the structured one (`src/common/delivery-address.ts`),
+/// null for pickup. `contactPhone` is `0` plus 10 digits and
+/// `contactEmail` lower case; the receipt goes to it (Q31). `timingText`
+/// is the confirmation page's words for the timing; `scheduledFor` is the
+/// chosen slot as an instant, null for as soon as possible.
+///
+/// `accessCode` and `authorizationUrl` are what Paystack's initialize
+/// answered, written once after the checkout's own transaction commits.
+/// `paidAt`, `cardBrand` and `cardLast4` come from Paystack's verified
+/// transaction (never a card number, plan §8.5). `attentionReason` says
+/// why a signed payment was held (`NEEDS_ATTENTION`), for staff only.
+/// `ipHash` is the caller's hashed address (abuse review), never the
+/// address itself.
+///
+/// A customer deleting their account anonymises their checkouts (Q36).
+/// Never deleted: a checkout is the record of money asked for.
+model Checkout {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reference  String         @unique
+  customerId String?
+  source     CheckoutSource
+  status     CheckoutStatus @default(PENDING)
+  expiresAt  DateTime
+
+  lines               Json
+  subtotalKobo        Int
+  vatKobo             Int
+  deliveryKobo        Int
+  totalKobo           Int
+  vatBps              Int
+  /// Both zones' delivery fees as Settings held them at checkout (C7-4):
+  /// a manager's zone change prices the new zone from these (Q27: "recompute
+  /// from the fees snapshotted on the order").
+  deliveryJosKobo     Int
+  deliveryOutsideKobo Int
+
+  fulfilment      Fulfilment
+  zone            AddressZone?
+  addressStreet   String?
+  addressArea     String?
+  addressTown     String?
+  addressLandmark String?
+
+  contactName  String
+  contactPhone String
+  contactEmail String
+  note         String  @default("")
+  saveDetails  Boolean @default(false)
+
+  timing       CheckoutTiming
+  timingText   String
+  scheduledFor DateTime?
+
+  accessCode       String?
+  authorizationUrl String?
+  paidAt           DateTime?
+  cardBrand        String?
+  cardLast4        String?
+  attentionReason  String?
+  attentionAt      DateTime?
+  /// When a manager resolved the held checkout (`RESOLVED`); who and why
+  /// are in its audit row.
+  resolvedAt       DateTime?
+  /// When the confirmation read last asked Paystack about it: at most one
+  /// recheck per checkout every few seconds.
+  recheckedAt      DateTime?
+
+  ipHash  String
+  orderId String? @unique
+
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  order       Order?       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  onlineOrder OnlineOrder?
+
+  @@index([status, expiresAt])
+  @@index([customerId])
+  @@index([ipHash, createdAt])
+}
+
+/// A paid web order's fulfilment record (plan §4.4, §7.4 step 4; card
+/// C7-3): `WEB-000001`, written with its `Order` (channel `WEB`, settled),
+/// the `ONLINE` payment, the food docket and the Bar movements in the one
+/// transaction that marks its checkout `PAID`. The number is drawn only
+/// then, so an abandoned checkout burns none.
+///
+/// The contact, address, note, fee and timing are snapshots of the
+/// checkout, which Online Orders' commands (C7-4) may change; the checkout
+/// keeps what the customer paid for. `addressText` is the address as one
+/// line for the screens and the docket, `""` for pickup. `feeKobo` is the
+/// delivery fee, a separate line from the bill (Q21). `paystackReference`
+/// is the checkout's reference, unique. A customer deleting their account
+/// (Q36) blanks the contact, address and note. Never deleted.
+model OnlineOrder {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  number     String  @unique
+  orderId    String  @unique
+  checkoutId String  @unique
+  customerId String?
+
+  contactName  String
+  contactPhone String
+  contactEmail String
+
+  mode                OnlineOrderMode
+  addressStreet       String?
+  addressArea         String?
+  addressTown         String?
+  addressLandmark     String?
+  addressText         String          @default("")
+  note                String          @default("")
+  feeKobo             Int
+  /// The checkout's snapshot of both zones' fees (C7-4, Q27), from which
+  /// `online.zone` prices a new zone.
+  deliveryJosKobo     Int
+  deliveryOutsideKobo Int
+  timingText          String
+  scheduledFor        DateTime?
+
+  fulfilmentStatus  OnlineFulfilmentStatus @default(RECEIVED)
+  paystackReference String                 @unique
+
+  version Int @default(0)
+
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  checkout Checkout  @relation(fields: [checkoutId], references: [id], onDelete: Restrict)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  adjustments OnlineAdjustment[]
+  refunds     OnlineRefund[]
+
+  @@index([fulfilmentStatus, createdAt])
+  @@index([customerId])
+}
+
+/// What a manager's change did to the money of a paid web order (plan
+/// §4.4, card C7-4): `online.edit`, `online.cancel` or `online.zone`
+/// moved what the order is worth by `amountKobo` (+ extra money due, −
+/// a refund owed). Open while `settledAt` is null; `online.balance`
+/// settles every open one with its payment (`settledPaymentId`), and a
+/// later change that brings the balance back to zero settles them with
+/// no payment. An order cannot complete while one is open. A refund
+/// Paystack refuses opens its adjustments again. Restrict everywhere: an
+/// adjustment is money history.
+model OnlineAdjustment {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  onlineOrderId    String
+  /// The command that made it: `online.edit`, `online.cancel`, `online.zone`.
+  action           String
+  amountKobo       Int
+  reason           String
+  staffId          String
+  settledAt        DateTime?
+  settledPaymentId String?
+
+  onlineOrder    OnlineOrder @relation(fields: [onlineOrderId], references: [id], onDelete: Restrict)
+  staff          Staff       @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  settledPayment Payment?    @relation(fields: [settledPaymentId], references: [id], onDelete: Restrict)
+
+  @@index([onlineOrderId, settledAt])
+  @@index([settledPaymentId])
+}
+
+/// A card refund through Paystack's refund API (card C7-4, Q26's default:
+/// "through Paystack; Manager within limits, Owner above; CNC absorbs the
+/// fee"). The refund's money is its `Payment` (`ONLINE`, negative,
+/// `paymentId`), written with it by `online.balance`; this row is what
+/// Paystack was asked and answered. Paystack is called after that
+/// transaction commits, by the one request that moves `PENDING` to
+/// `SENDING`. `providerRefundId` is Paystack's refund id once it accepted;
+/// `providerMessage` its words on a refusal, for staff. Restrict: a refund
+/// is money history.
+model OnlineRefund {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  onlineOrderId        String
+  paymentId            String             @unique
+  /// The Paystack transaction refunded: the checkout's reference.
+  transactionReference String
+  /// The money returned, in kobo (positive).
+  amountKobo           Int
+  status               OnlineRefundStatus @default(PENDING)
+  providerRefundId     String?            @unique
+  providerStatus       String?
+  providerMessage      String?
+  staffId              String
+  sentAt               DateTime?
+  /// The Daily Approval Limit's row that counted this refund (C8-0): null
+  /// for the Owner, who is never counted. A refusal releases what it
+  /// counted.
+  ledgerEntryId        String?            @unique
+
+  onlineOrder OnlineOrder     @relation(fields: [onlineOrderId], references: [id], onDelete: Restrict)
+  payment     Payment         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  staff       Staff           @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  ledgerEntry ApprovalLedger? @relation(fields: [ledgerEntryId], references: [id], onDelete: Restrict)
+
+  @@index([onlineOrderId])
+  @@index([status, createdAt])
+}
+
+/// TAY's webhook ledger (plan §4.4, §8.2): one row per Paystack delivery,
+/// keyed by `deliveryId`, the SHA-256 of the raw body, so a redelivery of
+/// the same bytes is recognised by the unique index and changes nothing.
+/// No payload is stored: a charge's body carries the card authorization.
+///
+/// `processedAt` is null until the work the delivery triggers has
+/// finished; an old row still null is a delivery acknowledged and not
+/// handled, which the payments sweep re-dispatches (C7-5).
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  deliveryId  String    @unique
+  event       String
+  reference   String?
+  processedAt DateTime?
+
+  @@index([processedAt, createdAt])
+  @@index([reference])
+}
+
+/// A stored response for an `Idempotency-Key` (A9).
+///
+/// `IdempotencyService` inserts the row **inside the command's own
+/// transaction, before the command runs**, and fills in the response before
+/// it commits. So the key and the command commit together or not at all: a
+/// refused or failed command leaves no row and may be retried with the same
+/// key, and a duplicate arriving while the first is still running waits on
+/// the unique index and then replays its response.
+///
+/// `scope` is `staff:<id>`, `customer:<id>` or `anon:<ip-hash>`, so one
+/// caller's key never replays another caller's response. `requestHash` is the
+/// SHA-256 of the request's route parameters, query and body: the same key
+/// with a different request is a 409, never a replay of the wrong answer.
+/// Rows older than 7 days are deleted by the tokens sweep.
+model IdempotencyKey {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  scope          String
+  key            String
+  route          String
+  requestHash    String
+  responseStatus Int?
+  responseBody   Json?
+
+  @@unique([scope, key])
+  @@index([createdAt])
+}
+
+/// One rate-limit count (card C8-3): how many requests one key (a route,
+/// a named count and who is counted, hashed by the throttler) has made in
+/// the window that ends at `windowEndsAt`, and until when it is refused
+/// (`blockedUntil`), if it went over.
+///
+/// **Stored, so every Cloud Run instance counts against one number.** An
+/// in-memory count (plan A18) is per instance, so each new instance gave a
+/// caller the limit again, and a restart forgot it. Written only by
+/// `RateLimitStore.hit`, one atomic upsert per request. The tokens sweep
+/// deletes rows whose window and block have both ended; an ended row that
+/// is still here is treated as a fresh window, so nothing depends on the
+/// sweep having run. A CHECK holds `hits` at one or more.
+model RateLimitCount {
+  key          String    @id
+  hits         Int
+  windowEndsAt DateTime
+  blockedUntil DateTime?
+
+  @@index([windowEndsAt])
+}

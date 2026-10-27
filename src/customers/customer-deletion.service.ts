@@ -1,0 +1,442 @@
+import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  CheckoutStatus,
+  ContactChannel,
+  OrderChannel,
+  type Prisma,
+  ReservationSource,
+  SubjectType,
+} from '../../generated/cnc-client';
+import { CncTokenService } from '../auth/cnc-token.service';
+import { watToday } from '../common/wat';
+import { PhotoStore } from '../images/photo-store.service';
+import { idempotencyScope } from '../idempotency/idempotency-scope';
+import { OutboundMessagesService } from '../mail/outbound-messages.service';
+import { ACTIVE_ONLINE_STATUSES } from '../online-orders/online-order-rules';
+import { UNSETTLED_ORDER_STATUSES } from '../orders/order-rules';
+import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { HOLDING_STATUSES } from '../reception/reservation-rules';
+import { CustomerService } from './customer.service';
+
+/**
+ * An account with a booking still ahead, or a bill still open, cannot be
+ * deleted yet (409). New: the demo had no deletion. Anonymising a booking
+ * that is still to come would leave Reception a table held for nobody,
+ * with no name to greet and no number to call.
+ */
+export const DELETE_WITH_UPCOMING_MESSAGE =
+  'You have a reservation still to come or an order in progress. Cancel it, or wait until it is complete, then delete your account.';
+
+/**
+ * The name a deleted customer's bookings and bills show from then on.
+ * Reception and the till still see that a booking or a bill existed.
+ */
+export const DELETED_CUSTOMER_NAME = 'Deleted customer';
+
+/** `lastError` of a message given up because its account was deleted. */
+export const ACCOUNT_DELETED_REASON = 'The account was deleted.';
+
+/**
+ * A checkout once the person is gone: its money and lines stay, its name,
+ * phone, email, address lines and note go (the zone stays, as the fee was
+ * charged for it).
+ */
+const ANONYMOUS_CHECKOUT = {
+  contactName: DELETED_CUSTOMER_NAME,
+  contactPhone: '',
+  contactEmail: '',
+  addressStreet: null,
+  addressArea: null,
+  addressTown: null,
+  addressLandmark: null,
+  note: '',
+} satisfies Prisma.CheckoutUpdateManyMutationInput;
+
+/** A web order once the person is gone, as its checkout. */
+const ANONYMOUS_ONLINE_ORDER = {
+  contactName: DELETED_CUSTOMER_NAME,
+  contactPhone: '',
+  contactEmail: '',
+  addressStreet: null,
+  addressArea: null,
+  addressTown: null,
+  addressLandmark: null,
+  addressText: '',
+  note: '',
+  version: { increment: 1 },
+} satisfies Prisma.OnlineOrderUpdateManyMutationInput;
+
+/**
+ * Deleting a customer's account (Q36's default: "customers can delete
+ * their account from Profile, which anonymises their orders and
+ * bookings").
+ *
+ * The row is kept, with `deletedAt` set: bookings, bills and the audit log
+ * point at it, and money records are never deleted (plan §4). Everything
+ * that identifies the person goes in one transaction:
+ *
+ * - the account's name, email, phone, address, photo and preferences
+ *   (a CHECK refuses a deleted row that keeps a contact or an address);
+ * - the name, phone, email and both notes on every booking, and the guest
+ *   name on every bill, linked to it (their `version` moves, so a screen
+ *   holding the old copy is told to refresh);
+ * - the guest name on every seating a booking of it was checked in to,
+ *   and the sender or recipient of every transfer on its bills (C8
+ *   review);
+ * - the in-app notifications, the one-time codes sent to it or for it,
+ *   and the stored answers of its idempotent requests;
+ * - every session (all refresh tokens revoked; the guard refuses its
+ *   access tokens at once);
+ * - every email to its address or about its bookings and codes: the
+ *   waiting ones given up, and every one's recipient and payload cleared
+ *   (`OutboundMessagesService.forget`);
+ * - from C8-5, what carries its verified email unlinked: its enquiries
+ *   (deleted), and its finished guest checkouts and web orders
+ *   (anonymised as linked ones are; `forgetUnlinked`).
+ *
+ * The audit log's rows about these records keep what they recorded; the
+ * audit read withholds the guest's values from them
+ * (`AuditQueryService`, C8-5).
+ *
+ * The photo object is removed after the commit. The audit log is
+ * append-only by trigger and keeps what it recorded (A13).
+ *
+ * Refused while a booking the customer made in the app still holds a table
+ * on a date from today on, or a bill linked to the account is still open.
+ * An upcoming website or Reception booking linked by its email or phone
+ * (Q35) does not refuse it: it is unlinked and stays the guest booking it
+ * was made as, so a stranger's guest booking under someone's email cannot
+ * block their deletion.
+ */
+@Injectable()
+export class CustomerDeletionService {
+  constructor(
+    private readonly prisma: CncPrismaService,
+    private readonly customers: CustomerService,
+    private readonly tokens: CncTokenService,
+    private readonly outbound: OutboundMessagesService,
+    private readonly photos: PhotoStore,
+  ) {}
+
+  async deleteAccount(customerId: string): Promise<void> {
+    const now = new Date();
+
+    const photo = await this.prisma.$transaction(async (tx) => {
+      const current = await this.customers.lockLive(tx, customerId);
+      const holding = {
+        customerId,
+        status: { in: HOLDING_STATUSES },
+        businessDate: { gte: watToday(now) },
+      };
+
+      // Only a booking the customer made in the app blocks. A website or
+      // Reception booking reached the account by its email or phone (Q35),
+      // which anyone can type, so counting it would let a stranger block
+      // a deletion with a guest booking; it is unlinked below instead.
+      const upcoming = await tx.reservation.count({
+        where: { ...holding, source: ReservationSource.APP },
+      });
+      const open = await tx.order.count({
+        where: { customerId, status: { in: UNSETTLED_ORDER_STATUSES } },
+      });
+      // A checkout still waiting for its payment, or a payment held for a
+      // person (C7): money may yet arrive, or has, for an order nobody
+      // could then reach the customer about.
+      const paying = await tx.checkout.count({
+        where: {
+          customerId,
+          status: {
+            in: [CheckoutStatus.PENDING, CheckoutStatus.NEEDS_ATTENTION],
+          },
+        },
+      });
+
+      // A paid web order still being prepared or on its way (C7-3): the
+      // kitchen and the rider still need the name, phone and address.
+      const fulfilling = await tx.onlineOrder.count({
+        where: {
+          customerId,
+          fulfilmentStatus: { in: ACTIVE_ONLINE_STATUSES },
+        },
+      });
+
+      if (upcoming > 0 || open > 0 || paying > 0 || fulfilling > 0) {
+        throw new ConflictException(DELETE_WITH_UPCOMING_MESSAGE);
+      }
+
+      // An upcoming booking made without the account goes back to being
+      // the guest booking it was made as: still held, with the name and
+      // number Reception greets and calls, out of the deleted account.
+      await tx.reservation.updateMany({
+        where: holding,
+        data: { customerId: null },
+      });
+
+      const bookings = await tx.reservation.findMany({
+        where: { customerId },
+        select: { id: true },
+      });
+      const codes = await tx.otpCode.findMany({
+        where: {
+          OR: [
+            { customerId },
+            ...(current.email === null ? [] : [{ contact: current.email }]),
+          ],
+        },
+        select: { id: true },
+      });
+
+      await tx.reservation.updateMany({
+        where: { customerId },
+        data: {
+          name: DELETED_CUSTOMER_NAME,
+          phone: '',
+          email: '',
+          note: '',
+          guestNote: '',
+          version: { increment: 1 },
+        },
+      });
+      await tx.order.updateMany({
+        where: { customerId, guest: { not: '' } },
+        data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
+      });
+
+      // A booking checked in seated its guest under the booking's name
+      // (`ReservationsService.checkIn`): the seating keeps it after the
+      // release, and the floor and the Free Table Reminder read it.
+      await tx.tableSession.updateMany({
+        where: {
+          reservationId: { in: bookings.map(({ id }) => id) },
+          guest: { not: '' },
+        },
+        data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
+      });
+
+      // A transfer's sender (or a refund's recipient) on its bills is the
+      // guest's bank name, typed by staff: Daily Transfers still lists the
+      // payment, its amount and its bank reference, which is what matching
+      // it to the statement needs (C8 review).
+      await tx.payment.updateMany({
+        where: { order: { customerId }, sender: { not: '' } },
+        data: { sender: DELETED_CUSTOMER_NAME },
+      });
+
+      const checkouts = await tx.checkout.findMany({
+        where: { customerId },
+        select: { id: true, reference: true },
+      });
+
+      // Its checkouts keep their money and lines and lose the person: the
+      // name, phone, email, address lines and note (the zone stays, as the
+      // fee was charged for it).
+      await tx.checkout.updateMany({
+        where: { customerId },
+        data: ANONYMOUS_CHECKOUT,
+      });
+
+      // Read before they lose the person: their receipts, stage and refund
+      // messages (`online:<id>:`, C7-6) are forgotten below.
+      const onlineOrders = await tx.onlineOrder.findMany({
+        where: { customerId },
+        select: { id: true },
+      });
+
+      // Its web orders keep their money, lines and mode and lose the
+      // person, as its checkouts do; the bill's delivery note goes too.
+      await tx.onlineOrder.updateMany({
+        where: { customerId },
+        data: ANONYMOUS_ONLINE_ORDER,
+      });
+      await tx.order.updateMany({
+        where: { customerId, channel: OrderChannel.WEB, notes: { not: '' } },
+        data: { notes: '', version: { increment: 1 } },
+      });
+
+      // C8-5: what carries the account's email without being linked to it.
+      const unlinked =
+        current.email === null
+          ? { checkouts: [], onlineOrders: [], enquiries: [] }
+          : await this.forgetUnlinked(tx, current.email);
+
+      await tx.customerNotification.deleteMany({ where: { customerId } });
+
+      // Every message to the account's address, and every message about its
+      // bookings and codes (which reach earlier addresses too: a booking's
+      // email before an email change, the "email changed" notice to the old
+      // one): a message's recipient beside a booking id in its dedupe key
+      // would name the person an anonymised booking belonged to.
+      await this.outbound.forget(
+        tx,
+        {
+          to: current.email,
+          keys: codes.flatMap(({ id }) => [`otp:${id}`, `email-changed:${id}`]),
+          keyPrefixes: [
+            ...bookings.map(({ id }) => `reservation:${id}:`),
+            ...[...checkouts, ...unlinked.checkouts].map(
+              ({ id }) => `checkout:${id}:`,
+            ),
+            ...[...onlineOrders, ...unlinked.onlineOrders].map(
+              ({ id }) => `online:${id}:`,
+            ),
+            ...unlinked.enquiries.map(({ id }) => `enquiry:${id}`),
+          ],
+        },
+        ACCOUNT_DELETED_REASON,
+      );
+
+      await tx.otpCode.deleteMany({
+        where: { id: { in: codes.map(({ id }) => id) } },
+      });
+      await tx.idempotencyKey.deleteMany({
+        where: { scope: idempotencyScope.customer(customerId) },
+      });
+
+      // C8-5: a staff command's stored answer about these records (a
+      // Reception booking's create, an Online Orders edit) carries the
+      // guest's name, phone and email for up to 7 days. Losing one costs
+      // only the replay of a request about a record that no longer names
+      // anyone; a retry comes within seconds, not after a deletion.
+      const needles = [
+        ...(current.email === null ? [] : [current.email]),
+        ...bookings.map(({ id }) => id),
+        ...[...checkouts, ...unlinked.checkouts].flatMap(
+          ({ id, reference }) => [id, reference],
+        ),
+        ...[...onlineOrders, ...unlinked.onlineOrders].map(({ id }) => id),
+      ];
+
+      if (needles.length > 0) {
+        await tx.$executeRaw`
+          DELETE FROM "IdempotencyKey"
+          WHERE "responseBody" IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM unnest(${needles}::text[]) AS needle
+              WHERE strpos("responseBody"::text, needle) > 0
+            )`;
+      }
+
+      await this.tokens.revokeAllForSubject(
+        customerId,
+        SubjectType.CUSTOMER,
+        tx,
+      );
+
+      await tx.customer.update({
+        where: { id: customerId },
+        data: {
+          name: '',
+          email: null,
+          phone: null,
+          emailVerifiedAt: null,
+          phoneVerifiedAt: null,
+          addressZone: null,
+          addressStreet: null,
+          addressArea: null,
+          addressTown: null,
+          addressLandmark: null,
+          prefOrderUpdates: false,
+          prefBookingReminders: false,
+          prefOffers: false,
+          prefChannel: ContactChannel.EMAIL,
+          photo: null,
+          notificationsReadAt: null,
+          deletedAt: now,
+        },
+      });
+
+      return current.photo;
+    });
+
+    await this.photos.removeQuietly(photo);
+  }
+
+  /**
+   * What carries the account's email without being linked to it (card
+   * C8-5, Q36): enquiries it sent, and guest checkouts and web orders
+   * placed under it before it was verified, or without saving details
+   * (only a verified email links an order, `verifiedCustomerId`). The
+   * email is the one the customer proved with a code, so these are theirs
+   * to remove. Enquiries are deleted (nothing references one); the guest
+   * orders lose the person as linked ones do.
+   *
+   * A guest order still being prepared or on its way, and a checkout still
+   * waiting for or holding a payment, are left as they are and do not
+   * refuse the deletion: anyone can type an email at checkout, so one
+   * placed under it by someone else must not block a person's deletion,
+   * and its kitchen and rider still need its details. A phone is never
+   * matched: phones are not verified while there is no SMS (Q5).
+   */
+  private async forgetUnlinked(
+    tx: Prisma.TransactionClient,
+    email: string,
+  ): Promise<{
+    checkouts: { id: string; reference: string }[];
+    onlineOrders: { id: string }[];
+    enquiries: { id: string }[];
+  }> {
+    const enquiries = await tx.enquiry.findMany({
+      where: { email },
+      select: { id: true },
+    });
+
+    await tx.enquiry.deleteMany({
+      where: { id: { in: enquiries.map(({ id }) => id) } },
+    });
+
+    const onlineOrders = await tx.onlineOrder.findMany({
+      where: {
+        customerId: null,
+        contactEmail: email,
+        fulfilmentStatus: { notIn: ACTIVE_ONLINE_STATUSES },
+      },
+      select: { id: true, orderId: true, checkoutId: true },
+    });
+    const finished = onlineOrders.map(({ checkoutId }) => checkoutId);
+    const checkouts = await tx.checkout.findMany({
+      where: {
+        customerId: null,
+        contactEmail: email,
+        OR: [
+          { id: { in: finished } },
+          {
+            status: {
+              notIn: [
+                CheckoutStatus.PENDING,
+                CheckoutStatus.NEEDS_ATTENTION,
+                CheckoutStatus.PAID,
+              ],
+            },
+          },
+        ],
+      },
+      select: { id: true, reference: true },
+    });
+
+    await tx.checkout.updateMany({
+      where: { id: { in: checkouts.map(({ id }) => id) } },
+      data: ANONYMOUS_CHECKOUT,
+    });
+    await tx.onlineOrder.updateMany({
+      where: { id: { in: onlineOrders.map(({ id }) => id) } },
+      data: ANONYMOUS_ONLINE_ORDER,
+    });
+
+    const bills = onlineOrders.map(({ orderId }) => orderId);
+
+    await tx.order.updateMany({
+      where: { id: { in: bills }, notes: { not: '' } },
+      data: { notes: '', version: { increment: 1 } },
+    });
+    await tx.order.updateMany({
+      where: { id: { in: bills }, guest: { not: '' } },
+      data: { guest: DELETED_CUSTOMER_NAME, version: { increment: 1 } },
+    });
+    await tx.payment.updateMany({
+      where: { orderId: { in: bills }, sender: { not: '' } },
+      data: { sender: DELETED_CUSTOMER_NAME },
+    });
+
+    return { checkouts, onlineOrders, enquiries };
+  }
+}
