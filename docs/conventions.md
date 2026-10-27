@@ -4329,9 +4329,12 @@ digests instead: a push at midnight would wake people).
   `CNC_LOAD_` name are absent: the seeds and the load test are run by hand,
   never by the service. `check:env-names` therefore warns that
   `CNC_PAYSTACK_LOCAL_MODE` is read and never mounted, and that warning is
-  expected. It reads both workflows together, so a secret missing from only
-  one of them is not caught there: compare the two `--set-secrets` lists by
-  name when either changes.
+  expected. **`check:env-names` also fails any name the `cnc` job of one
+  deploy workflow mounts and the other does not (kind 6).** Its other
+  kinds judge the two workflows' mounts together, so a secret mounted on
+  staging alone would pass them, and the deployed boot rules do not refuse
+  a missing optional setting: production would boot without it. A new
+  secret therefore goes into both workflows in the same change.
 - **The actions in the production workflow are pinned to full commit SHAs,
   with the release named in the comment above each** (D17). The job holds
   `id-token: write`, so a moved major-version tag would run new code with the
