@@ -3334,7 +3334,12 @@ digests instead: a push at midnight would wake people).
   list's own** (a site path without `/cnc`; the worker adds the base);
   **staff links are `/#<page>`**, with the bell's `ref` beside it for the
   hand-off, never shown. One builder per link means a push and the list
-  item it mirrors cannot open different places.
+  item it mirrors cannot open different places. **A `ref` is sent only
+  where the page reads one: the KOT reference for Kitchen (PS2) and the
+  held checkout for Online Orders (PS3).** PS1 sends none: Online Orders
+  takes its hand-off as a checkout id, so an order id would open the held
+  payment dialog on the wrong record. The staff app also drops a `ref`
+  whose tag is not that page's kind.
 - **The allowed push-service hosts** (`PUSH_SERVICE_HOSTS`): exactly
   `fcm.googleapis.com` (Chrome, Edge, Android) and
   `updates.push.services.mozilla.com` (Firefox); by suffix on a label

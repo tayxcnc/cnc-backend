@@ -180,7 +180,8 @@ describe('Staff pushes (e2e)', () => {
         title: `New web order ${first.number}`,
         body: 'Pickup, paid online. Open Online Orders.',
         link: '/#online',
-        ref: first.id,
+        // No hand-off: Online Orders reads only a held checkout's id (PS3).
+        ref: null,
         urgent: true,
       });
       expect(received.options.urgency).toBe('high');
