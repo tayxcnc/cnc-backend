@@ -76,6 +76,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | The web order a payment writes, its numbers, docket, Bar sale and customer, the confirmation read's recheck, the checkouts and payments sweeps, the fake's `pay` | Paid web orders and the payment sweeps |
 | Staff Online Orders: stages, corrections, edits (Bar too), zone fees (Q27), cancel (Q8), the balance, card refunds (Q26), resolving unconfirmed refunds and held checkouts, adjustments, limits | Staff Online Orders |
 | The receipt (Q31), stage and refund emails and in-app items (`OnlineOrderMail`), `GET /me/orders`, the online bell items and `ref` | Order messages, my orders and the online bell items |
+| Web push: the `PushMessage` queue and its savepoint, the catalogue, the free-text (privacy) rule and branded inputs, D1 to D14, the push-service host allowlist, the staff window, the push sweep, `CNC_VAPID_*` | Web push (and Configuration for `CNC_VAPID_*`) |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
@@ -144,7 +145,9 @@ src/
   internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens
                      sweep (which also deletes ended rate-limit counts),
                      messages and reminders sweeps, the retention sweep
-                     (RetentionSweepService, Q36, C8-5)
+                     (RetentionSweepService, Q36, C8-5); the push sweep
+                     (PushSweepService, POST /internal/sweeps/push, C10) and
+                     the clock's staff pushes (staff-clock-alerts.ts)
   customers/         the customer email-code sign-in (/auth/code, verify, refresh,
                      sign-out), the account (/me: profile, email change, photo,
                      DELETE); CustomerService (the one creator of customers),
@@ -178,6 +181,14 @@ src/
   customer-notifications/  the customer's in-app list (GET /me/notifications,
                      POST /me/notifications/read), CustomerNotificationsService
                      (the one writer), the items' words
+  push/              web push (C10): PushQueueService (the PushMessage queue,
+                     written in the event's transaction inside
+                     withPushSavepoint), the catalogue (push-catalogue.ts)
+                     and its branded inputs (push-input-types.ts), the
+                     recipients (D8), the staff window (push-window.ts), the
+                     push-service hosts (push-hosts.ts), the one web-push
+                     importer (push-sender.ts), PushSubscriptionsService and
+                     each realm's routes (/me/push, /staff/push)
   enquiries/         POST /enquiries and /group-enquiries: honeypot, the stored
                      cap and the throttle, the email to CNC's inbox
   images/            PhotoStore: byte inspection, sharp resizing, the upload route
@@ -292,8 +303,15 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      a deleted person's details, and its read withholds
                      them; c8-acceptance: the Backend Brief §12 list,
                      one test per line, the sweep of every route for
-                     leaks),
+                     leaks; push-routes: each realm's key, subscribe
+                     and unsubscribe; push-queue: the queue, its
+                     outcomes, backoff and hold; push-customer-events
+                     and push-staff-events: every push through the
+                     real commands; push-sweep: the clock's pushes and
+                     the queue's sweep),
                      paystack-webhooks.ts, staff-bell.ts (readBell),
+                     push-devices.ts, recording-push-sender.ts,
+                     vapid-test-pair.ts, web-orders.ts,
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,

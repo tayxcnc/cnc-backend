@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import {
   CheckoutStatus,
   Prisma,
-  ReservationStatus,
   StaffRole,
   StockLocation,
   TaskStatus,
@@ -15,21 +14,23 @@ import {
   DEFAULT_PAGE_SIZE,
   type PaginationQuery,
 } from '../common/dto/pagination.query';
-import { watToday } from '../common/wat';
 import {
   activeOnlineOrderItem,
   checkoutAttentionItem,
   newWebDocketItem,
 } from '../online-orders/online-bell-items';
 import { ACTIVE_ONLINE_STATUSES } from '../online-orders/online-order-rules';
-import { UNSETTLED_ORDER_STATUSES } from '../orders/order-rules';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { AWAITING_APPROVAL } from '../purchasing/purchases.service';
 import type { StaffBellItem } from '../reception/free-table-reminder';
 import { TableSessionsService } from '../reception/table-sessions.service';
 import { pagesFor } from '../shell/staff-pages';
 import { OPEN_REQUEST_STATUSES } from '../stock/stock-request-rules';
-import { assignedTaskItem } from '../tasks/assigned-task-item';
+import {
+  assignedTaskItem,
+  REVIEW_TASK_PREFIX,
+} from '../tasks/assigned-task-item';
+import { expectedArrivalsWhere, unsettledBillsWhere } from './bell-filters';
 import { type BellSource, listedSource, pageOfSources } from './bell-sources';
 import {
   expectedArrivalItem,
@@ -289,10 +290,7 @@ export class StaffNotificationsService {
 
   /** Open or Payment bills of an earlier business date than today's. */
   private unsettledBills(now: Date): BellSource {
-    const where = {
-      status: { in: UNSETTLED_ORDER_STATUSES },
-      businessDate: { lt: watToday(now) },
-    };
+    const where = unsettledBillsWhere(now);
 
     return {
       page: 'pos',
@@ -411,10 +409,7 @@ export class StaffNotificationsService {
 
   /** Today's Confirmed bookings, in the order they were taken. */
   private expectedArrivals(now: Date): BellSource {
-    const where = {
-      businessDate: watToday(now),
-      status: ReservationStatus.CONFIRMED,
-    };
+    const where = expectedArrivalsWhere(now);
 
     return {
       page: 'reception',
@@ -436,7 +431,8 @@ export class StaffNotificationsService {
    * The reader's tasks not Done. `hideReviews` is the demo's rule for a
    * manager while the approvals alert is on: a task linked to a purchase
    * whose title starts "Review" is left out, since the Purchase Approval
-   * item already asks for that decision.
+   * item already asks for that decision (`isPurchaseReviewTask`, as a
+   * query).
    */
   private assignedTasks(
     actor: StaffPrincipal,
@@ -449,7 +445,7 @@ export class StaffNotificationsService {
         ? {
             NOT: {
               purchaseId: { not: null },
-              title: { startsWith: 'Review' },
+              title: { startsWith: REVIEW_TASK_PREFIX },
             },
           }
         : {}),

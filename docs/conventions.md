@@ -320,6 +320,31 @@ They are here so the first card that builds it starts from the rule.
   and payment problems go there); a live Paystack key (`sk_live_`, so
   production cannot take test-mode money); and a socket or `sslmode=require`
   database URL. Each is a mistake that deploys cleanly and fails later.
+- **Web push's key pair and contact, `CNC_VAPID_PUBLIC_KEY`,
+  `CNC_VAPID_PRIVATE_KEY` and `CNC_VAPID_SUBJECT`, are set all three or
+  none, and checked last at boot** (`readVapid`, `src/config/vapid.ts`;
+  `CncConfigService.vapid()`; from C10). Values are trimmed and a blank
+  one is unset. The rules key on `CNC_ENV`, never `NODE_ENV`:
+
+  | Situation | Result |
+  | :--- | :--- |
+  | `local`, none set | `vapid()` is null, with one warning ("CNC_VAPID_* not set: web push is skipped. In-app and email are unaffected."); pushes wait unsent |
+  | Some set, any environment | Refuses to boot |
+  | `staging` or `production`, none set | Refuses to boot, listed with `assertDeployedConfiguration`'s other problems |
+  | A malformed value, any environment | Refuses to boot: the public key must be URL-safe base64 of 65 bytes, the private key of 32 (`PLACEHOLDER_NOT_SET` fails both), neither padded with `=` (web-push's `setVapidDetails` refuses padding, so it would otherwise fail later, inside `PushModule`, in web-push's words), the subject `mailto:` with a domain or a valid `https:` URL, never naming localhost |
+  | A private key that does not derive the public key | Refuses to boot: "CNC_VAPID_PRIVATE_KEY does not match CNC_VAPID_PUBLIC_KEY" |
+
+  A subscription is bound to the key it was made with, so a wrong value
+  found at the first push costs every device a fresh "Turn On"; refusing
+  at boot finds it at the deploy. The derived-key check is CNC's addition
+  to TAY's rules: two secrets swapped between environments, or a public
+  key beside another pair's private key, pass every length check and then
+  fail with 403 at every push service while each device still says "On".
+  A deployed service without keys would look healthy and send nothing.
+  **Each environment generates its own pair, and never uses TAY's
+  unprefixed `VAPID_*`**: a leaked staging key cannot push to production
+  devices, and a TAY rotation cannot break CNC's (*Isolation from TAY*).
+  No message ever prints a value; the private key is a credential.
 - **Refusals report every problem in one error and never print a value**,
   not even an invalid `CNC_ENV`, because a secret mounted under the wrong name
   would otherwise land in the boot log. One failed deploy shows every problem,
@@ -972,11 +997,18 @@ They are here so the first card that builds it starts from the rule.
   refused uncounted and nobody can spend another customer's count. The
   photo upload is counted by the guard before the upload interceptor
   reads the file.
+- **A signed-in staff member's push subscription write is counted per
+  person, after `CncStaffGuard` (`StaffWriteThrottle(limit, ttl)`,
+  `signedInStaffTracker`; from C10)**, `CustomerWriteThrottle`'s staff
+  twin: every device in the venue shares one address, so a count per
+  address would let one tablet spend everyone's, and counting after the
+  guard means a request without a valid token is refused uncounted.
 - **The routes and their limits.** Windows are fifteen minutes unless
   said. "Stored caps" count the records themselves. Staff routes behind
   `CncStaffGuard` are not limited (a staff command needs a signed-in
   account, and a global guard would put every staff read under a
-  sign-in limit), except the two credential routes below.
+  sign-in limit), except the two credential routes and the push
+  subscription routes below.
 
   | Route | Caller | Limits | Why this number |
   | :--- | :--- | :--- | :--- |
@@ -994,6 +1026,8 @@ They are here so the first card that builds it starts from the rule.
   | `POST /me/photo`, `DELETE /me/photo` | customer | the customer 20 each (new) | decoding and resizing is the dearest thing a customer can ask for |
   | `DELETE /me` | customer | the customer 10 (new) | it succeeds once; this stops a refused one looping |
   | `POST /me/notifications/read` | customer | the customer 120 (new) | far above opening the list |
+  | `POST /me/push/subscriptions`, `DELETE /me/push/subscriptions` | customer | the customer 30 each (`PUSH_SUBSCRIPTION_LIMIT`, C10) | a page load syncs the device once, so 30 covers re-opening the app all day; more is a script probing endpoints |
+  | `POST /staff/push/subscriptions`, `DELETE /staff/push/subscriptions` | staff | the signed-in account 30 each (`STAFF_PUSH_SUBSCRIPTION_LIMIT`, C10) | as the customer's, counted per person because the venue's tablets share one address |
   | `PATCH /me/reservations/:id`, `POST …/cancel` | customer | the customer 30 each (new) | each emails and takes the table's lock |
   | `POST /ordering/quote` | anyone | the address 120 (new) | four times the checkouts one address may make |
   | `POST /checkouts` | anyone or customer | the address 30 | each is a Paystack call on CNC's account |
@@ -1256,10 +1290,21 @@ They are here so the first card that builds it starts from the rule.
 - **An open shift is never deleted, however old.** It is the state the
   person's next scan acts on (it closes it), and the partial unique index
   allows one per person; deleting it would change what a scan does.
+- **From C10 the same sweep deletes web push rows written more than 30
+  days ago, in any status, and push devices in either realm neither
+  subscribed again nor delivered to for 180 days**
+  (`PUSH_MESSAGE_RETENTION_DAYS`, `PUSH_SUBSCRIPTION_UNUSED_DAYS`;
+  `greatest("lastSeenAt", coalesce("lastSuccessAt","lastSeenAt"))` before
+  the cutoff). A push row is a delivery record, not a history: the in-app
+  list and the bell are the history, and a month answers "did that push
+  go?". 180 days is what the account panel's privacy note promises, and
+  browsers rotate a live subscription long before it, so one that quiet
+  belongs to a browser nobody uses. Nothing references either table.
 - **Batches of 500, at most 20 a table a run, each selecting ids and then
   deleting them with the cutoff repeated; idempotent; one sentence a run**
-  ("Sweep retention deleted N enquiry(ies) and M attendance record(s).",
-  plus "; more remain for the next run." at the cap). A run's request
+  ("Sweep retention deleted N enquiry(ies), M attendance record(s), P
+  push(es) and D push device(s).", plus "; more remain for the next run."
+  at the cap). A run's request
   stays short on a shared instance, a row written meanwhile can never be
   caught, and a second run the same day deletes nothing. Its Scheduler
   job (weekly) is in *Infrastructure*.
@@ -3107,6 +3152,275 @@ They are here so the first card that builds it starts from the rule.
   missed, a courtesy lost, while bookings, changes and the 24-hour rule
   are unaffected. A booking whose start has passed is never reminded late.
 
+## Web push *(from C10)*
+
+Built on the founder's instruction of 2026-10-27 ("let the things that
+require push notifications on all dashboards or roles have them"), which
+amends the plan's "Web push is not built at launch" (§9.1, §11). The bell
+and the in-app list reach only someone with the app open; a paid web order
+or an order ready for pickup has to reach a phone in a pocket. The code is
+`src/push/`, with the clock's pushes and the push sweep in `src/internal/`.
+
+**The decisions, each with its reason:**
+
+- **D1: a durable queue table, `PushMessage`, written in the event's own
+  transaction and isolated inside it.** The pure work (gate, render, clip,
+  tag, TTL, the topic) runs first inside a `try` that answers null; an
+  input may be passed as a builder so a brand constructor that throws costs
+  the push, not the event (`PushInput`). The database part runs inside
+  `SAVEPOINT cnc_push` (`withPushSavepoint`, constant SQL only): any error
+  rolls back to the savepoint, logs ids only and answers null. A committed
+  event always has its push row, and a push defect can never roll back the
+  caller: `createMany({ skipDuplicates })` alone covers only a duplicate,
+  and a foreign key, a CHECK, an over-long value or a failed read would
+  abort the whole transaction, PS1's being the Paystack settle.
+- **D2: text is rendered when the row is queued and stored on it, from
+  branded inputs only** (`push-input-types.ts`: ids, order, docket and PO
+  numbers, WAT date and time labels, names from staff-managed lists, plus
+  counts and enums). A retried or held push needs no event data. A plain
+  `string` input field, or one named `name`, `title`, `phone`, `email`,
+  `address`, `note` or `reference`, fails `npm run build`
+  (`PUSH_INPUTS_HAVE_NO_FREE_TEXT`), so the privacy rule below is
+  structural, not sample-tested. The build's assertion guards the real
+  catalogue; the spec's `@ts-expect-error` cases guard the machinery
+  behind it (`WithoutFreeText`), which could otherwise break so that the
+  assertion checks nothing. ts-jest only transpiles here
+  (`isolatedModules`) and the build leaves specs out, so those cases are
+  checked by CI's lint job, `npx tsc -p tsconfig.json --noEmit`, where an
+  unused `@ts-expect-error` is an error.
+- **D3: a row is queued only for an owner who holds at least one device**,
+  checked in the same savepoint. Most customers never subscribe, and a row
+  nobody can receive is only a write.
+- **D4: revocation ends a subscription; plain session expiry does not.**
+  `CncTokenService.revokeAllForSubject` calls `forgetPushSubject` through
+  the same client (`TokenWriter` widened), deleting the realm's
+  subscriptions and the owner's PENDING and FAILED rows. Sign-out on every
+  device, a role, email or status change, a password change or reset and
+  a reused refresh token all revoke already, so one place covers every
+  path. Expiry is left out on purpose, so the 24-hour reminder still
+  reaches a customer who has not opened the app for a week. **Binding a
+  device needs a live refresh token** (401 "Your session has ended. Sign
+  in again."), read `FOR SHARE` so a sign-out running at the same moment
+  either commits first or forgets the device after: an access token
+  outlives its revocation by up to 15 minutes and must not re-bind.
+- **D5: no client-side unbind before sign-out.** The browser keeps its
+  `PushSubscription` and the server drops the row. This removes TAY's
+  race between the unbind and the sign-out, and the gap where no token is
+  left to unbind with.
+- **D6: customer pushes are never held; a non-urgent staff push to someone
+  off duty, outside the staff window, is held to the window's opening**
+  (`retryAfter`, `holdUntil`, `push-window.ts`), and its expiry runs from
+  the release. The window is the Lagos day's `OpeningHoursDay` hours
+  widened by `STAFF_WINDOW_GRACE_MIN` (60) each side; a week with no open
+  day falls back to 07:00–22:00 WAT. D8 falls back to "all active holders"
+  exactly when nobody is clocked in, which is at night, and a 23:30 stock
+  request should not wake a storekeeper at home. Urgent events (PS1, PS2,
+  PS3) are never held: a paid web order or a held payment must reach
+  someone. Customer pushes come from staff actions during service or the
+  reminder of an in-hours booking, and TAY's fixed 05:00–23:00 window would
+  hold a 22:30 "ready for pickup".
+- **D7: no new customer preference.** Pushes follow `prefOrderUpdates` and
+  `prefBookingReminders` (the entry's `gate`), and the per-device control
+  is the opt-out. A second global switch would duplicate the device
+  control. D62 holds: the in-app list is never gated.
+- **D8: each staff event names its `audience`, and a role receives it only
+  when it is in the audience and `pagesFor(role)` opens the event's page**
+  (`roleReceives`, `staffPushEventsFor`). The role chain is: the role's
+  holders on duty, else every active holder, else every active Owner and
+  Manager (`staffRecipients`). On duty is an open shift (`timeOut` null)
+  begun within 16 hours (`ON_DUTY_WITHIN_MS`), so a shift left open by a
+  forgotten scan does not keep its owner "at work" for days. Page access
+  alone would give Waiters the unsettled bills, the Kitchen and the Bar
+  the stock alerts, and the Cashier the held payments. If the restaurant
+  scans attendance, people at home stay quiet; if it does not, the alert
+  still reaches someone. The actor is always excluded.
+- **D9: staging and production have separate VAPID pairs, and CNC never
+  uses TAY's** (*Configuration*). A leaked staging key cannot push to
+  production devices. `tayxcnc.com/cnc` serves staging until go-live, so
+  the same origin moves from the staging key to the production key then;
+  D12 handles that.
+- **D10: the public key is served on authenticated routes only**
+  (`GET /me/push/public-key`, `GET /staff/push/public-key`). The control is
+  shown only to signed-in people, and the staff client has no unauthenticated
+  request; no unauthenticated surface is added.
+- **D11: the recipient is checked again at send.** Staff must still be
+  active, in the event's audience and able to open its page; the customer
+  must not be deleted. Otherwise the row is `DROPPED` / `RECIPIENT_GONE`.
+  The same reason as A14's guard re-reading `Staff` on every request.
+- **D12: a key mismatch is detected, never retried.** At boot the private
+  key must derive the public key; a subscribe carries
+  `applicationServerKey` and is answered 409 when it is not the current key
+  ("This device's notifications were set up for a different key. Turn them
+  on again."), comparing the decoded bytes, not the text, so a browser
+  that pads the same key is not told to turn notifications on again; the client compares keys and re-subscribes; at send, 401 or
+  403 from a push service is `KEY_MISMATCH` and deletes that device, as a
+  404 or 410 (`GONE`) does. Otherwise the staging-to-production move, a
+  rotation or swapped secrets would spend three attempts per device per
+  push forever while the control said "On".
+- **D13: endpoints are limited to known push-service hosts**
+  (`PUSH_SERVICE_HOSTS`, `pushEndpointProblem`, `push-hosts.ts`), checked
+  at subscribe and again by `WebPushSender` before every send. Otherwise
+  the service would POST to any address a signed-in person stores: internal
+  and metadata addresses, a blind probe read through the push's outcome,
+  and a VAPID token signed for any audience. The second check means a row
+  written before a host left the list is never contacted.
+- **D14: pushes are sent inline only inside an HTTP request**, after its
+  commit and awaited, under one shared `PUSH_DISPATCH_BUDGET_MS` (3 s)
+  deadline per request (staff and customer commands, the Paystack webhook,
+  the confirmation read). The payments and checkouts sweeps collect their
+  topics and dispatch once at the end under one 3 s deadline. The reminders
+  sweep and PS8 only queue. The push sweep delivers everything else. Cloud
+  Run throttles the CPU after the response, so nothing is fire-and-forget,
+  and one deadline per request or run stops it growing with a push
+  service's latency.
+
+**The events** (`PUSH_CATALOGUE`, `push-catalogue.ts`, the one place each
+push's words, audience, urgency and lifetime are written). `about` is the
+topic and the middle of `dedupeKey` (`<event>:<about>:<c|s>:<ownerId>`):
+the existing mail or list key where one exists, versioned, so a legitimate
+repeat (a second staff change, a purchase back to Pending) pushes again
+while a retried command does not.
+
+| Code | Event | Raised by | Who | Switch | Urgent | Lifetime |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| PC1–PC3 | `order.preparing`, `order.on_the_way`, `order.ready` | a web order's stage change (`OnlineOrderMail.statusChanged`) | the order's customer | `prefOrderUpdates` | PC2, PC3 | 2 h, 2 h, 4 h |
+| PC4 | `order.cancelled` | the same, Cancelled | the customer | none, as its email | no | 24 h |
+| PC5 | `order.refunded` | `OnlineOrderMail.refunded` | the customer | none | no | 72 h |
+| PC6 | `reservation.booked_for_you` | a Reception booking for a customer | the customer | none | no | until the start, at most 24 h |
+| PC7 | `reservation.changed_by_staff` | a staff change | the customer | none | no | until the start, at most 24 h |
+| PC8 | `reservation.cancelled_by_staff` | a staff cancel | the customer | none | no | 24 h |
+| PC9 | `reservation.reminder` | the reminders sweep, queue only | the customer | `prefBookingReminders` | no | until the start |
+| PS1 | `online_order.received` | a paid web order's placement | Cashier chain | none | yes | 30 min |
+| PS2 | `docket.web` | a web docket with items: placement, edit, zone | Kitchen chain | none | yes | 30 min |
+| PS3 | `checkout.needs_attention` | a held checkout | managers | none | yes | 24 h |
+| PS5 | `purchase.awaiting_approval` | a purchase created, or back to Pending | managers | `alertApprovals` | no | 72 h |
+| PS6 | `waste.awaiting_approval` | a waste entry created, or back to Pending | managers | `alertApprovals` | no | 72 h |
+| PS7 | `stock_request.new` | a stock request | Storekeeper chain | none | no | 8 h |
+| PS8 | `stock.low` | a movement crossing below the minimum, queue only, once per item, location and Lagos day | Storekeeper chain | `alertLowStock` | no | 12 h |
+| PS9 | `task.assigned` | a task created or reassigned, an automatic task (not the purchase review task while `alertApprovals` is on: PS5 covers it) | the assignee | none | no | 72 h |
+| PS10 | `reservation.today` | a booking made or moved onto today, any channel | Reception chain | `alertArrivals` | no | until the booking |
+| PS11 | `arrivals.digest` | the push sweep, 09:00–10:00 WAT, none at zero | every active Reception, else managers | `alertArrivals` | no | 12 h |
+| PS12 | `table.still_occupied` | the push sweep, the Free Table Reminder's seatings, once per seating | Reception chain | none (the bell has none) | no | 1 h |
+| PS13 | `orders.unsettled` | the push sweep, 09:00–10:00 WAT: bills left open from a previous day | managers and every active Cashier | `alertUnsettled` | no | 12 h |
+
+A "chain" is D8's over that role. Lifetimes are clamped to between 60
+seconds and 28 days (`MAX_PUSH_TTL_S`, the push services' cap). Waiter and
+Bartender receive nothing, and the staff route's `events` list says so,
+so the control tells them rather than offering a switch that never rings.
+**Not pushed, by decision:** the welcome and the receipt (the customer is on
+screen); Delivered, Collected and Received (the customer is part of it); a
+booking the customer made, changed or cancelled themselves; a web order's
+edit or zone change to the customer; a no-show (it would read as an
+accusation); a held checkout to the customer (no order yet; CNC is
+emailed and PS3 covers staff); a refused refund (every refusal happens
+inside a staff request, and CNC handles no refund webhook; add it back if
+one is ever handled); later online stage labels, task status changes and
+low stock from an item's create or minimum to staff (the person made the
+change); the cancel docket (it does not ring the bell either); per-bill
+unsettled and per-booking arrival items at the Lagos midnight (the 09:00
+digests instead: a push at midnight would wake people).
+
+- **Push text never carries a phone number, an email address, a person's
+  name, free text anyone typed, a payment reference, a money figure or an
+  address.** It is shown on a lock screen to whoever holds the device.
+  Allowed: order, KOT and PO numbers, table, room and stock-item names,
+  dates, times and counts. PS9's words are constant, because a task's
+  title is free text naming vendors and assets. Title at most 60
+  characters and body 160 (`TITLE_MAX`, `BODY_MAX`), clipped with `…`;
+  the columns are those widths. `push-catalogue.spec.ts` searches every
+  event's text for `@`, `+234`, Nigerian mobile numbers, `₦`, `NGN` and
+  `kobo`.
+- **Customer links are `orderLink` or `RESERVATIONS_LINK`, the in-app
+  list's own** (a site path without `/cnc`; the worker adds the base);
+  **staff links are `/#<page>`**, with the bell's `ref` beside it for the
+  hand-off, never shown. One builder per link means a push and the list
+  item it mirrors cannot open different places. **A `ref` is sent only
+  where the page reads one: the KOT reference for Kitchen (PS2) and the
+  held checkout for Online Orders (PS3).** PS1 sends none: Online Orders
+  takes its hand-off as a checkout id, so an order id would open the held
+  payment dialog on the wrong record. The staff app also drops a `ref`
+  whose tag is not that page's kind.
+- **The allowed push-service hosts** (`PUSH_SERVICE_HOSTS`): exactly
+  `fcm.googleapis.com` (Chrome, Edge, Android) and
+  `updates.push.services.mozilla.com` (Firefox); by suffix on a label
+  boundary `.push.apple.com` (Safari; Apple asks allowlists to accept
+  `*.push.apple.com`) and `.notify.windows.com` (Windows'
+  `wns2-…` hosts). An endpoint must also be `https:`, on the default port,
+  with no user name or password, and not an IP literal or `localhost`. A
+  browser on a host missing here gets a visible 400 at subscribe ("This
+  browser's notification service isn't supported."), never silence; each
+  host is confirmed on staging with its browser. Adding a host is a code
+  change with a test in `push-hosts.spec.ts`.
+
+**The routes and the queue:**
+
+- **`GET /me/push/public-key` and `GET /staff/push/public-key` answer the
+  key (`no-store`), the staff one with the reader's `events` from the role
+  on the account now, not the token; `POST` and `DELETE …/subscriptions`
+  answer 204.** Every staff role may call them. Where push is not
+  configured each answers 404 "Notifications are not set up on this
+  service yet.", a subscribe included, so a client shows "unavailable"
+  rather than storing a device nothing can reach. **No answer ever carries
+  an endpoint, a key, `applicationServerKey`, a `dedupeKey` or a status**:
+  an endpoint names a person's device.
+- **A subscribe checks the keys' lengths (65 and 16 bytes) and the host
+  (400), the server key (409, D12) and the live session (401, D4), then
+  binds by endpoint: a new one is stored, the caller's own refreshed, and
+  someone else's moved only when both keys match; otherwise nothing is
+  written and the answer is still 204.** A genuinely shared device keeps
+  its keys, and a stranger who learned an endpoint can neither take it
+  nor learn whose it is. At most 10 devices a person
+  (`MAX_PUSH_DEVICES_PER_OWNER`); the least recently seen go. A delete
+  removes only the caller's own row. The limits are in *Rate limits*.
+- **Delivery claims a row before sending it, by a conditional update of
+  `attempts` that also leases it** (`retryAfter = now + PUSH_LEASE_MS`,
+  60 s; a module-load check keeps the 30 s sweep budget below it), so a
+  request and a sweep never both send it and a send never outlives its
+  lease (each send's timeout is the deadline's remainder). Every device
+  the person holds is tried at once: any delivered settles `SENT`; a
+  retryable failure is `FAILED` with a wait of 1 then 5 minutes
+  (`PUSH_RETRY_BACKOFF_MS`, through the backoff helper the mail queue
+  shares), and `DROPPED` / `GAVE_UP` after the third attempt; devices
+  `GONE` or `KEY_MISMATCH` are deleted, and a push left with none is
+  `NO_DEVICE`; a 400 or 413, or a payload over 3 KB, is `REJECTED`. A push
+  is short-lived news, so the waits are short. **While push is not
+  configured a row waits `PENDING` and spends no attempt**, the mail
+  queue's rule. Logs carry ids, counts, statuses and drop reasons only,
+  never an endpoint, a key or a push's text.
+- **Only `src/push/push-sender.ts` imports `web-push`, pinned at 3.6.7**
+  (`@types/web-push` 3.6.4). 3.6.7 is the last CommonJS release; the next
+  major is ESM-only, which this `nodenext` build and Jest cannot load. One
+  importer keeps the library behind `PushSender`, which every e2e app
+  replaces with `RecordingPushSender` (`test/recording-push-sender.ts`), so
+  no suite reaches a push service.
+- **`POST /internal/sweeps/push` (`PushSweepService`, every five minutes)
+  runs three phases, each in its own try: the stale tables (PS12), the
+  daily digests (PS11, PS13, only between 09:00 and 10:00 WAT), then the
+  queue's sweep** (expire, then send what is due, oldest first, 100 a run,
+  30 s at most). A failed phase is named in `failed` with its counts null,
+  and the others still run, so a broken digest never stops delivery. One
+  log line: `Push sweep: queued=<tables>/<digests> delivered=… held=…
+  dropped=… failed=[…]`. Runs overlap the digests' hour and the dedupe
+  keys make a repeat do nothing; a run missed for the whole hour sends no
+  digest that day, and the bell still shows the items. Nothing depends on
+  the sweep having run (*Auth*). Its Scheduler job is in *Infrastructure*.
+- **An account deletion deletes the customer's devices and every push row
+  to them, sent or not, explicitly** (`CustomerDeletionService`, beside the
+  in-app list). The revocation would forget the devices and the waiting
+  rows anyway; the deletion says so itself (Q36), and takes the sent rows
+  too.
+  Old rows and unused devices go with the retention sweep (*Data retention
+  and account deletion*).
+- **Tests:** `push-routes`, `push-queue`, `push-customer-events`,
+  `push-staff-events` and `push-sweep` e2e suites, plus additions to
+  `staff-people`, `staff-auth`, `customer-auth`, `account-deletion`,
+  `retention` and `schema` (`PushMessage_one_recipient_check`: exactly one
+  of `customerId` and `staffId`). Unit specs cover the catalogue (every
+  role against every staff event, the privacy search), the sender's
+  outcomes, the hosts and the window's edges. A test key pair comes from
+  `test/vapid-test-pair.ts`, a real derived pair, which the boot check
+  needs.
+
 ## Enquiries *(from C6)*
 
 - **`POST /enquiries` (the Contact page) and `POST /group-enquiries` (the
@@ -3940,6 +4254,7 @@ They are here so the first card that builds it starts from the rule.
   | `cnc-staging-sweep-checkouts` | `*/10 * * * *` | `checkouts` | C7-5 | plan §5.5; a checkout lives 30 minutes, so an abandoned one is expired, or a paid one whose webhook was lost gets its order, within 40 |
   | `cnc-staging-sweep-payments` | `*/15 * * * *` | `payments` | C7-5 | plan §5.5; a delivery is handled within seconds, so one still unprocessed after 5 minutes failed, and 15 bounds how long a paid order can wait on a verify outage |
   | `cnc-staging-sweep-retention` | `30 3 * * 0` | `retention` | C8-5 (exists, 2026-10-25, on the founder's go-ahead) | Q36: periods counted in months and years; weekly, by the founder's choice (2026-10-25), so a record goes at most a week after its date, well inside "after 12 months" and "after 2 years"; one run's cap (10,000 rows a table) is years of CNC's enquiries and shifts; Sunday 03:30, after the tokens sweep and far from service, so its deletes never meet the till's pool |
+  | `cnc-staging-sweep-push` | `*/5 * * * *` | `push` | C10 | a held push goes within 5 minutes of the staff window opening, a failed one soon after its 1- or 5-minute wait, and PS8 and PC9 (queued only) within 5 minutes; the 09:00–10:00 digests get twelve chances; the messages job already wakes the service this often |
 
   The two C7 jobs are created after the C7 deploy is live, as the C6 ones
   were. The retention job was created only on the founder's go-ahead, after
@@ -3950,6 +4265,13 @@ They are here so the first card that builds it starts from the rule.
   `components/account/panels.tsx`, Q36) tells customers enquiries are
   deleted from CNC's records after 12 months, and only this job deletes
   them (C8 review).
+
+  The push job is created after the C10 deploy is live, as the others
+  were, then forced once; its log line is `Push sweep: … failed=[]`.
+  Staging's deploy refuses to start until the three `CNC_VAPID_*`
+  secrets exist and the runtime account is granted each (*Configuration*),
+  so they are created before the merge that mounts them. In production it
+  is `cnc-prod-sweep-push`, against `api-cnc.tayxcnc.com`.
 
   Create the two C6 jobs **after the C6 deploy is live** (the rule
   above), each with `gcloud scheduler jobs create http <job> --location

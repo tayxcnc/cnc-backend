@@ -23,6 +23,21 @@ export class RetentionSweepResponse implements RetentionSweepResult {
 
   @ApiProperty({
     description:
+      'Web push rows written more than 30 days ago, in any status, deleted.',
+    example: 0,
+  })
+  pushMessages!: number;
+
+  @ApiProperty({
+    description:
+      'Push devices, customers’ and staff’s, neither subscribed again nor ' +
+      'delivered to for 180 days, deleted.',
+    example: 0,
+  })
+  pushSubscriptions!: number;
+
+  @ApiProperty({
+    description:
       'True when the run stopped at its cap with rows still past their ' +
       'period; the next run continues.',
     example: false,

@@ -5,6 +5,7 @@ import {
   type TaskType,
 } from '../../generated/cnc-client';
 import { drawNumber } from '../prisma/sequences';
+import { queueTaskAssigned, type TaskPushes } from './task-push';
 
 /**
  * The tasks a command raises and closes by itself (plan §7.7, §7.9): the
@@ -85,12 +86,14 @@ export interface AutomaticTask {
 
 /**
  * The demo's `autoTask`: an Open task, marked automatic, with its first
- * history entry (Open, automatic, by the person whose command raised it).
- * Returns the task's number (`T-000001`).
+ * history entry (Open, automatic, by the person whose command raised it),
+ * and its assignee's web push (C10, PS9, `queueTaskAssigned`) added to
+ * `pushes`. Returns the task's number (`T-000001`).
  */
 export async function raiseAutomaticTask(
   tx: Tx,
   task: AutomaticTask,
+  pushes: TaskPushes,
 ): Promise<string> {
   const number = await drawNumber(tx, 'task');
   const created = await tx.task.create({
@@ -105,7 +108,14 @@ export async function raiseAutomaticTask(
       maintenanceId: task.maintenanceId ?? null,
       automatic: true,
     },
-    select: { id: true },
+    select: {
+      id: true,
+      version: true,
+      title: true,
+      status: true,
+      assignedToId: true,
+      purchaseId: true,
+    },
   });
 
   await tx.taskHistory.create({
@@ -116,6 +126,8 @@ export async function raiseAutomaticTask(
       automatic: true,
     },
   });
+
+  await queueTaskAssigned(pushes, tx, created, task.raisedById);
 
   return number;
 }

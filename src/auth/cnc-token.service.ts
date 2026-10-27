@@ -3,6 +3,7 @@ import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { type Prisma, SubjectType } from '../../generated/cnc-client';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { forgetPushSubject, type PushForgetWriter } from '../push/push-forget';
 
 /** Access token lifetime (A14). Short, because it cannot be revoked once issued. */
 export const ACCESS_TOKEN_TTL = '15m';
@@ -55,8 +56,12 @@ export interface CncTokenPair {
   refreshToken: string;
 }
 
-/** A Prisma client or an interactive transaction's client. */
-type TokenWriter = Pick<Prisma.TransactionClient, 'refreshToken'>;
+/**
+ * A Prisma client or an interactive transaction's client: the refresh
+ * tokens, and from C10 what `forgetPushSubject` deletes beside them.
+ */
+type TokenWriter = Pick<Prisma.TransactionClient, 'refreshToken'> &
+  PushForgetWriter;
 
 /**
  * Issues, rotates and revokes CNC tokens, copied from TAY's
@@ -220,6 +225,13 @@ export class CncTokenService {
    * Access tokens already issued stay valid until they expire, at most
    * fifteen minutes, but the staff guard re-reads the account on every
    * request, so a deactivated account is refused at once anyway.
+   *
+   * From C10 it also forgets the subject's push devices and the pushes
+   * still waiting for them, through the same client (`forgetPushSubject`,
+   * D4): every path that ends a person's sessions passes here, so one
+   * place stops pushes to a device nobody is signed in on. A device binds
+   * again only with a live refresh token, which an access token still
+   * valid after this cannot supply.
    */
   async revokeAllForSubject(
     subjectId: string,
@@ -230,6 +242,8 @@ export class CncTokenService {
       where: { subjectId, subjectType, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+
+    await forgetPushSubject(client, subjectType, subjectId);
 
     return count;
   }

@@ -4,6 +4,7 @@ import { AuditModule } from '../audit/audit.module';
 import { CncAuthModule } from '../auth/cnc-auth.module';
 import { MoneyControlModule } from '../money-control/money-control.module';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { PushModule } from '../push/push.module';
 import { StockModule } from '../stock/stock.module';
 import { wasteRefReader } from './waste-audit-reader';
 import { WasteController } from './waste.controller';
@@ -17,10 +18,16 @@ import { WasteService } from './waste.service';
  * money rules come from `MoneyControlService`, the valuation from
  * `stockValueKobo`. Registers the `AuditRefAccess` reader for waste numbers
  * (`W-`), which plan §4.8 lets each logging role read for its own
- * location.
+ * location. `PushModule` (C10) pushes the managers' approvals.
  */
 @Module({
-  imports: [CncAuthModule, AuditModule, MoneyControlModule, StockModule],
+  imports: [
+    CncAuthModule,
+    AuditModule,
+    MoneyControlModule,
+    StockModule,
+    PushModule,
+  ],
   controllers: [WasteController],
   providers: [WasteService],
   // The approvals read (C5-8) lists entries and values them through it.

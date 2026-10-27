@@ -1,3 +1,4 @@
+import { testVapidEnv } from '../../test/vapid-test-pair';
 import { CNC_ENVIRONMENTS, CncConfigService } from './cnc.config';
 
 /**
@@ -22,6 +23,7 @@ const PRODUCTION: Record<string, string> = {
   CNC_PAYSTACK_SECRET_KEY: 'sk_live_not_a_real_key_0000000000',
   CNC_DB_URL: 'postgresql://u:p@host:5432/db?sslmode=require',
   CNC_SWEEP_TOKEN: 'b'.repeat(64),
+  ...testVapidEnv(),
 };
 
 /**
@@ -174,7 +176,34 @@ describe('deployed rules (staging and production)', () => {
     CNC_JWT_SECRET: SECRET,
     CNC_SWEEP_TOKEN: 'b'.repeat(64),
     CNC_CORS_ORIGINS: 'https://cnc-staging.tayxcnc.com',
+    ...testVapidEnv(),
   };
+
+  const WITHOUT_VAPID = {
+    CNC_VAPID_PUBLIC_KEY: undefined,
+    CNC_VAPID_PRIVATE_KEY: undefined,
+    CNC_VAPID_SUBJECT: undefined,
+  };
+
+  it('refuses staging and production without the VAPID trio (C10)', () => {
+    for (const env of [STAGING, PRODUCTION]) {
+      environment(env, WITHOUT_VAPID);
+
+      expect(refusal()).toMatch(
+        /CNC_VAPID_PUBLIC_KEY, CNC_VAPID_PRIVATE_KEY and CNC_VAPID_SUBJECT are not set/,
+      );
+    }
+  });
+
+  it('lists the missing VAPID trio with the other deployed problems, in one error', () => {
+    environment(STAGING, { ...WITHOUT_VAPID, CNC_SWEEP_TOKEN: undefined });
+
+    const message = refusal();
+
+    expect(message).toMatch(/2 configuration problem\(s\)/);
+    expect(message).toContain('CNC_SWEEP_TOKEN is not set');
+    expect(message).toContain('CNC_VAPID_SUBJECT are not set');
+  });
 
   it('boots on staging with the sweep token and an origin', () => {
     environment(STAGING);
@@ -502,6 +531,7 @@ describe('secureCookies (A16)', () => {
     CNC_JWT_SECRET: SECRET,
     CNC_SWEEP_TOKEN: 'b'.repeat(64),
     CNC_CORS_ORIGINS: 'https://cnc-staging.tayxcnc.com',
+    ...testVapidEnv(),
   };
 
   // Staging is a built container: NODE_ENV=production, CNC_ENV=staging. A

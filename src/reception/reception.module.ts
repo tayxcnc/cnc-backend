@@ -4,6 +4,7 @@ import { CncAuthModule } from '../auth/cnc-auth.module';
 import { ClientAddressThrottlerGuard } from '../common/throttler/client-address-throttler.guard';
 import { CustomerNotificationsModule } from '../customer-notifications/customer-notifications.module';
 import { MailModule } from '../mail/mail.module';
+import { PushModule } from '../push/push.module';
 import {
   CustomerReservationsController,
   PublicReservationsController,
@@ -30,7 +31,8 @@ import { FloorController, TablesController } from './tables.controller';
  * emails go through `MailModule`'s queue and the in-app items through
  * `CustomerNotificationsModule`, both written by `ReservationMail`. The
  * reminders (Q32, C6-8) are `ReservationRemindersService`, exported for
- * the sweep route. `TableSessionsService` is exported for the staff bell.
+ * the sweep route. `TableSessionsService` is exported for the staff bell
+ * and the push sweep. `PushModule` (C10) queues the bookings' pushes.
  *
  * No `AuditRefAccess` reader is registered for booking numbers (`RSV-`)
  * or table refs (`D-B1`): plan §4.8 lets a non-manager read the history of
@@ -44,6 +46,7 @@ import { FloorController, TablesController } from './tables.controller';
     AuditModule,
     MailModule,
     CustomerNotificationsModule,
+    PushModule,
   ],
   controllers: [
     ReservationsController,

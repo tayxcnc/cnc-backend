@@ -82,6 +82,16 @@ jobs:
       - name: Lint
         run: npm run lint:ci
 
+      # Nothing else type-checks the specs. ts-jest only transpiles here
+      # (`isolatedModules` in tsconfig.json), and the build's
+      # tsconfig.build.json leaves out every spec, test/, prisma/ and
+      # scripts/. So a type error there, or an unused `@ts-expect-error` (the
+      # web push free-text cases in push-catalogue.spec.ts, conventions D2),
+      # would otherwise pass every job. `--incremental false`: nothing is
+      # emitted, so no build-info file is wanted either. Needs no database.
+      - name: Type-check sources and specs
+        run: npx tsc -p tsconfig.json --noEmit --incremental false
+
       # Every variable a deploy mounts must be one the service reads, under the
       # name it reads: a wrong name is accepted by Secret Manager and Cloud Run
       # and fails silently in front of someone. It also fails on any

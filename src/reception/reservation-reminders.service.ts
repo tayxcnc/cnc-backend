@@ -130,7 +130,9 @@ export class ReservationRemindersService {
       return mailKey === null ? ('in-app' as const) : ('emailed' as const);
     });
 
-    await this.mail.dispatch(mailKey);
+    // The email now; the reminder's push (C10, PC9) only queued, for the
+    // push sweep (D14): a sweep run never waits on push services.
+    await this.mail.dispatch(mailKey, { push: false });
 
     return outcome;
   }
