@@ -4286,6 +4286,82 @@ digests instead: a push at midnight would wake people).
 - **Production provisioning runs from Google Cloud Shell, not a development
   machine.** Production credentials never sit on a machine where an agent has
   a shell.
+- **Production deploys only from a `v*` tag pushed by the founder's account,
+  on its first run attempt** (`.github/workflows/deploy-production.yml`, go-live
+  plan D14, D15). The job carries `if: github.triggering_actor == 'tayxcnc' &&
+  github.run_attempt == '1'`, and the production WIF provider (pool
+  `github-cnc-prod`, provider `cnc-backend-tags`) accepts only this
+  repository's id, a `refs/tags/v…` ref, a `push` event, actor `312678855`
+  and run attempt 1. GitHub tag rulesets are unavailable on this plan, and a
+  re-run keeps the original actor, so without the attempt rule anyone's
+  "Re-run" would pass the actor check. **Never re-run a production deploy;
+  a fix is always a new tag.** The image tag is the commit SHA, as on
+  staging.
+- **The production deploy refuses a tagged commit that is not on `main`
+  (`git merge-base --is-ancestor "$GITHUB_SHA" origin/main`), before the
+  auth step.** The job guard and WIF check who pushed the tag and the
+  attempt, not what the tag points at, so a `v*` tag on a feature branch or
+  an unreviewed local commit would otherwise deploy code that never went
+  through a PR or CI. Checking before auth means a refused tag never
+  obtains credentials. A release is therefore tagged on `main` after the
+  `develop` to `main` merge, never on `develop`.
+- **The production deploy creates the revision with `--no-traffic --tag rc`,
+  checks `/api/v1/health/ready` on the `rc` address, then moves all traffic
+  to the latest revision and checks that it is the one serving** (D8). A
+  bad revision then never serves anyone; and after a rollback has pinned
+  traffic to an old revision, a plain deploy would get 0% while its
+  readiness check passed against the old one. The move to latest is also
+  what un-pins a rollback.
+- **An API rollback is `gcloud run services update-traffic "$SERVICE"
+  --region "$REGION" --to-revisions=PREV=100 --remove-tags=rc`, never a
+  re-run or a redeploy of an old tag**, followed by a fixed `v1.0.x` tag
+  (D15). It is instant and needs no workflow. **The `--remove-tags=rc` is
+  not optional:** a tagged revision answers at its tag address
+  (`https://rc---…run.app`) whatever its traffic share, and the service is
+  public, so without it the rolled-back revision, holding the production
+  database and the live Paystack key, stays callable until the next deploy.
+  That deploy's `--tag rc` puts the tag back. A rollback is not safe after
+  a release whose migration breaks the old code, so every release record
+  states "rollback-safe: yes/no".
+- **Production mounts every secret at a fixed version (`NAME:1`), never
+  `:latest`** (D9). Cloud Run reads a `:latest` secret at each instance start,
+  not once per revision, and with min 0 instances start all the time: a wrong
+  value added by mistake would break the service at the next cold start, and
+  a traffic rollback would not undo it. Pinned, a rollback brings back the
+  old values too. A changed value is a new secret version, a one-line change
+  to the workflow and a new tag. Staging keeps `:latest`, where a value is
+  meant to change without a release.
+- **Production mounts the same 13 `CNC_` secrets as staging, and nothing
+  else** (D22). `CNC_PAYSTACK_LOCAL_MODE` (a laptop-only setting the deployed
+  boot rules refuse), every `TAY_` name and every `SEED_`, `CNC_SEED_` and
+  `CNC_LOAD_` name are absent: the seeds and the load test are run by hand,
+  never by the service. `check:env-names` therefore warns that
+  `CNC_PAYSTACK_LOCAL_MODE` is read and never mounted, and that warning is
+  expected. **`check:env-names` also fails any name the `cnc` job of one
+  deploy workflow mounts and the other does not (kind 6).** Its other
+  kinds judge the two workflows' mounts together, so a secret mounted on
+  staging alone would pass them, and the deployed boot rules do not refuse
+  a missing optional setting: production would boot without it. A new
+  secret therefore goes into both workflows in the same change.
+- **The actions in the production workflow are pinned to full commit SHAs,
+  with the release named in the comment above each** (D17). The job holds
+  `id-token: write`, so a moved major-version tag would run new code with the
+  right to deploy production. A bump is a deliberate change: look the release
+  up (`gh api repos/<owner>/<action>/commits/<tag> --jq .sha`) and change the
+  SHA and its comment together.
+- **Production runs `--max-instances 3` against staging's 2** (D6). With
+  CNC's pool at `max: 3` that is 9 connections, and TAY's 3 instances at 5
+  are 15, so both together stay well inside the production instance's
+  limit of about 100. A change to either pool or either cap is checked
+  against that budget first. **The rest of D7's shape is stated in the
+  command too: `--concurrency 80 --cpu 1 --memory 512Mi --timeout 300
+  --cpu-boost --cpu-throttling`.** `gcloud run deploy` keeps any setting it
+  is not given, so a flag left out would inherit whatever the G6 placeholder
+  was created with. CPU stays throttled (request-based) because the
+  webhook's five-second inline wait (*Online checkout and Paystack*) is
+  built for it, and
+  always-allocated CPU is a cost decision; the timeout stays above the
+  Scheduler's 180-second deadline.
 
 ### Never touched from CNC work
 

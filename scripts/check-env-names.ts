@@ -61,10 +61,17 @@ import * as ts from 'typescript';
  * 5. A `process.env` read whose name cannot be known from the source (a
  *    computed key, or the object passed or spread whole) outside the config:
  *    a warning, listed so a reviewer can look.
+ * 6. A name mounted by the `cnc` job of one deploy workflow and not by the
+ *    other, once both exist: **fails**. Production mounts exactly staging's
+ *    names (go-live plan D22), at pinned versions (D9). Kinds 1 and 2 judge
+ *    the two workflows' mounts together, so a name mounted on staging alone
+ *    passes them; and the deployed boot rules refuse a missing required
+ *    setting but not an optional one, so production would boot without it
+ *    and the feature would fail later, in front of someone.
  *
  * A job that is switched off (`if: false`) mounts nothing, so its kind-1
- * names are listed as a warning until it is switched on. Kinds 3 and 4 still
- * fail there: a wrong name is wrong before the job runs.
+ * names are listed as a warning until it is switched on. Kinds 3, 4 and 6
+ * still fail there: a wrong or missing name is wrong before the job runs.
  */
 
 export const OWN_PREFIX = 'CNC_';
@@ -416,11 +423,44 @@ export function mountsInScript(text: string, path: string): Mount[] {
   return text.split(/\r?\n/).flatMap((line) => mountsInLine(line, path, false));
 }
 
+/** The names one deploy workflow's service jobs mount. */
+export interface DeployMounts {
+  path: string;
+  names: string[];
+}
+
+/**
+ * Every name mounted by some deploy workflows and not by all of them, with
+ * where it is and is not mounted. Empty while fewer than two exist.
+ */
+export function mountDrift(deploys: DeployMounts[]): string[] {
+  if (deploys.length < 2) return [];
+
+  const every = new Set(deploys.flatMap((deploy) => deploy.names));
+  const drift: string[] = [];
+
+  for (const name of [...every].sort()) {
+    const by = deploys.filter((deploy) => deploy.names.includes(name));
+
+    if (by.length === deploys.length) continue;
+
+    const notBy = deploys.filter((deploy) => !by.includes(deploy));
+
+    drift.push(
+      `${name}  (mounted by ${by.map((deploy) => deploy.path).join(', ')}; not by ${notBy.map((deploy) => deploy.path).join(', ')})`,
+    );
+  }
+
+  return drift;
+}
+
 export interface CheckInput {
   configPath: string;
   /** Null when the config file does not exist. */
   config: ConfigReads | null;
   mounts: Mount[];
+  /** Per deploy workflow that exists, the names its service jobs mount. */
+  deployMounts: DeployMounts[];
   envReads: EnvRead[];
   unchecked: UncheckedRead[];
   /** Places that mount variables but deploy no known service. */
@@ -558,6 +598,11 @@ export function evaluate(input: CheckInput): CheckResult {
       .map((read) => `${at(read)}  ${read.reason}`),
     true,
   );
+  section(
+    '6. mounted by one deploy workflow and not the other',
+    mountDrift(input.deployMounts),
+    true,
+  );
 
   if (input.unattributed.length > 0) {
     out.push('');
@@ -616,6 +661,7 @@ export function main(root: string = process.cwd()): number {
   const read = (path: string): string => readFileSync(join(root, path), 'utf8');
   const out: string[] = [];
   const mounts: Mount[] = [];
+  const deployMounts: DeployMounts[] = [];
   const unattributed: string[] = [];
 
   out.push('check:env-names: environment variable names, read against mounted');
@@ -630,6 +676,9 @@ export function main(root: string = process.cwd()): number {
 
     out.push(`  ${path}: read`);
 
+    const deploy: DeployMounts = { path, names: [] };
+    deployMounts.push(deploy);
+
     for (const [job, jobMounts] of mountsInWorkflow(read(path), path)) {
       if (!JOB_KEYS.includes(job)) {
         if (jobMounts.length > 0) unattributed.push(`${path} job "${job}"`);
@@ -637,6 +686,7 @@ export function main(root: string = process.cwd()): number {
       }
 
       mounts.push(...jobMounts);
+      deploy.names.push(...jobMounts.map((mount) => mount.name));
 
       if (jobMounts.some((mount) => mount.disabled)) {
         out.push(`    job "${job}" is switched off (if: false)`);
@@ -681,6 +731,7 @@ export function main(root: string = process.cwd()): number {
     configPath: CONFIG_PATH,
     config,
     mounts,
+    deployMounts,
     envReads,
     unchecked,
     unattributed,
