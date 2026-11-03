@@ -99,7 +99,7 @@ export class PublicBusinessResponse {
 
   @ApiProperty({
     description: 'Digits only; each screen formats it.',
-    example: '08022188797',
+    example: '09113500003',
   })
   phone!: string;
 
@@ -122,7 +122,7 @@ export class PublicBusinessResponse {
     description: 'Network name to an https link; empty until supplied.',
     type: 'object',
     additionalProperties: { type: 'string' },
-    example: { instagram: 'https://www.instagram.com/example' },
+    example: { instagram: 'https://www.instagram.com/chefnoroculinary' },
   })
   socialLinks!: Record<string, string>;
 }

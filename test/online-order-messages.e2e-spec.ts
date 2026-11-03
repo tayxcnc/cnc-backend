@@ -327,7 +327,7 @@ describe('Online order messages, my orders and the bell (e2e)', () => {
       expect(text).toContain(`Total paid: ${naira(placed.totalKobo)}`);
       // A guest has no account to track it in.
       expect(text).not.toContain('Track this order');
-      expect(text).toContain('Call CNC on 0802 218 8797.');
+      expect(text).toContain('Call CNC on 0911 350 0003.');
 
       // The same delivery again, and the confirmation read: no second receipt.
       await postSignedWebhook(app, placed.body, PAYSTACK_KEY).expect(200);

@@ -484,9 +484,9 @@ model Settings {
 /// CNC's business details: one source for the website, receipts and the
 /// entrance (D28). One row, held by `singleton` as on Settings.
 ///
-/// `phone` is stored as digits (`08022188797`); the site formats it.
+/// `phone` is stored as digits (`09113500003`); the site formats it.
 /// `addressLine` carries no country; the site appends ", Nigeria".
-/// `socialLinks` is an object keyed by network, empty until supplied.
+/// `socialLinks` is an object keyed by network; the seed sets `instagram`.
 model Business {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())

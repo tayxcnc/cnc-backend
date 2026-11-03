@@ -185,7 +185,7 @@ describe('C3 core schema (e2e)', () => {
         const values =
           table === 'Settings'
             ? `$1, now() AT TIME ZONE 'UTC', false`
-            : `$1, now() AT TIME ZONE 'UTC', false, 'x', 'x', '08022188797', 'x@example.com', 'x'`;
+            : `$1, now() AT TIME ZONE 'UTC', false, 'x', 'x', '09113500003', 'x@example.com', 'x'`;
 
         await expect(
           prisma.$executeRawUnsafe(

@@ -104,7 +104,7 @@ export const BUSINESS_EMAIL_MESSAGE = 'Enter a valid business email.';
  * with letters or a foreign shape would print wrongly on every receipt.
  */
 export const BUSINESS_PHONE_MESSAGE =
-  'Enter the business phone as a Nigerian number, for example 0802 218 8797.';
+  'Enter the business phone as a Nigerian number, for example 0911 350 0003.';
 
 /** A map pin outside the globe. New. */
 export const BUSINESS_MAP_MESSAGE =

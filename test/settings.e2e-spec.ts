@@ -336,14 +336,14 @@ describe('Settings (e2e)', () => {
       const response = await saveBusiness(
         managerToken,
         {
-          phone: '+234 802 218 8797',
+          phone: '+234 911 350 0003',
           email: '',
           registration: `RC ${randomUUID().slice(0, 6)}`,
         },
         200,
       );
 
-      expect(response.body).toMatchObject({ phone: '08022188797', email: '' });
+      expect(response.body).toMatchObject({ phone: '09113500003', email: '' });
     });
 
     it('never lets the name, the address or the phone end up blank', async () => {
