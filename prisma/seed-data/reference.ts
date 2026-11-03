@@ -62,23 +62,24 @@ export const SETTINGS = {
  * CNC's business details (plan §4.1 "Business", Q7, D28), from the website's
  * `lib/site.ts` and the staff app's `BUSINESS`.
  *
- * `phone` is digits only; the site formats it ("0802 218 8797").
- * `addressLine` carries no country; the site appends ", Nigeria", and the
- * receipt omits it, as the staff app's receipt does today. `addressLines`
- * is the website's two-line form, punctuation included. The map pin is the
- * one CNC confirmed. `socialLinks` stays empty until the accounts are
- * supplied.
+ * `phone` is digits only; the site formats it ("0911 350 0003", batch 2
+ * section 2). `addressLine` carries no country; the site appends
+ * ", Nigeria", and the receipt omits it, as the staff app's receipt does
+ * today. `addressLines` is the website's two-line form, punctuation
+ * included. The map pin is the one CNC confirmed. `socialLinks` holds only
+ * Instagram (batch 2 section 2); the other networks stay unset until their
+ * accounts are supplied.
  */
 export const BUSINESS = {
   name: 'Chef Noro Culinary',
   addressLine: '7A Hospital Place, opposite Water Board, Jos, Plateau State',
   addressLines: ['7A Hospital Place,', 'opposite Water Board, Jos'],
-  phone: '08022188797',
+  phone: '09113500003',
   email: 'chefnoroculinarycnc@gmail.com',
   registration: 'RC 765598',
   mapLat: 9.897137833050548,
   mapLng: 8.889460545696355,
-  socialLinks: {},
+  socialLinks: { instagram: 'https://www.instagram.com/chefnoroculinary' },
 } as const;
 
 export interface TableSeed {

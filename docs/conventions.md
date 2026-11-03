@@ -3070,11 +3070,15 @@ They are here so the first card that builds it starts from the rule.
   anonymised one) is sent nothing. Reception's cancel and change are
   pinned by `customer-messages` (the email, its row reaching `SENT`, the
   in-app item; seen failing with either enqueue removed).
-- **CNC's phone goes into an email as the website shows it, `0802 218
-  8797`, never the stored digits** (`phoneForDisplay`,
+- **CNC's phone goes into an email as the website shows it, `0911 350
+  0003`, never the stored digits** (`phoneForDisplay`,
   `common/nigerian-phone.ts`; the site's `phoneDisplay`; Q6 says the
-  number is shown formatted) (from the C6 review). The guest reads and
-  dials the same number on the site and in the email.
+  number is shown formatted) (from the C6 review; the number from batch 2
+  section 2). The guest reads and dials the same number on the site and
+  in the email. The old business number may appear nowhere outside
+  `prisma/migrations`, and `scripts/old-business-phone.spec.ts` fails on
+  it in any spelling: batch 2 asks for every copy to be gone, and a test
+  or an example that kept it would put it back on a screen or in an email.
 - **Audit: a customer's create, change and cancel are `CUSTOMER` rows;
   a website guest's create is a `SYSTEM` row named "Website guest
   <name>"**, the `AuditLog_actor_check` allowing no customer without an

@@ -140,18 +140,20 @@ describe('reference data', () => {
   });
 
   describe('business', () => {
-    it("holds Q7's details, with digits for the phone and no country in the address", () => {
+    it("holds Q7's details with batch 2's phone and Instagram, digits for the phone and no country in the address", () => {
       expect(BUSINESS).toEqual({
         name: 'Chef Noro Culinary',
         addressLine:
           '7A Hospital Place, opposite Water Board, Jos, Plateau State',
         addressLines: ['7A Hospital Place,', 'opposite Water Board, Jos'],
-        phone: '08022188797',
+        phone: '09113500003',
         email: 'chefnoroculinarycnc@gmail.com',
         registration: 'RC 765598',
         mapLat: 9.897137833050548,
         mapLng: 8.889460545696355,
-        socialLinks: {},
+        socialLinks: {
+          instagram: 'https://www.instagram.com/chefnoroculinary',
+        },
       });
     });
   });
