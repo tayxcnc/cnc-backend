@@ -59,3 +59,6 @@ docs/*
 # which test/c8-acceptance.e2e-spec.ts reads, and the load test's runbook.
 !docs/demo-tests-map.md
 !docs/load-testing.md
+# The iPad fix pack's changelog (platform fixes plan, decision P7): what each
+# fix changed and every decision taken without the founder's confirmation.
+!docs/ipad-fixes-changelog.md
