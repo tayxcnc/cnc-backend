@@ -119,7 +119,8 @@ export class PublicBusinessResponse {
   mapLng!: number | null;
 
   @ApiProperty({
-    description: 'Network name to an https link; empty until supplied.',
+    description:
+      'Network name to an https link; the seed sets instagram, other networks stay unset until supplied.',
     type: 'object',
     additionalProperties: { type: 'string' },
     example: { instagram: 'https://www.instagram.com/chefnoroculinary' },

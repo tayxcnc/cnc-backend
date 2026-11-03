@@ -56,8 +56,9 @@ G15 (this changelog).
 - **SEARCH-CLEAN. A guard against the old number.** A new test,
   `scripts/old-business-phone.spec.ts`, reads every file under `src/`,
   `prisma/` (migrations left out), `scripts/` and `test/`, and fails if
-  the old number appears in any spelling: with spaces, hyphens, brackets,
-  dots, `0`, `234` or `+234`, or split across a comment's line. The old
+  the old number appears in any spelling: with spaces, hyphens, the dashes
+  an iPad or a pasted document puts in place of a hyphen, underscores,
+  brackets, dots, `0`, `234` or `+234`, or split across a comment's line. The old
   number is kept in `test/old-business-phone.ts` in pieces, so neither the
   guard nor the search below finds the test files themselves. Before the
   other changes were made, the guard was run and failed on all 29 places

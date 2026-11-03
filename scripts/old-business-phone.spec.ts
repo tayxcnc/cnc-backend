@@ -13,16 +13,18 @@ import {
  * so this file never matches itself and the workspace's old-number search
  * (platform fixes plan §7.1) prints nothing for it either.
  *
- * The match allows any spacing, hyphens, brackets, dots or a comment's line
- * break between the digits, so the `0`, `+234` and `234` spellings, grouped
- * or not, are all caught: the prefix is left out of the match, and every
- * spelling ends in the same ten digits.
+ * The match allows any spacing, hyphens, dashes, underscores, brackets, dots
+ * or a comment's line break between the digits, so the `0`, `+234` and `234`
+ * spellings, grouped or not, are all caught: the prefix is left out of the
+ * match, and every spelling ends in the same ten digits. The dashes are the
+ * Unicode ones (U+2010 to U+2015 and the minus sign U+2212) that an iPad's
+ * Smart Punctuation or text pasted from a document can put in place of `-`.
  *
  * `prisma/migrations` is not scanned: the contact details migration has to
  * name the old number to find a row still holding it, and a migration is
  * never edited once it has been applied.
  */
-const BETWEEN_DIGITS = String.raw`[\s().*/\-]*`;
+const BETWEEN_DIGITS = String.raw`[\s().*/_\-‐-―−]*`;
 
 const OLD_NUMBER = new RegExp(
   OLD_BUSINESS_DIGITS.split('').join(BETWEEN_DIGITS),
@@ -59,6 +61,10 @@ describe('the old business phone', () => {
       spelledOldNumber('+234 (0)', ' '),
       spelledOldNumber('(0', ') '),
       spelledOldNumber('0', '.'),
+      spelledOldNumber('0', '_'),
+      spelledOldNumber('0', '‑'),
+      spelledOldNumber('0', ' – '),
+      spelledOldNumber('+234 ', ' '),
       spelledOldNumber('0', ' \n * '),
     ]) {
       expect({ written, caught: OLD_NUMBER.test(written) }).toEqual({
