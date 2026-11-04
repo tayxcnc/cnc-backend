@@ -10,6 +10,7 @@ import {
 } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { type StaffAccount, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -38,9 +39,9 @@ describe('money controls (e2e)', () => {
     app = await createTestApp();
     prisma = app.get(CncPrismaService);
     money = app.get(MoneyControlService, { strict: false });
-    // The seeded settings row, with the column defaults, if no seed has run
+    // The seeded settings row, with the seed's values, if no seed has run
     // on this database yet. Inserts nothing when it is there.
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
   });
 
   afterAll(async () => {

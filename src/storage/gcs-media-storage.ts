@@ -3,10 +3,20 @@ import { Storage } from '@google-cloud/storage';
 import { CncConfigService } from '../config/cnc.config';
 import {
   DEFAULT_SIGNED_URL_TTL_MS,
+  isObjectNotFound,
   MediaStorage,
   parseGsUri,
   type SignedUrl,
+  type StoredObject,
 } from './media-storage';
+
+/**
+ * The type a read answers with when the object carries none. Everything
+ * stored here is saved with its type (`PhotoStore` passes the format it
+ * read from the bytes), so this is a defensive fallback, not a path any
+ * photo takes.
+ */
+const UNKNOWN_CONTENT_TYPE = 'application/octet-stream';
 
 /**
  * `MediaStorage` on Google Cloud Storage: TAY's `TayStorageService`, copied
@@ -30,7 +40,7 @@ import {
  *
  * The `Storage` client holds a connection pool and refreshes credentials on
  * its own schedule, so it is built once. It is built lazily, on the first
- * upload or signature, so booting the service (and every health check)
+ * upload, read or signature, so booting the service (and every health check)
  * never depends on Google credentials being present.
  */
 @Injectable()
@@ -81,6 +91,34 @@ export class GcsMediaStorage extends MediaStorage {
       .getSignedUrl({ version: 'v4', action: 'read', expires: expiresAt });
 
     return { url, expiresAt };
+  }
+
+  /**
+   * The metadata (for the stored content type) and the bytes are asked for
+   * together: a staff photo is a few tens of kilobytes, so the whole object
+   * is read into memory rather than streamed, and two parallel calls cost
+   * one round trip. A 404 from either, including an object deleted between
+   * the two, answers null.
+   */
+  async read(gsUri: string): Promise<StoredObject | null> {
+    const { bucket, objectName } = parseGsUri(gsUri);
+    const file = this.storage().bucket(bucket).file(objectName);
+
+    try {
+      const [[metadata], [body]] = await Promise.all([
+        file.getMetadata(),
+        file.download(),
+      ]);
+
+      return {
+        body,
+        contentType: metadata.contentType ?? UNKNOWN_CONTENT_TYPE,
+      };
+    } catch (error: unknown) {
+      if (isObjectNotFound(error)) return null;
+
+      throw error;
+    }
   }
 
   /**
