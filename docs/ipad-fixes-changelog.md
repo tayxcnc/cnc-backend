@@ -4,6 +4,152 @@ What each fix from the iPad fix pack and its batch 2 brief changed in this
 repository, and every decision taken without the founder's confirmation.
 Newest entries go at the top.
 
+## Receipt paper and staff photo reads (CS B2, CS B5, CS B3)
+
+Branch `feat/print-paper-and-photo-reads` (platform fixes plan, wave 1,
+PR 13). Closes CS B2, CS B5 and CS B3 (verified, no change).
+
+### What changed
+
+- **CS B2. New installs start on 58 mm paper.** The seed
+  (`prisma/seed-data/reference.ts`) sets `printerWidth` to `MM58` instead
+  of `MM80`. The existing setting is reused: it is already served on
+  `GET /staff/settings` and `GET /staff/reference`, already editable in
+  Settings > Receipt Printer by the Owner and Managers, and already read by
+  the staff app, so no new `receipt_paper_width_mm` field is added. No
+  schema change and no migration: the column default stays `MM80`.
+- **The staging settings row keeps its current paper.** The seed never
+  overwrites a settings row that exists, so staging (and any database
+  seeded before this) stays on whatever it holds now, 80 mm unless someone
+  changed it, until 58 mm is chosen once in Settings > Receipt Printer
+  (plan 7.3 step 18). A database seeded after this starts on 58 mm.
+- **CS B5. Two photo reads that a canvas can use.** The Staff ID card's
+  photo is a signed Cloud Storage link, and the bucket has no CORS policy,
+  so the staff app cannot draw it into a canvas or a PDF. Two new routes
+  stream the photo from the API instead:
+  - `GET /staff/me/photo`: your own photo, any role.
+  - `GET /staff/people/:id/photo`: exactly the card's rule. Managers only
+    (`@Roles()`), and a Manager's or the Owner's photo only for the Owner
+    or its holder (`mayReadCard`, "Only the Owner can open a Manager or
+    Owner Staff ID."), checked before anything is read from the bucket.
+  - Both answer the bytes stored at upload, already the 320-pixel square
+    with metadata removed, with their own content type (`image/jpeg`,
+    `image/png` or `image/webp`). Nothing is resized on the way out.
+  - Both answer `Cache-Control: private, max-age=300` and add
+    `Authorization` to `Vary`, so a shared tablet never shows the next
+    person the previous person's photo from the browser cache. CORS's own
+    `Vary: Origin` is kept.
+  - No photo, or a recorded photo no longer in the bucket: 404 "This staff
+    account has no photo.". No account: 404 "Staff account not found.".
+    A bucket that cannot be read: 500, never "no photo".
+  - They read through a new `MediaStorage.read()` (Cloud Storage and the
+    test fake) behind `PhotoStore.read()`, so `ImagesModule` is still the
+    only way into the bucket.
+- **The Staff ID QR payload is unchanged.** Nothing here touches
+  `staff-qr.ts`, the card route or its `no-store`.
+- **CS B3. Verified, no change.** One response already carries every
+  printed field: a receipt or bill is `GET /staff/orders/:id` (lines,
+  options, totals, VAT, service, discount, deposit, every payment) plus the
+  business lines on `GET /staff/reference`; a docket is
+  `GET /staff/dockets/:ref` (ref, order ref, revision, date, time, staff,
+  notes, items). Reprinting writes only an audit row
+  (`POST /staff/audit/print`); a confirm with no change answers
+  `reprint: true` and writes no new docket; the replacement notice follows
+  from `revision` above 1. Customer order receipts are emailed only.
+- **Records.** `docs/conventions.md`: the seeded paper (*Money controls
+  and the audit log*, beside the print record), the streamed staff photo
+  and its caching (*Infrastructure*), the photo read following the card's
+  rule (*Auth*), and the settings row in tests (*Local environment*).
+  `CLAUDE.md` points at them.
+
+### Tests
+
+- `prisma/reference-data.spec.ts`: the seed's settings hold `MM58` (was
+  `MM80`). The check that the seed equals the C3 migration's column
+  defaults now names the one intended difference: the defaults hold
+  `MM80`, the seed `MM58`.
+- New, `test/seeded-settings.ts` (`createSeededSettingsIfMissing`), used by
+  the seven suites on the shared test database that created the settings
+  row from the column defaults (`money-control`, `order-payments`,
+  `orders`, `settings`, `shell`, `stock`, `stock-requests`). On a fresh CI
+  database a row created from the defaults would now hold 80 mm and fail
+  the seed suite's "one settings row holding Q7's values", depending on
+  which suite ran first. Seen failing that way on a fresh local database
+  (the shell suite with the old line, then the seed suite: `printerWidth`
+  expected `MM58`, got `MM80`), and passing with the helper.
+- `test/staff-card.e2e-spec.ts`, new cases:
+  - your own photo, as a waiter and as the Owner: 200, the stored bytes,
+    `image/jpeg`, the length, the caching headers, 320 by 320;
+  - a Manager reads a waiter's photo: 200;
+  - a Manager is refused the Owner's photo with the card's sentence (403),
+    and the Owner reads it;
+  - a waiter is refused another person's photo, and its own through the
+    managers' route, with the role sentence (403), as the card does;
+  - 404 for no photo, a photo gone from the bucket and no account; 401
+    with no token;
+  - 500 when the bucket cannot be read.
+- New, `src/storage/gcs-media-storage.spec.ts`: the Cloud Storage binding's
+  `read` against a stand-in client (bytes and type from the URI's bucket,
+  a generic type when none is stored, null on a 404 from either call,
+  any other error thrown, a bad URI refused before the client is called).
+- `src/images/photo-store.service.spec.ts`: `PhotoStore.read` answers the
+  stored bytes, null for no photo or a missing object, and throws when the
+  read fails.
+- Each new rule was seen failing with it removed, then put back:
+  removing `mayReadCard` from the photo route fails the Owner's photo
+  case; removing `@Roles()` fails the waiter case; removing the `Vary`
+  line, or setting `Vary` instead of appending to it, fails the three 200
+  cases; treating every storage error as "not found" fails the Cloud
+  Storage spec.
+
+### Before merge
+
+No migration, so nothing is applied to staging. After the merge, if the
+staging settings row is still on 80 mm, choose 58 mm once in Settings >
+Receipt Printer (plan 7.3 step 18). The staff app starts using the photo
+routes in PR 14.
+
+### Decisions made without confirmation
+
+1. **The existing `printerWidth` is the workspace paper setting (P23,
+   P20).** No `receipt_paper_width_mm` field; the camelCase enum the staff
+   app already reads does the job.
+2. **The column default stays `MM80`; only the seed moves (P23).** The
+   plan rules out a schema change. A row is only ever created by the seed,
+   so production starts on 58 mm.
+3. **Test suites create the settings row from the seed's values.** This
+   follows from decision 2: the seed and the column default now differ, so
+   the seven shared-database suites that relied on them being equal would
+   have made the seed suite order dependent. The two suites on databases
+   of their own (`kitchen`, `reception`) keep their line: their rows never
+   meet the seed suite.
+4. **Photo routes instead of the brief's resize and 15-minute link
+   (P25).** A streamed photo has no link to expire, and the bucket's CORS
+   (an open infrastructure decision) is not changed. The 10-minute signed
+   link on the card stays as it is.
+5. **The photo stays at 320 pixels, not the brief's 512 (P25).** The brief
+   asks for a resize only if one is missing; 320 pixels covers the card's
+   photo frame at print resolution.
+6. **Five minutes of browser caching, varied by `Authorization`.** The
+   plan's figure for TAY's photo routes; the `Vary` keeps a shared tablet
+   from showing one person's cached photo to the next. A replaced photo may
+   show the old one for up to five minutes unless the screen asks with a
+   fresh URL.
+7. **A missing object is "no photo" (404); an unreadable bucket is a
+   500.** The first is the truth about the person; the second is not, so
+   the screen can retry instead of drawing the placeholder for good.
+8. **The waiter's own photo is refused on the managers' route**, as its own
+   card is there; everyone reads their own through `/staff/me/photo`.
+9. **CS B3 needs no backend change.** No `isReplacementDocket` flag:
+   `revision` above 1 is the existing, equivalent rule, and adding a
+   print-shaped endpoint would break the rule that prints read the same
+   data as the screen.
+10. **Merge style.** Merge commit, never squash (P1).
+    `docs/conventions.md` (Git and workflow) still says feature PRs are
+    squash-merged; it is flagged here and not edited.
+11. **Additive only (P20).** Two new routes, one new message, one new
+    storage method; no route, field or message renamed or removed.
+
 ## Contact details (batch 2, section 2)
 
 Branch `fix/contact-details-batch2` (platform fixes plan, wave 0, PR 1).
