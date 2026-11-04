@@ -1594,6 +1594,136 @@ describe('Order payments and corrections (e2e)', () => {
     });
   });
 
+  /**
+   * CS B1, decision P21: History > View opens a bill through the existing
+   * `GET /staff/orders/:id`, for any status. No new route; these tests pin
+   * that the read never writes, and who may make it. The brief's "a
+   * Cashier reads only their own till and today" is not applied (P21).
+   */
+  describe('the bill read (CS B1)', () => {
+    const readAs = (role: StaffRole, id: string) =>
+      request(server()).get(`/api/v1/staff/orders/${id}`).set(auth(role));
+
+    /** Every row a read could leave behind, for one bill and its readers. */
+    const footprint = async (order: Pick<Order, 'id' | 'number'>) => ({
+      auditForBill: await prisma.auditLog.count({
+        where: { ref: order.number },
+      }),
+      auditByReaders: await prisma.auditLog.count({
+        where: {
+          staffId: {
+            in: [
+              staffId[StaffRole.CASHIER]!,
+              staffId[StaffRole.WAITER]!,
+              staffId[StaffRole.BARTENDER]!,
+              staffId[StaffRole.MANAGER]!,
+            ],
+          },
+        },
+      }),
+      payments: await prisma.payment.count({ where: { orderId: order.id } }),
+      dockets: await prisma.docket.count({ where: { orderId: order.id } }),
+      order: await prisma.order.findUniqueOrThrow({
+        where: { id: order.id },
+        select: { status: true, version: true, updatedAt: true },
+      }),
+    });
+
+    it('bill detail is read only: open, settled and cancelled bills read the same three times and write nothing', async () => {
+      const openBill = await confirm(
+        await line(await open(Department.RESTAURANT), riceId, 2),
+      );
+      const settledBill = await settleInFull(await foodBill());
+      const cancelledBill = (
+        (
+          await correct(
+            'cancel',
+            StaffRole.MANAGER,
+            await confirm(
+              await line(await open(Department.RESTAURANT), riceId, 1),
+            ),
+            'Guest left',
+          ).expect(200)
+        ).body as { order: Order }
+      ).order;
+
+      expect(openBill.status).toBe(OrderStatus.OPEN);
+      expect(settledBill.status).toBe(OrderStatus.SETTLED);
+      expect(cancelledBill.status).toBe(OrderStatus.CANCELLED);
+
+      for (const bill of [openBill, settledBill, cancelledBill]) {
+        const before = await footprint(bill);
+
+        const bodies: Order[] = [];
+        for (let read = 0; read < 3; read += 1) {
+          bodies.push(
+            (await readAs(StaffRole.CASHIER, bill.id).expect(200))
+              .body as Order,
+          );
+        }
+
+        expect(bodies[1]).toEqual(bodies[0]);
+        expect(bodies[2]).toEqual(bodies[0]);
+        expect(bodies[0]).toMatchObject({
+          id: bill.id,
+          number: bill.number,
+          status: bill.status,
+          version: bill.version,
+        });
+        expect(await footprint(bill)).toEqual(before);
+      }
+
+      // What History > View prints is in the one answer.
+      const settled = (await readAs(StaffRole.CASHIER, settledBill.id))
+        .body as Order;
+      expect(settled.settledAt).not.toBeNull();
+      expect(settled.payments).toHaveLength(1);
+      expect(settled.totals.balanceKobo).toBe(0);
+      expect(settled.latestDocket?.cancellation).toBe(false);
+
+      const cancelled = (await readAs(StaffRole.CASHIER, cancelledBill.id))
+        .body as Order;
+      expect(cancelled.latestDocket).toMatchObject({
+        revision: 2,
+        cancellation: true,
+      });
+    });
+
+    it('refuses a Bartender a Restaurant bill; a Waiter and a Cashier read a settled one, as managers do', async () => {
+      const bill = await settleInFull(await foodBill());
+      const before = await footprint(bill);
+
+      const bartender = await readAs(StaffRole.BARTENDER, bill.id).expect(403);
+      expect(messageOf(bartender)).toBe(BAR_POS_ONLY_MESSAGE);
+
+      const kitchen = await readAs(StaffRole.KITCHEN, bill.id).expect(403);
+      expect(messageOf(kitchen)).toBe(ROLE_REFUSED_MESSAGE);
+
+      const cashier = (await readAs(StaffRole.CASHIER, bill.id).expect(200))
+        .body as Order;
+      expect(cashier).toMatchObject({
+        id: bill.id,
+        status: OrderStatus.SETTLED,
+      });
+
+      for (const role of [
+        StaffRole.WAITER,
+        StaffRole.MANAGER,
+        StaffRole.OWNER,
+      ]) {
+        const response = await readAs(role, bill.id).expect(200);
+        expect(response.body).toEqual(cashier);
+      }
+
+      expect(await footprint(bill)).toEqual(before);
+
+      // A Bartender's own department still reads.
+      const bar = await settleInFull(await barBill(1));
+      const barRead = await readAs(StaffRole.BARTENDER, bar.id).expect(200);
+      expect((barRead.body as Order).status).toBe(OrderStatus.SETTLED);
+    });
+  });
+
   describe('the ledger and the history', () => {
     it('keeps each Bar balance equal to the sum of its movements', async () => {
       for (const stockItemId of [lagerStockId, maltStockId]) {
