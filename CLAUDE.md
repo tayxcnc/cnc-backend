@@ -50,7 +50,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | The production deploy: `v*` tags by `tayxcnc` only, on a commit already on `main`, never re-run, no-traffic then check then move, rollback by traffic with the `rc` tag removed, secrets pinned at `:1`, the same names as staging, actions pinned by SHA | Infrastructure |
 | `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
 | Q36's periods, `POST /internal/sweeps/retention`, what deletion also forgets (unlinked records under the email, stored answers), the audit read withholding a deleted guest's values, what still holds a deleted person's details | Data retention and account deletion |
-| Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
+| Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle; the reused public photo links, compression and `ETag`, menu thumbnails and their backfill (B2) | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | Release rows: a refused card refund given back to the Daily Approval Limit (C8-0) | Money controls and the audit log; Staff Online Orders |
 | The nine reports: the shared period, Lagos day bounds, paging, bigint sums, departments by line, Q21's delivery line, who reads which; `settledBills`/`openBills` | Reports |
@@ -115,6 +115,7 @@ npm run db:generate      # prisma generate, to generated/cnc-client
 npm run db:migrate       # prisma migrate dev, LOCAL ONLY
 npm run db:seed          # reference data, menu, paired Bar stock (also Prisma's seed key)
 npm run db:seed:owner    # the first Owner, by hand only (never the seed key)
+npm run media:backfill-thumbs  # menu photo thumbnails for photos stored before them (B2)
 ```
 
 ## Layout
@@ -122,7 +123,8 @@ npm run db:seed:owner    # the first Owner, by hand only (never the seed key)
 ```
 src/
   main.ts            entry point; boots CncAppModule
-  bootstrap.ts       prefix, pipes, helmet, CORS (list from CncConfigService)
+  bootstrap.ts       prefix, pipes, helmet, compression, CORS (list from
+                     CncConfigService)
   app.module.ts      CncAppModule
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
@@ -199,8 +201,9 @@ src/
                      staff ID cards (the QR payload in staff-qr.ts)
   settings/          settings.save, business details, opening hours; the public
                      GET /business and GET /opening-hours
-  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item;
-                     the public GET /menu
+  menu/              Menu & Prices: menu.save, photos and their thumbnails, the
+                     paired Bar stock item; the public GET /menu; the thumbnail
+                     backfill (menu-thumbs-backfill.ts)
   stock/             the stock core: StockLedgerService (the one writer of balances
                      and movements), balances and movements reads, issue, count,
                      Correct Balance, stock items, kitchen comparison rules;
@@ -272,7 +275,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      customer-auth: the email-code sign-in, its caps,
                      the realms, the outbound queue and TAY's cookies;
                      customer-account: /me, the email change, the photo,
-                     deletion; public-reads: the C6-4 public reads;
+                     deletion; public-reads: the C6-4 public reads,
+                     compression, 304s and changes on the next read (B2);
+                     menu-thumbs-backfill: the thumbnail backfill;
                      customer-reservations: web and app bookings, the
                      link, change and cancel, the races and the 24-hour
                      boundary; customer-messages: the in-app list, the
@@ -319,7 +324,8 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
                      load:till, C8-4), load/load-targets.ts (where it may
-                     run, its backoff)
+                     run, its backoff); backfill-menu-thumbs.ts (npm run
+                     media:backfill-thumbs)
 docs/                conventions.md; load-testing.md (C8-4);
                      demo-tests-map.md (the 107 demo tests, C8-6)
 ```
