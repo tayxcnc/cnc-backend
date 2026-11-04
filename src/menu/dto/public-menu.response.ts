@@ -49,11 +49,25 @@ export class PublicMenuItemResponse {
   choice!: PublicMenuChoiceResponse | null;
 
   @ApiProperty({
-    description: 'A signed link to the photo, valid for an hour, or null.',
+    description:
+      'A signed link to the photo (fits inside 800 pixels), or null. Valid ' +
+      'for at least 45 minutes after this response: the same link is ' +
+      'handed out again until then.',
     type: String,
     nullable: true,
   })
   photoUrl!: string | null;
+
+  @ApiProperty({
+    description:
+      'A signed link to the photo’s thumbnail, a WebP that fits inside 240 ' +
+      'pixels, for list views; valid as long as `photoUrl`. Null when ' +
+      'there is no photo, and for a photo stored before thumbnails until ' +
+      'its thumbnail is made: show `photoUrl` then.',
+    type: String,
+    nullable: true,
+  })
+  thumbUrl!: string | null;
 
   @ApiProperty({ type: String, nullable: true })
   photoAlt!: string | null;

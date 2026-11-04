@@ -640,6 +640,10 @@ model MenuItem {
   active          Boolean    @default(true)
   showOnline      Boolean    @default(true)
   photo           String?
+  /// The photo's 240 pixel WebP thumbnail (`thumbUrl` on `GET /menu`), a
+  /// `gs://` URI like `photo`; null with no photo, or for a photo stored
+  /// before thumbnails until `npm run media:backfill-thumbs` runs.
+  photoThumb      String?
   photoAlt        String?
   choiceLabel     String?
   choiceOptions   String[]   @default([])

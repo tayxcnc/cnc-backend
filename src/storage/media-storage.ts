@@ -60,7 +60,9 @@ export abstract class MediaStorage {
    * out a signed link (the staff photo routes, CS B5): a browser canvas may
    * not read a cross-origin image without the bucket's CORS, and the bucket
    * has none, so a page that draws a photo into a card or a PDF fetches it
-   * from the API's own origin rules instead.
+   * from the API's own origin rules instead. The menu thumbnail backfill
+   * (`npm run media:backfill-thumbs`) also reads a stored photo back, to make
+   * its thumbnail from the stored bytes.
    */
   abstract read(gsUri: string): Promise<StoredObject | null>;
 

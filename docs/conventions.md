@@ -517,8 +517,11 @@ They are here so the first card that builds it starts from the rule.
   (`prisma/seed-client.ts`), passing its own `CNC_SEED_<X>_ALLOW_REMOTE`
   flag by literal name.** The remote-database check then runs before any
   connection in every seed, and a new seed cannot forget it. Today:
-  `CNC_SEED_DATA_ALLOW_REMOTE` (`npm run db:seed`) and
-  `CNC_SEED_OWNER_ALLOW_REMOTE` (`npm run db:seed:owner`).
+  `CNC_SEED_DATA_ALLOW_REMOTE` (`npm run db:seed`),
+  `CNC_SEED_OWNER_ALLOW_REMOTE` (`npm run db:seed:owner`) and
+  `CNC_SEED_THUMBS_ALLOW_REMOTE` (`npm run media:backfill-thumbs`, the
+  menu thumbnail backfill, which writes rows too and so takes the same
+  check and a flag of its own).
 - **The menu is seeded from copies of `cnc-frontend`'s sources in
   `prisma/seed-data/`, joined by `buildMenuSeed` (`prisma/menu-seed.ts`), which
   throws when the website and the staff app disagree on a price, a signature
@@ -1401,6 +1404,39 @@ They are here so the first card that builds it starts from the rule.
   minute of the page's own revalidation (gate step 8). The public menu
   signs photo links for an hour (`PUBLIC_PHOTO_LINK_TTL_MS`), because a
   cached page outlives the storage's ten-minute default.
+- **The public menu's photo and thumbnail links are reused per object
+  while 45 minutes or more remain (`PhotoStore.publicSignedUrlOrNull`,
+  `PUBLIC_LINK_MIN_REMAINING_MS`), in an in-memory map capped at
+  `PUBLIC_LINK_MEMO_SIZE` entries, oldest dropped first** (batch 2 B2,
+  from the platform fixes). On Cloud Run each signature is a call to
+  Google's signing service, one per photo, and a fresh link per read also
+  made every menu body new, so its `ETag` never matched. 45 minutes left
+  at the response, less the API's minute and the page's minute, still
+  gives a visitor over 40 minutes. Nothing else is remembered between
+  reads: the menu's rows are read on every request, so a price or an
+  availability change shows on the very next read and on the site within
+  the two minutes. Signed-in reads keep `signedUrlOrNull`: ten minutes,
+  signed afresh, never remembered, because a photo of a person is never
+  handed out for longer.
+- **Every response is compressed for a client that asks (`compression`,
+  Brotli or gzip above 1 KB, `useCompression` in `bootstrap.ts`, after
+  helmet), and Express's weak `ETag` answers a matching `If-None-Match`
+  with 304** (B2). The menu is about 41 KB as JSON and about 8 KB
+  compressed. Compression touches responses only, so the Paystack
+  webhook's signature is still checked over the raw request bytes (the
+  checkouts suite sends a spaced copy of a signed body and is refused).
+  The e2e harness applies the same function, so every suite reads
+  compressed answers as a browser does.
+- **A menu photo is stored with a 240 pixel WebP thumbnail
+  (`MenuItem.photoThumb`, `thumbUrl` on `GET /menu`)**, made from the
+  stored photo at upload (`PhotoStore.storeMenuPhoto`) and written, moved
+  and deleted together with it, so a thumbnail is always of the photo
+  beside it. A photo stored before thumbnails gets one from `npm run
+  media:backfill-thumbs` (`backfillMenuThumbs`), which is safe to run
+  twice, records a thumbnail only while the dish still has the photo it
+  was made from, moves no `version` and writes no audit row (the
+  thumbnail is derived, and no screen edits it). Until then `thumbUrl` is
+  null and a page shows `photoUrl`. The staff menu read is unchanged.
 - **The menu shows only items that are Available for Sale and Show
   Online** (Q37's default: an unavailable dish is hidden, no "Sold out"
   state), in the customer categories' order; a category with nothing to
@@ -4257,7 +4293,8 @@ digests instead: a push at midnight would wake people).
   `ImagesModule` imports `StorageModule`.** One door into the bucket, and
   one place for the rules (A17): the file is judged by its bytes, never its
   name or declared type; it is resized (staff 320 pixels square, menu inside
-  800) with every piece of metadata, GPS position included, removed; it is
+  800, plus the menu's 240 pixel WebP thumbnail, B2) with every piece of
+  metadata, GPS position included, removed; it is
   stored under a fresh random name; and a response signs it through
   `signedUrlOrNull`, which answers null rather than failing when signing
   fails.

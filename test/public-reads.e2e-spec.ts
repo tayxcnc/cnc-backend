@@ -158,6 +158,7 @@ describe('public reads (e2e)', () => {
               'priceKobo',
               'signature',
               'slug',
+              'thumbUrl',
             ].sort(),
           );
         }
@@ -247,12 +248,19 @@ describe('public reads (e2e)', () => {
       }
     });
 
-    it('shows a price the Owner changes (C6 gate step 8)', async () => {
+    it('shows a price the Owner changes on the very next read, cached for a minute at most (C6 gate step 8, B2)', async () => {
       const dish = await prisma.menuItem.findFirstOrThrow({
         where: { active: true, showOnline: true },
         orderBy: { slug: 'desc' },
       });
       const newPrice = dish.priceKobo + 50000;
+
+      const before = await get('/menu').expect(200);
+      const etag = before.headers.etag;
+
+      expect(findItem(before.body as MenuBody, dish.slug)?.priceKobo).toBe(
+        dish.priceKobo,
+      );
 
       await request(server())
         .patch(`/api/v1/staff/menu/${dish.id}`)
@@ -260,10 +268,114 @@ describe('public reads (e2e)', () => {
         .send({ priceKobo: newPrice, version: dish.version })
         .expect(200);
 
-      expect(findItem(await menu(), dish.slug)?.priceKobo).toBe(newPrice);
+      // A page holding the old answer asks again with its ETag: the menu
+      // has changed, so it gets the new price, not a 304.
+      const after = await get('/menu').set('If-None-Match', etag).expect(200);
+
+      expect(after.headers['cache-control']).toBe('public, max-age=60');
+      expect(after.headers.etag).not.toBe(etag);
+      expect(findItem(after.body as MenuBody, dish.slug)?.priceKobo).toBe(
+        newPrice,
+      );
     });
 
-    it('signs a photo as a link, never the gs:// address', async () => {
+    it('hides a dish on the very next read once staff mark it unavailable (B2)', async () => {
+      const dish = await prisma.menuItem.findFirstOrThrow({
+        where: { active: true, showOnline: true },
+        orderBy: { slug: 'asc' },
+        skip: 2,
+      });
+      const etag = (await get('/menu').expect(200)).headers.etag;
+
+      const saved = await request(server())
+        .patch(`/api/v1/staff/menu/${dish.id}`)
+        .set(await asStaff(ownerId))
+        .send({ active: false, version: dish.version })
+        .expect(200);
+
+      try {
+        const after = await get('/menu').set('If-None-Match', etag).expect(200);
+
+        expect(after.headers['cache-control']).toBe('public, max-age=60');
+        expect(findItem(after.body as MenuBody, dish.slug)).toBeUndefined();
+      } finally {
+        await request(server())
+          .patch(`/api/v1/staff/menu/${dish.id}`)
+          .set(await asStaff(ownerId))
+          .send({
+            active: true,
+            version: (saved.body as { version: number }).version,
+          })
+          .expect(200);
+      }
+    });
+
+    it('compresses the menu for a client that asks, and not for one that does not (B2)', async () => {
+      const gzipped = await get('/menu')
+        .set('Accept-Encoding', 'gzip')
+        .expect(200);
+      const brotli = await get('/menu')
+        .set('Accept-Encoding', 'br')
+        .expect(200);
+      const plain = await get('/menu')
+        .set('Accept-Encoding', 'identity')
+        .expect(200);
+
+      expect(gzipped.headers['content-encoding']).toBe('gzip');
+      expect(brotli.headers['content-encoding']).toBe('br');
+      expect(plain.headers['content-encoding']).toBeUndefined();
+      expect(gzipped.headers.vary).toMatch(/accept-encoding/i);
+      expect(gzipped.headers['cache-control']).toBe('public, max-age=60');
+      expect(gzipped.body).toEqual(plain.body);
+      expect(brotli.body).toEqual(plain.body);
+      expect((plain.body as MenuBody).categories.length).toBeGreaterThan(0);
+    });
+
+    it('answers 304 to a conditional request while nothing has changed, photo links included (B2)', async () => {
+      const dish = await prisma.menuItem.findFirstOrThrow({
+        where: { active: true, showOnline: true },
+        orderBy: { slug: 'asc' },
+        skip: 3,
+      });
+
+      await prisma.menuItem.update({
+        where: { id: dish.id },
+        data: {
+          photo: `gs://cnc-test-media/menu/${dish.id}/photo-${randomUUID()}.jpg`,
+          photoThumb: `gs://cnc-test-media/menu/${dish.id}/thumb-${randomUUID()}.webp`,
+        },
+      });
+
+      try {
+        const first = await get('/menu').expect(200);
+        const etag = first.headers.etag;
+
+        expect(etag).toMatch(/^W\/"/);
+
+        // The links are handed out again rather than signed afresh, so the
+        // body and its ETag hold from one read to the next.
+        const again = await get('/menu').expect(200);
+
+        expect(again.headers.etag).toBe(etag);
+        expect(findItem(again.body as MenuBody, dish.slug)).toEqual(
+          findItem(first.body as MenuBody, dish.slug),
+        );
+
+        const unchanged = await get('/menu')
+          .set('If-None-Match', etag)
+          .expect(304);
+
+        expect(unchanged.text ?? '').toBe('');
+        expect(unchanged.headers['cache-control']).toBe('public, max-age=60');
+      } finally {
+        await prisma.menuItem.update({
+          where: { id: dish.id },
+          data: { photo: null, photoThumb: null },
+        });
+      }
+    });
+
+    it('signs a photo and its thumbnail as links valid for an hour, never the gs:// address', async () => {
       const dish = await prisma.menuItem.findFirstOrThrow({
         where: { active: true, showOnline: true },
         orderBy: { name: 'asc' },
@@ -273,16 +385,35 @@ describe('public reads (e2e)', () => {
         where: { id: dish.id },
         data: {
           photo: `gs://cnc-test-media/menu/${dish.id}/${randomUUID()}.webp`,
+          photoThumb: `gs://cnc-test-media/menu/${dish.id}/thumb-${randomUUID()}.webp`,
           photoAlt: 'A plate',
         },
       });
 
       const response = await get('/menu').expect(200);
       const item = findItem(response.body as MenuBody, dish.slug);
+      const lifeOf = (url: unknown) =>
+        new URL(String(url)).searchParams.get('X-Goog-Expires');
 
       expect(item?.photoUrl).toMatch(/^https:\/\/storage\.test\/.+\/menu\//);
+      expect(item?.thumbUrl).toMatch(
+        /^https:\/\/storage\.test\/.+\/menu\/.+\/thumb-[0-9a-f-]+\.webp\?/,
+      );
+      expect(lifeOf(item?.photoUrl)).toBe('3600');
+      expect(lifeOf(item?.thumbUrl)).toBe('3600');
       expect(item?.photoAlt).toBe('A plate');
       expect(response.text).not.toContain('gs://');
+
+      // A photo stored before thumbnails: the photo, and no thumbnail yet.
+      await prisma.menuItem.update({
+        where: { id: dish.id },
+        data: { photoThumb: null },
+      });
+
+      const older = findItem(await menu(), dish.slug);
+
+      expect(older?.photoUrl).toBe(item?.photoUrl);
+      expect(older?.thumbUrl).toBeNull();
     });
   });
 

@@ -32,6 +32,7 @@ export class FakeMediaStorage extends MediaStorage {
   failSigning = false;
   failRemoving = false;
   failReading = false;
+  signings = 0;
 
   save(objectName: string, body: Buffer, contentType: string): Promise<string> {
     this.objects.set(objectName, { body, contentType });
@@ -39,6 +40,12 @@ export class FakeMediaStorage extends MediaStorage {
     return Promise.resolve(`gs://${FAKE_BUCKET}/${objectName}`);
   }
 
+  /**
+   * A fake link that, like a real V4 link, carries its life in seconds
+   * (`X-Goog-Expires`) and the moment it was signed (`X-Goog-Date`, here
+   * in milliseconds), so a suite can read both from a response. Every
+   * call is counted in `signings`.
+   */
   signedUrl(
     gsUri: string,
     ttlMs: number = DEFAULT_SIGNED_URL_TTL_MS,
@@ -47,11 +54,17 @@ export class FakeMediaStorage extends MediaStorage {
       return Promise.reject(new Error('Fake signing failure.'));
     }
 
+    this.signings += 1;
+
     const { bucket, objectName } = parseGsUri(gsUri);
-    const expiresAt = new Date(Date.now() + ttlMs);
+    const signedAt = Date.now();
+    const expiresAt = new Date(signedAt + ttlMs);
 
     return Promise.resolve({
-      url: `https://storage.test/${bucket}/${objectName}?X-Goog-Signature=fake`,
+      url:
+        `https://storage.test/${bucket}/${objectName}` +
+        `?X-Goog-Date=${signedAt}&X-Goog-Expires=${ttlMs / 1000}` +
+        '&X-Goog-Signature=fake',
       expiresAt,
     });
   }

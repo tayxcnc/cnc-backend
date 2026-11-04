@@ -98,7 +98,8 @@ export class GcsMediaStorage extends MediaStorage {
    * together: a staff photo is a few tens of kilobytes, so the whole object
    * is read into memory rather than streamed, and two parallel calls cost
    * one round trip. A 404 from either, including an object deleted between
-   * the two, answers null.
+   * the two, answers null. The bucket comes from the URI, as for
+   * `signedUrl`.
    */
   async read(gsUri: string): Promise<StoredObject | null> {
     const { bucket, objectName } = parseGsUri(gsUri);
