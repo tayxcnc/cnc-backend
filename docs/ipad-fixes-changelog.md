@@ -27,7 +27,8 @@ Branch `fix/copy-dashes-and-bill-tests` (platform fixes plan, wave 4, PR
   run inside each field's existing check, so a field still answers one
   sentence: a blank name still gets "Enter an item name and positive
   price." or "Enter the vendor name and phone.", and only a name that is
-  otherwise good gets the dash sentence.
+  otherwise good gets the dash sentence. The API documentation's 400
+  descriptions for the menu and vendor saves name the new sentence.
 - **Never on notes (P18).** Staff notes, reasons, tasks, anything a
   customer types and the business details still take a long dash, because
   an iPad turns a typed "--" into one and refusing it there would block
