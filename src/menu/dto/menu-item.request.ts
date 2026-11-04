@@ -8,13 +8,14 @@ import {
   IsOptional,
   IsString,
   Max,
-  MaxLength,
   Min,
   ValidateIf,
 } from 'class-validator';
 import { Department } from '../../../generated/cnc-client';
+import { Checked, requiredText, textUpTo } from '../../common/checked';
 import { VersionedWriteDto } from '../../common/dto/versioned-write.dto';
 import { isSent } from '../../common/is-sent';
+import { noLongDashes } from '../../common/no-long-dashes';
 import { trimText } from '../../common/trim-text';
 import { INT4_MAX } from '../../prisma/int4';
 import {
@@ -25,6 +26,40 @@ import {
   MENU_NAME_PRICE_MESSAGE,
   MENU_PHOTO_ALT_MAX_LENGTH,
 } from '../menu-messages';
+
+/*
+ * The three text fields a guest reads on the website and the menu: each
+ * answers one sentence (`Checked`), its own as before, then "Please rewrite
+ * this without long dashes." for a long dash (G2, decision P18). Shared by
+ * the create and the change, so the two cannot drift apart.
+ */
+
+/** The name: required, at most {@link MENU_NAME_MAX_LENGTH} characters. */
+const NAME_PROBLEM = noLongDashes(
+  requiredText(
+    MENU_NAME_PRICE_MESSAGE,
+    MENU_NAME_MAX_LENGTH,
+    `An item name must be ${MENU_NAME_MAX_LENGTH} characters or fewer.`,
+  ),
+);
+
+/** The description, when sent: text, possibly empty. */
+const DESCRIPTION_PROBLEM = noLongDashes(
+  textUpTo(
+    'description must be text.',
+    MENU_DESCRIPTION_MAX_LENGTH,
+    `A description must be ${MENU_DESCRIPTION_MAX_LENGTH} characters or fewer.`,
+  ),
+);
+
+/** The photo's alternative text, when sent and not null. */
+const PHOTO_ALT_PROBLEM = noLongDashes(
+  textUpTo(
+    'photoAlt must be text.',
+    MENU_PHOTO_ALT_MAX_LENGTH,
+    `photoAlt must be ${MENU_PHOTO_ALT_MAX_LENGTH} characters or fewer.`,
+  ),
+);
 
 /**
  * Body of `POST /api/v1/staff/menu`: `menu.save` adding a dish or a drink.
@@ -38,11 +73,7 @@ import {
 export class CreateMenuItemRequest {
   @ApiProperty({ example: 'Zobo Spritz', maxLength: MENU_NAME_MAX_LENGTH })
   @Transform(({ value }) => trimText(value))
-  @IsString({ message: MENU_NAME_PRICE_MESSAGE })
-  @IsNotEmpty({ message: MENU_NAME_PRICE_MESSAGE })
-  @MaxLength(MENU_NAME_MAX_LENGTH, {
-    message: `An item name must be ${MENU_NAME_MAX_LENGTH} characters or fewer.`,
-  })
+  @Checked(NAME_PROBLEM)
   name!: string;
 
   @ApiProperty({
@@ -74,10 +105,7 @@ export class CreateMenuItemRequest {
   })
   @Transform(({ value }) => trimText(value))
   @ValidateIf(isSent)
-  @IsString({ message: 'description must be text.' })
-  @MaxLength(MENU_DESCRIPTION_MAX_LENGTH, {
-    message: `A description must be ${MENU_DESCRIPTION_MAX_LENGTH} characters or fewer.`,
-  })
+  @Checked(DESCRIPTION_PROBLEM)
   description?: string;
 
   @ApiPropertyOptional({
@@ -105,10 +133,7 @@ export class CreateMenuItemRequest {
   })
   @Transform(({ value }) => trimText(value))
   @IsOptional()
-  @IsString({ message: 'photoAlt must be text.' })
-  @MaxLength(MENU_PHOTO_ALT_MAX_LENGTH, {
-    message: `photoAlt must be ${MENU_PHOTO_ALT_MAX_LENGTH} characters or fewer.`,
-  })
+  @Checked(PHOTO_ALT_PROBLEM)
   photoAlt?: string | null;
 }
 
@@ -126,11 +151,7 @@ export class UpdateMenuItemRequest extends VersionedWriteDto {
   })
   @Transform(({ value }) => trimText(value))
   @ValidateIf(isSent)
-  @IsString({ message: MENU_NAME_PRICE_MESSAGE })
-  @IsNotEmpty({ message: MENU_NAME_PRICE_MESSAGE })
-  @MaxLength(MENU_NAME_MAX_LENGTH, {
-    message: `An item name must be ${MENU_NAME_MAX_LENGTH} characters or fewer.`,
-  })
+  @Checked(NAME_PROBLEM)
   name?: string;
 
   @ApiPropertyOptional({
@@ -156,10 +177,7 @@ export class UpdateMenuItemRequest extends VersionedWriteDto {
   @ApiPropertyOptional({ maxLength: MENU_DESCRIPTION_MAX_LENGTH })
   @Transform(({ value }) => trimText(value))
   @ValidateIf(isSent)
-  @IsString({ message: 'description must be text.' })
-  @MaxLength(MENU_DESCRIPTION_MAX_LENGTH, {
-    message: `A description must be ${MENU_DESCRIPTION_MAX_LENGTH} characters or fewer.`,
-  })
+  @Checked(DESCRIPTION_PROBLEM)
   description?: string;
 
   @ApiPropertyOptional({ description: 'Available for Sale.' })
@@ -180,9 +198,6 @@ export class UpdateMenuItemRequest extends VersionedWriteDto {
   })
   @Transform(({ value }) => trimText(value))
   @IsOptional()
-  @IsString({ message: 'photoAlt must be text.' })
-  @MaxLength(MENU_PHOTO_ALT_MAX_LENGTH, {
-    message: `photoAlt must be ${MENU_PHOTO_ALT_MAX_LENGTH} characters or fewer.`,
-  })
+  @Checked(PHOTO_ALT_PROBLEM)
   photoAlt?: string | null;
 }

@@ -57,6 +57,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `GET /staff/overview`: manager vs staff overview, the layout deciding what is computed, each role's rows, Needs Attention, the trend's interval, the crosscheck over the last 366 days, the measured cost | The overview |
 | `GET /staff/notifications`: the bell's items, order and words, who gets which, the four alert switches, the review-task rule, the bounded poll, `readBell` in tests | The staff bell |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
+| Long dashes: refused only on menu items and vendors (`noLongDashes`), never on notes; the optional stored-text report | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
 | The C5 tables' CHECKs, one open shift per person, task links, pack cost | Stock requests, purchasing, waste, tasks, assets and attendance: the schema |
@@ -83,7 +84,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
 | Staff accounts: R2, session revocation, first passwords, QR reissue | Auth |
 | Staff ID cards and the QR payload; the sweep routes and the tokens sweep | Auth |
-| Suites that need a database of their own (`createIsolatedDatabase`) | Local environment |
+| Suites that need a database of their own (`createIsolatedDatabase`); the settings row from the seed's values (`createSeededSettingsIfMissing`) | Local environment |
+| The staff photo streamed as bytes (`GET /staff/me/photo`, `GET /staff/people/:id/photo`), its caching and read rule | Infrastructure; Auth |
 | The print record (`POST /staff/audit/print`); printing from API data | Money controls and the audit log |
 | A controlled clock in tests (fake `Date` only); the C4 gate walk and race suites | Local environment |
 | Shared-row e2e suites, seeded rows in tests | Local environment |
@@ -254,7 +256,8 @@ src/
                      plan §9.1 item in the demo's order, behind the alert
                      switches; the new items' words (staff-bell-items.ts),
                      the bounded pager over the kinds (bell-sources.ts)
-  shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
+  shell/             GET /staff/me, /staff/me/card, /staff/me/photo,
+                     /staff/reference (assets lite
                      for Reception and managers), the overview layout
                      (exported to overview/)
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
@@ -321,11 +324,13 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,
-                     shared-rows-lock.ts, test-images.ts
+                     seeded-settings.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
                      load:till, C8-4), load/load-targets.ts (where it may
                      run, its backoff); backfill-menu-thumbs.ts (npm run
-                     media:backfill-thumbs)
+                     media:backfill-thumbs); report-long-dashes.ts (stored
+                     long dashes in menu items and vendors, read-only
+                     unless --apply)
 docs/                conventions.md; load-testing.md (C8-4);
                      demo-tests-map.md (the 107 demo tests, C8-6)
 ```

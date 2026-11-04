@@ -39,8 +39,16 @@ export const SETTINGS = {
   /** The Daily Approval Limit, on, at ₦150,000 per manager per day (Q7). */
   dailyLimitOn: true,
   dailyLimitKobo: 15000000,
-  /** The staff app's default paper, `80mm`. */
-  printerWidth: PrinterWidth.MM80,
+  /**
+   * The staff app's default paper, `58mm` (CS B2): the receipt printer the
+   * venue uses is a 58 mm thermal printer, and a receipt laid out for 80 mm
+   * comes out shrunk or cut on it. 80 mm and A4 stay choices in Settings >
+   * Receipt Printer. The schema's column default stays `MM80`; only a
+   * seeded install starts on 58 mm, and the seed never overwrites a row
+   * that exists, so a database seeded earlier keeps its value until
+   * someone changes it in Settings.
+   */
+  printerWidth: PrinterWidth.MM58,
   /** The staff app's bell switches, all on (`ALERTS` in `domain.ts`). */
   alertLowStock: true,
   alertApprovals: true,

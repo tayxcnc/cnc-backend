@@ -10,6 +10,7 @@ import {
 } from '../generated/cnc-client';
 import { CncTokenService } from '../src/auth/cnc-token.service';
 import { ROLE_REFUSED_MESSAGE } from '../src/auth/staff-roles';
+import { NO_LONG_DASHES_MESSAGE } from '../src/common/no-long-dashes';
 import { IDEMPOTENCY_KEY_REQUIRED } from '../src/idempotency/idempotency-key.decorator';
 import {
   MENU_CATEGORY_MESSAGE,
@@ -414,6 +415,89 @@ describe('Menu & Prices (e2e)', () => {
           ...field,
         }).expect(400);
       }
+    });
+  });
+
+  describe('long dashes (G2, decision P18)', () => {
+    it('refuses one in a new item’s name, description or photo text, and adds nothing', async () => {
+      const name = `Dash Dish ${tag}`;
+
+      for (const body of [
+        dish({ name: `${name} — cold` }),
+        dish({ name, description: 'Zobo – chilled' }),
+        dish({ name, photoAlt: 'A glass — iced' }),
+      ]) {
+        const response = await create(ownerToken, body).expect(400);
+        expect(messageOf(response)).toEqual([
+          'Please rewrite this without long dashes.',
+        ]);
+      }
+
+      expect(
+        await prisma.menuItem.count({ where: { name: { startsWith: name } } }),
+      ).toBe(0);
+
+      // A hyphen is an ordinary word's, and passes.
+      const saved = await newDish({
+        name: `${name} Slow-cooked`,
+        description: 'Walk-in favourite',
+      });
+      expect(saved.name).toBe(`${name} Slow-cooked`);
+    });
+
+    it('refuses one in a change and leaves the item as it was', async () => {
+      const item = await newDish({ description: 'Smoky' });
+
+      for (const change of [
+        { name: `Renamed — ${tag}` },
+        { description: 'Smoky – hot' },
+        { photoAlt: 'Plate — top' },
+      ]) {
+        const response = await patch(managerToken, item.id, {
+          version: item.version,
+          ...change,
+        }).expect(400);
+        expect(messageOf(response)).toEqual([NO_LONG_DASHES_MESSAGE]);
+      }
+
+      const stored = await prisma.menuItem.findUniqueOrThrow({
+        where: { id: item.id },
+        select: {
+          name: true,
+          description: true,
+          photoAlt: true,
+          version: true,
+        },
+      });
+      expect(stored).toEqual({
+        name: item.name,
+        description: 'Smoky',
+        photoAlt: null,
+        version: item.version,
+      });
+    });
+
+    it('still answers each field’s own sentence first, once', async () => {
+      const nameless: Record<string, unknown> = dish();
+      delete nameless.name;
+      const missing = await create(ownerToken, nameless).expect(400);
+      expect(messageOf(missing)).toEqual([MENU_NAME_PRICE_MESSAGE]);
+
+      const long = await create(
+        ownerToken,
+        dish({ name: '—'.repeat(121) }),
+      ).expect(400);
+      expect(messageOf(long)).toEqual([
+        'An item name must be 120 characters or fewer.',
+      ]);
+
+      const notText = await create(ownerToken, dish({ description: 5 })).expect(
+        400,
+      );
+      expect(messageOf(notText)).toEqual(['description must be text.']);
+
+      const alt = await create(ownerToken, dish({ photoAlt: 7 })).expect(400);
+      expect(messageOf(alt)).toEqual(['photoAlt must be text.']);
     });
   });
 

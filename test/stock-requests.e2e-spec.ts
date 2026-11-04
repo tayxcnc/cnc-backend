@@ -32,6 +32,7 @@ import {
   STOCK_REQUEST_NOT_FOUND_MESSAGE,
 } from '../src/stock/stock-messages';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -64,7 +65,7 @@ describe('Stock requests (e2e)', () => {
 
     // The settings row the money controls read, and the business row, if no
     // seed has run on this database; never changed if present.
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
     await prisma.business.createMany({
       data: [{ ...BUSINESS, addressLines: [...BUSINESS.addressLines] }],
       skipDuplicates: true,

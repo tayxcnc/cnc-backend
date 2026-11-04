@@ -11,6 +11,7 @@ import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { presetWidgets } from '../src/shell/overview-preferences';
 import { STAFF_PAGES } from '../src/shell/staff-pages';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -30,7 +31,7 @@ describe('staff shell (e2e)', () => {
 
     // The one-row tables a seeded database holds, created if this one was
     // never seeded; never changed if present.
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
     await prisma.business.createMany({
       data: [{ ...BUSINESS, addressLines: [...BUSINESS.addressLines] }],
       skipDuplicates: true,

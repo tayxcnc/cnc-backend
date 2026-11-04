@@ -122,6 +122,22 @@ They are here so the first card that builds it starts from the rule.
   sentence would not reach the screen as it stands (A7). An "M+r" reason is
   `@AdminReason` (`src/common/admin-reason.ts`), whose one sentence is the
   demo's "An admin correction requires a reason."
+- **A long dash (U+2013, U+2014) is refused only in catalogue text: a menu
+  item's name, description and photo text, and every vendor field but the
+  notes, with "Please rewrite this without long dashes."** (platform fixes
+  G2, decisions P17 and P18). The check is `noLongDashes`
+  (`src/common/no-long-dashes.ts`), a combinator inside `@Checked`
+  (`OptionalText` takes `{ noLongDashes: true }`), so the field's own
+  sentence comes first and each field still answers one sentence. The
+  founder wants no long dash where people read CNC's text, because it reads
+  as machine written; but iPadOS Smart Punctuation turns a typed "--" into
+  one, so it is **never** refused in a staff note, a reason, a task,
+  anything a customer typed or the business details, where refusing it
+  would block daily work: the apps clean those when they show them. Text
+  the server writes itself carries no long dash either (the opening hours
+  history reads "08:00 until 24:00"). Stored values are found, and
+  optionally cleaned, by `scripts/report-long-dashes.ts` (read-only unless
+  `--apply`; never `Business` or `AuditLog`), not by a migration (P19).
 - **An item list in a request (`[{ stockItemId, qty }]`) is validated with
   `@ValidLines` (`src/common/command-lines.ts`), never `@ValidateNested`**
   (from C4). The ValidationPipe prefixes a nested error with its path
@@ -827,6 +843,15 @@ They are here so the first card that builds it starts from the rule.
   to every manager; once the attendance scan (C5-7) exists, a decoded card
   clocks its holder in and out, and Manager and Owner accounts are the
   Owner's (plan §5.4).
+- **A staff photo read follows its card's rule exactly**: `GET
+  /staff/me/photo` for everyone's own, `GET /staff/people/:id/photo` with
+  `@Roles()` and the same `mayReadCard` callback as `GET
+  /staff/people/:id/card`, run at the same point (after the row is found,
+  before anything is read from the bucket), through
+  `StaffCardService.photo` (CS B5). The photo is printed on the card, so a
+  photo readable more widely than its card would be a second, looser door
+  to part of the same document. It is not a credential, so unlike the card
+  it may be kept by the browser (see *Infrastructure*).
 - **Whether the refresh cookie carries `Secure` is
   `CncConfigService.secureCookies` (`NODE_ENV=production`), never a check
   written at a call site.** Staging runs `NODE_ENV=production` with
@@ -1608,6 +1633,17 @@ They are here so the first card that builds it starts from the rule.
   text, and a history row naming a document nobody can print would mislead
   its reader. Its four refusal sentences are new and marked so in
   `print-documents.ts`.
+- **The seeded receipt paper is 58 mm (`printerWidth` `MM58`); the
+  `Settings.printerWidth` column default stays `MM80`** (CS B2, platform
+  fixes plan P23). The venue's receipt printer is a 58 mm thermal printer,
+  and a receipt laid out for 80 mm comes out shrunk or cut on it. The
+  existing setting is kept rather than adding the brief's
+  `receipt_paper_width_mm`, because it already does the job and the staff
+  app already reads it. The change is the seed only, with no migration:
+  the seed never overwrites a settings row that exists, so a database
+  seeded earlier (staging) keeps its value until someone chooses 58 mm in
+  Settings > Receipt Printer. The staff app's order is the device's own
+  choice, then this setting, then 58 mm.
 
 ## Stock *(from C4)*
 
@@ -4262,6 +4298,25 @@ digests instead: a push at midnight would wake people).
   stored under a fresh random name; and a response signs it through
   `signedUrlOrNull`, which answers null rather than failing when signing
   fails.
+- **The staff photo is also streamed as bytes, by `GET /staff/me/photo`
+  and `GET /staff/people/:id/photo`, through `PhotoStore.read` and
+  `MediaStorage.read`; every other photo stays a signed link** (CS B5,
+  platform fixes plan P25). The staff app draws the Staff ID card into a
+  canvas and a PDF, and a canvas refuses a cross-origin image unless the
+  bucket answers with CORS, which it does not (the bucket's CORS is an open
+  infrastructure decision, so it is not changed here). The bytes are the
+  ones stored at upload, already the 320-pixel square, so nothing is
+  resized on the way out. Both answer `Cache-Control: private, max-age=300`
+  and append `Authorization` to `Vary` (`photoFile`,
+  `src/images/photo-response.ts`): a face behind a sign-in is never kept by
+  a shared cache, and `/staff/me/photo` is one URL for everyone on a shared
+  tablet, so without the `Vary` the next person signing in within five
+  minutes could be shown the previous person's photo. `Vary` is appended,
+  never set, because CORS's own `Vary: Origin` must survive. No photo, or a
+  recorded object missing from the bucket, is 404 "This staff account has
+  no photo."; a bucket that cannot be read is a 500, not "no photo",
+  because the photo is the whole answer and a false "no photo" would be
+  believed.
 - **A photo is uploaded before the command's transaction opens, the old
   object is removed after the commit, and a command that fails removes the
   new one.** An upload is a network call no transaction should hold a row
@@ -4536,6 +4591,15 @@ here.
   the rows, so without the lock a parallel run shows the seed suite a
   version it did not move. Such a suite never changes the approval limits,
   which other suites read live.
+- **A suite on the shared test database that needs the settings row
+  creates it, when missing, with the seed's values
+  (`createSeededSettingsIfMissing`, `test/seeded-settings.ts`), never from
+  the column defaults** (from CS B2). The seed's paper (58 mm) differs from
+  the column default (80 mm), and on a fresh CI database whichever suite
+  runs first creates the row: one created from the defaults leaves it at
+  80 mm, and the seed suite, which holds the row to the seed's values, then
+  fails or passes by the order the suites ran in (seen failing so before
+  the helper). Suites on a database of their own may use any values.
 - **An e2e suite never edits a seeded menu item, category or stock item;
   it makes run-unique ones of its own.** The seed suite holds the seeded
   menu to its sources field by field, and a fresh CI database may not have

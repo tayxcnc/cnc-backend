@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { PUBLIC_PHOTO_LINK_TTL_MS } from '../common/public-cache';
-import { MediaStorage, type SignedUrl } from '../storage/media-storage';
+import {
+  MediaStorage,
+  type SignedUrl,
+  type StoredObject,
+} from '../storage/media-storage';
 import {
   ImageResizerService,
   MENU_THUMB_FORMAT,
@@ -29,6 +33,12 @@ export interface StoredMenuPhoto {
   photo: string;
   thumb: string;
 }
+
+/**
+ * A photo's bytes and stored type, as `PhotoStore.read` answers it. Named
+ * here so code outside `images/` never reaches into `storage/`.
+ */
+export type StoredPhoto = StoredObject;
 
 /**
  * Staff and menu photographs (A17): judged by their bytes, resized, stored
@@ -108,10 +118,17 @@ export class PhotoStore {
   /**
    * A thumbnail for a menu photo stored before thumbnails existed, made
    * from the stored bytes; returns its `gs://` URI. The backfill's one
-   * step (`backfillMenuThumbs`).
+   * step (`backfillMenuThumbs`). A photo recorded but no longer in the
+   * bucket throws, so the backfill reports that item as failed.
    */
   async storeMenuThumbFor(itemId: string, photoGsUri: string): Promise<string> {
-    return this.writeMenuThumb(itemId, await this.storage.read(photoGsUri));
+    const stored = await this.storage.read(photoGsUri);
+
+    if (stored === null) {
+      throw new Error(`${photoGsUri} is recorded but not in the bucket.`);
+    }
+
+    return this.writeMenuThumb(itemId, stored.body);
   }
 
   /**
@@ -182,6 +199,31 @@ export class PhotoStore {
     }
 
     return signed.url;
+  }
+
+  /**
+   * The photo's bytes and type, for a route that streams it from the API
+   * (CS B5), or null when there is no photo: the column is null, or it
+   * names an object that is no longer in the bucket.
+   *
+   * Unlike `signedUrlOrNull`, a storage failure is not turned into null.
+   * There the photo is one field of a larger answer that should still
+   * arrive; here it is the whole answer, and "no photo" would be a false
+   * statement about the person, so the request fails (500) and the screen
+   * can try again.
+   */
+  async read(gsUri: string | null): Promise<StoredPhoto | null> {
+    if (gsUri === null) return null;
+
+    const stored = await this.storage.read(gsUri);
+
+    if (stored === null) {
+      this.logger.warn(
+        `${gsUri} is recorded but not in the bucket; answering as no photo.`,
+      );
+    }
+
+    return stored;
   }
 
   /**

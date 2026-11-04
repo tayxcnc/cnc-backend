@@ -13,6 +13,12 @@ export interface SignedUrl {
   expiresAt: Date;
 }
 
+/** A stored object's bytes and the content type it was saved with. */
+export interface StoredObject {
+  body: Buffer;
+  contentType: string;
+}
+
 /**
  * CNC's private media bucket (A17), as the rest of the service sees it.
  *
@@ -43,15 +49,22 @@ export abstract class MediaStorage {
     contentType: string,
   ): Promise<string>;
 
-  /**
-   * The stored bytes of a `gs://` URI. Only the menu thumbnail backfill
-   * reads an object back (`npm run media:backfill-thumbs`); every response
-   * hands out a signed link instead.
-   */
-  abstract read(gsUri: string): Promise<Buffer>;
-
   /** A short-lived V4 signed read link for a stored `gs://` URI. */
   abstract signedUrl(gsUri: string, ttlMs?: number): Promise<SignedUrl>;
+
+  /**
+   * The bytes behind a stored `gs://` URI, read by the service itself, or
+   * null when the object is not there. Any other failure throws.
+   *
+   * For a response that streams a photo through the API instead of handing
+   * out a signed link (the staff photo routes, CS B5): a browser canvas may
+   * not read a cross-origin image without the bucket's CORS, and the bucket
+   * has none, so a page that draws a photo into a card or a PDF fetches it
+   * from the API's own origin rules instead. The menu thumbnail backfill
+   * (`npm run media:backfill-thumbs`) also reads a stored photo back, to make
+   * its thumbnail from the stored bytes.
+   */
+  abstract read(gsUri: string): Promise<StoredObject | null>;
 
   /** Delete an object; one that is already gone counts as deleted. */
   abstract remove(gsUri: string): Promise<void>;
@@ -75,4 +88,17 @@ export function parseGsUri(gsUri: string): {
   }
 
   return { bucket: match[1], objectName: match[2] };
+}
+
+/**
+ * Whether a storage client's error means "no such object": the Cloud
+ * Storage client answers a missing object with an error whose `code` is the
+ * HTTP status, 404.
+ */
+export function isObjectNotFound(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 404
+  );
 }

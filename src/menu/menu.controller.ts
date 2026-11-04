@@ -130,8 +130,9 @@ export class MenuController {
     status: 400,
     description:
       '"Enter an item name and positive price.", "Choose a department.", ' +
-      '"Choose a category from the item\'s department.", or a missing ' +
-      'Idempotency-Key.',
+      '"Choose a category from the item\'s department.", "Please rewrite ' +
+      'this without long dashes." (a long dash in the name, description ' +
+      'or photo text), or a missing Idempotency-Key.',
     type: ApiErrorResponse,
   })
   @ApiResponse(UNAUTHORISED)
@@ -188,7 +189,9 @@ export class MenuController {
     status: 400,
     description:
       '"Enter an item name and positive price.", "Choose a category from ' +
-      'the item\'s department.", or another bad field.',
+      'the item\'s department.", "Please rewrite this without long ' +
+      'dashes." (a long dash in the name, description or photo text), or ' +
+      'another bad field.',
     type: ApiErrorResponse,
   })
   @ApiResponse(UNAUTHORISED)

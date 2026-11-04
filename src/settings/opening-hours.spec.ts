@@ -169,12 +169,12 @@ describe('opening hours', () => {
     it('records one plain field per day, so a sentence names the day', () => {
       expect(weekForAudit(toStoredWeek(week()))).toEqual({
         sunday: 'Closed',
-        monday: '08:00–24:00',
-        tuesday: '08:00–24:00',
-        wednesday: '08:00–24:00',
-        thursday: '08:00–24:00',
-        friday: '08:00–24:00',
-        saturday: '08:00–24:00',
+        monday: '08:00 until 24:00',
+        tuesday: '08:00 until 24:00',
+        wednesday: '08:00 until 24:00',
+        thursday: '08:00 until 24:00',
+        friday: '08:00 until 24:00',
+        saturday: '08:00 until 24:00',
       });
       expect(weekForAudit(null)).toBeNull();
     });

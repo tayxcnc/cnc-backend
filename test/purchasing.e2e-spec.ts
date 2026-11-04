@@ -18,6 +18,7 @@ import {
   LINES_EMPTY_MESSAGE,
   LINES_QTY_MESSAGE,
 } from '../src/common/command-lines';
+import { NO_LONG_DASHES_MESSAGE } from '../src/common/no-long-dashes';
 import { CncTokenService } from '../src/auth/cnc-token.service';
 import { ROLE_REFUSED_MESSAGE } from '../src/auth/staff-roles';
 import { IDEMPOTENCY_KEY_REQUIRED } from '../src/idempotency/idempotency-key.decorator';
@@ -147,6 +148,7 @@ describe('Vendors and purchases (e2e)', () => {
     name: string;
     service: string;
     phone: string;
+    notes: string;
     isActive: boolean;
     version: number;
   }
@@ -555,6 +557,64 @@ describe('Vendors and purchases (e2e)', () => {
           .set(as(actor))
           .expect(403);
       }
+    });
+
+    it('refuses a long dash in a vendor’s details but not in its notes (G2, P18)', async () => {
+      const name = `Dash Vendor ${randomUUID().slice(0, 8)}`;
+      const post = (body: Record<string, unknown>) =>
+        request(server())
+          .post('/api/v1/staff/vendors')
+          .set(as('storekeeper'))
+          .set('Idempotency-Key', randomUUID())
+          .send({ name, phone: '08000000010', ...body });
+
+      for (const field of [
+        { name: `${name} — Jos` },
+        { phone: '0800 – 000 0010' },
+        { service: 'Food – dry goods' },
+        { contact: 'Ada — buyer' },
+        { email: 'ada—buyer@example.com' },
+        { address: 'Rayfield – Jos' },
+      ]) {
+        const response = await post(field).expect(400);
+        expect(messageOf(response)).toEqual([
+          'Please rewrite this without long dashes.',
+        ]);
+      }
+      expect(
+        await prisma.vendor.count({ where: { name: { startsWith: name } } }),
+      ).toBe(0);
+
+      // A blank name answers the demo's sentence alone; a name that is only
+      // a dash is not blank, and answers the dash sentence alone.
+      const dashOnly = await post({ name: ' —' }).expect(400);
+      expect(messageOf(dashOnly)).toEqual([NO_LONG_DASHES_MESSAGE]);
+      const empty = await post({ name: '' }).expect(400);
+      expect(messageOf(empty)).toEqual([VENDOR_NAME_PHONE_MESSAGE]);
+
+      // The notes are a staff note: a dash typed on an iPad is kept.
+      const saved = (
+        await post({ notes: 'Delivers Mon–Fri — call first' }).expect(201)
+      ).body as Vendor;
+      expect(saved.notes).toBe('Delivers Mon–Fri — call first');
+
+      const edit = await request(server())
+        .patch(`/api/v1/staff/vendors/${saved.id}`)
+        .set(as('storekeeper'))
+        .send({
+          version: saved.version,
+          name,
+          phone: '08000000010',
+          service: 'Food — fresh',
+        })
+        .expect(400);
+      expect(messageOf(edit)).toEqual([NO_LONG_DASHES_MESSAGE]);
+      expect(
+        await prisma.vendor.findUniqueOrThrow({
+          where: { id: saved.id },
+          select: { service: true, version: true },
+        }),
+      ).toEqual({ service: saved.service, version: saved.version });
     });
 
     it('replays a retried create under its Idempotency-Key instead of adding the vendor twice', async () => {

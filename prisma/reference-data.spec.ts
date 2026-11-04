@@ -86,7 +86,7 @@ describe('reference data', () => {
         approvalLimitKobo: 5000000,
         dailyLimitOn: true,
         dailyLimitKobo: 15000000,
-        printerWidth: 'MM80',
+        printerWidth: 'MM58',
         alertLowStock: true,
         alertApprovals: true,
         alertUnsettled: true,
@@ -100,7 +100,7 @@ describe('reference data', () => {
       });
     });
 
-    it('equals the column defaults the C3 core migration gives the Settings table', () => {
+    it('equals the column defaults the C3 core migration gives the Settings table, except the paper', () => {
       const sql = readFileSync(
         join(
           __dirname,
@@ -135,7 +135,12 @@ describe('reference data', () => {
               : (/^'(.*)'$/.exec(value)?.[1] ?? Number(value));
       }
 
-      expect(defaults).toEqual({ ...SETTINGS });
+      // CS B2: the seed starts the receipt paper at 58 mm, while the column
+      // default stays 80 mm because the change ships with no migration. It
+      // is the one difference, so a suite that needs the seeded row writes
+      // it from SETTINGS (test/seeded-settings.ts), never from the defaults.
+      expect(defaults).toEqual({ ...SETTINGS, printerWidth: 'MM80' });
+      expect(SETTINGS.printerWidth).toBe('MM58');
     });
   });
 

@@ -230,6 +230,34 @@ describe('PhotoStore', () => {
     });
   });
 
+  it('reads back the stored bytes and type, null for no photo or a missing object, and throws when the read fails', async () => {
+    const gsUri = await photos.store('staff', 'staff-1', {
+      buffer: await photo(),
+    });
+    const warned = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+    try {
+      await expect(photos.read(gsUri)).resolves.toEqual({
+        body: storage.objectAt(gsUri)?.body,
+        contentType: 'image/jpeg',
+      });
+      await expect(photos.read(null)).resolves.toBeNull();
+      expect(warned).not.toHaveBeenCalled();
+
+      // Recorded but gone from the bucket: no photo, and a warning that
+      // names the row's URI.
+      storage.objects.clear();
+      await expect(photos.read(gsUri)).resolves.toBeNull();
+      expect(warned).toHaveBeenCalledTimes(1);
+
+      // A failing bucket is not "no photo".
+      storage.failReading = true;
+      await expect(photos.read(gsUri)).rejects.toThrow('Fake read failure.');
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
   it('removes quietly, and never throws when removal fails', async () => {
     const gsUri = await photos.store('menu', 'item-1', {
       buffer: await photo(),

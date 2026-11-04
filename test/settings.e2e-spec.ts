@@ -23,6 +23,7 @@ import {
   SETTINGS_RANGES_MESSAGE,
 } from '../src/settings/settings-rules';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { lockSharedRows } from './shared-rows-lock';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
@@ -71,7 +72,7 @@ describe('Settings (e2e)', () => {
 
     // The rows a seeded database holds, created if this one was never
     // seeded (a fresh CI database); never changed if present.
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
     await prisma.business.createMany({
       data: [{ ...BUSINESS, addressLines: [...BUSINESS.addressLines] }],
       skipDuplicates: true,
@@ -222,18 +223,24 @@ describe('Settings (e2e)', () => {
   describe('settings.save', () => {
     it('lets a manager change the printer and an alert, and moves the version', async () => {
       const version = await settingsVersion();
+      // A width the row does not already hold, so the save really changes
+      // the printer (the seed is MM58).
+      const otherWidth =
+        originalSettings.printerWidth === PrinterWidth.MM58
+          ? PrinterWidth.MM80
+          : PrinterWidth.MM58;
 
       const response = await saveSettings(
         managerToken,
         {
-          printerWidth: PrinterWidth.MM58,
+          printerWidth: otherWidth,
           alertArrivals: !originalSettings.alertArrivals,
         },
         200,
       );
 
       expect(response.body).toMatchObject({
-        printerWidth: PrinterWidth.MM58,
+        printerWidth: otherWidth,
         alertArrivals: !originalSettings.alertArrivals,
         version: version + 1,
       });
@@ -441,7 +448,7 @@ describe('Settings (e2e)', () => {
       expect(row).toEqual(
         expect.objectContaining({
           actionLabel: 'Opening Hours Saved',
-          changes: ['Monday changed from 08:00–24:00 to Closed.'],
+          changes: ['Monday changed from 08:00 until 24:00 to Closed.'],
         }),
       );
     });
