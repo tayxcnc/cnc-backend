@@ -43,6 +43,13 @@ export abstract class MediaStorage {
     contentType: string,
   ): Promise<string>;
 
+  /**
+   * The stored bytes of a `gs://` URI. Only the menu thumbnail backfill
+   * reads an object back (`npm run media:backfill-thumbs`); every response
+   * hands out a signed link instead.
+   */
+  abstract read(gsUri: string): Promise<Buffer>;
+
   /** A short-lived V4 signed read link for a stored `gs://` URI. */
   abstract signedUrl(gsUri: string, ttlMs?: number): Promise<SignedUrl>;
 

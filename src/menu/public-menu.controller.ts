@@ -20,9 +20,11 @@ export class PublicMenuController {
     summary: 'The menu the website shows',
     description:
       'Every dish that is Available for Sale and Show Online, by customer ' +
-      'category, with its price in kobo, group, choice, and a photo link ' +
-      'valid for an hour. An unavailable dish is left out (Q37). Public; ' +
-      'cached for a minute.',
+      'category, with its price in kobo, group, choice, and photo and ' +
+      'thumbnail links valid for at least 45 minutes. An unavailable dish ' +
+      'is left out (Q37). Public; cached for a minute, with an `ETag` ' +
+      '(`If-None-Match` answers 304 while nothing changed) and compressed ' +
+      'for a client that asks.',
   })
   @ApiResponse({ status: 200, type: PublicMenuResponse })
   menuRead(): Promise<PublicMenuResponse> {

@@ -23,6 +23,17 @@ export const PHOTO_SHAPES = {
 export type PhotoKind = keyof typeof PHOTO_SHAPES;
 
 /**
+ * A menu photo's thumbnail (B2): fits inside 240 pixels at its own shape,
+ * always WebP, for the menu's list views (`thumbUrl` on `GET /menu`). A
+ * dish card shows a small picture, and the 800 pixel photo is several times
+ * the bytes it needs on a phone.
+ */
+export const MENU_THUMB_EDGE = 240;
+
+/** The thumbnail's format, whatever the photo's: WebP keeps transparency. */
+export const MENU_THUMB_FORMAT = WEBP;
+
+/**
  * Quality for the two lossy formats: past 82, more bytes stop buying
  * visible quality at these sizes. PNG is lossless and compressed instead.
  */
@@ -74,6 +85,24 @@ export class ImageResizerService {
         withoutEnlargement: true,
       }),
       image.format,
+    );
+  }
+
+  /**
+   * The menu thumbnail of a photo that is already stored (so already
+   * turned upright and stripped of metadata), fitted inside
+   * `MENU_THUMB_EDGE`, never enlarged, as WebP. Made from the stored photo
+   * both at upload and by the backfill, so the two give the same result.
+   */
+  menuThumbnail(stored: Buffer): Promise<Buffer> {
+    return this.encode(
+      sharp(stored, { limitInputPixels: MAX_IMAGE_PIXELS })
+        .rotate()
+        .resize(MENU_THUMB_EDGE, MENU_THUMB_EDGE, {
+          fit: 'inside',
+          withoutEnlargement: true,
+        }),
+      MENU_THUMB_FORMAT,
     );
   }
 

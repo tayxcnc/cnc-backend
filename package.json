@@ -26,7 +26,8 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "ts-node -r dotenv/config prisma/seed.ts",
     "db:seed:owner": "ts-node -r dotenv/config prisma/seed-owner.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "media:backfill-thumbs": "ts-node -r dotenv/config scripts/backfill-menu-thumbs.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "8.4.0",

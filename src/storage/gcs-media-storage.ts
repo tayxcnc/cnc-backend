@@ -64,6 +64,18 @@ export class GcsMediaStorage extends MediaStorage {
     return `gs://${bucket}/${objectName}`;
   }
 
+  /** The bucket comes from the URI, as for `signedUrl`. */
+  async read(gsUri: string): Promise<Buffer> {
+    const { bucket, objectName } = parseGsUri(gsUri);
+
+    const [body] = await this.storage()
+      .bucket(bucket)
+      .file(objectName)
+      .download();
+
+    return body;
+  }
+
   /**
    * The bucket comes from the URI, not from configuration, so an object
    * written before a bucket change still resolves.

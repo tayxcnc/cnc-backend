@@ -6,8 +6,10 @@ import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_SIZE,
 } from '../common/dto/pagination.query';
-import { PUBLIC_PHOTO_LINK_TTL_MS } from '../common/public-cache';
-import { PhotoStore } from '../images/photo-store.service';
+import {
+  PhotoStore,
+  type StoredMenuPhoto,
+} from '../images/photo-store.service';
 import type { UploadedImageFile } from '../images/uploaded-image';
 import {
   MoneyControlService,
@@ -382,7 +384,10 @@ export class MenuService {
     return this.toResponse(row);
   }
 
-  /** Replace an item's photo (managers; resized to fit 800 pixels). */
+  /**
+   * Replace an item's photo (managers; resized to fit 800 pixels), with
+   * its 240 pixel thumbnail for the public menu's list views (B2).
+   */
   async replacePhoto(
     actor: StaffPrincipal,
     id: string,
@@ -390,9 +395,9 @@ export class MenuService {
     file: UploadedImageFile | undefined,
     ipAddress: string,
   ): Promise<MenuItemResponse> {
-    const gsUri = await this.photos.store('menu', id, file);
+    const stored = await this.photos.storeMenuPhoto(id, file);
 
-    return this.writePhoto(actor, id, version, gsUri, ipAddress);
+    return this.writePhoto(actor, id, version, stored, ipAddress);
   }
 
   /** Remove an item's photo (managers). */
@@ -406,17 +411,23 @@ export class MenuService {
   }
 
   /**
-   * Point the item at a new photo, or none, and tidy the bucket afterwards
-   * (see `PhotoStore` for the order).
+   * Point the item at a new photo and thumbnail, or none, and tidy the
+   * bucket afterwards (see `PhotoStore` for the order). The two move
+   * together, so the thumbnail is always of the photo beside it.
    */
   private async writePhoto(
     actor: StaffPrincipal,
     id: string,
     version: number,
-    gsUri: string | null,
+    stored: StoredMenuPhoto | null,
     ipAddress: string,
   ): Promise<MenuItemResponse> {
-    let result: { row: MenuItemRow; replaced: string | null };
+    const photo = stored?.photo ?? null;
+    const photoThumb = stored?.thumb ?? null;
+    let result: {
+      row: MenuItemRow;
+      replaced: { photo: string | null; photoThumb: string | null };
+    };
 
     try {
       result = await this.prisma.$transaction(async (tx) => {
@@ -429,12 +440,12 @@ export class MenuService {
 
         const current = await tx.menuItem.findUniqueOrThrow({
           where: { id },
-          select: { photo: true },
+          select: { photo: true, photoThumb: true },
         });
 
         await tx.menuItem.update({
           where: { id },
-          data: { photo: gsUri },
+          data: { photo, photoThumb },
           select: { id: true },
         });
         const row = await readMenuItem(tx, id);
@@ -445,21 +456,25 @@ export class MenuService {
             action: 'menu.photo',
             ref: row.slug,
             before: { hasPhoto: current.photo !== null },
-            after: { hasPhoto: gsUri !== null },
+            after: { hasPhoto: photo !== null },
             ipAddress,
           },
           tx,
         );
 
-        return { row, replaced: current.photo };
+        return { row, replaced: current };
       });
     } catch (error) {
-      await this.photos.removeQuietly(gsUri);
+      await this.photos.removeQuietly(photo);
+      await this.photos.removeQuietly(photoThumb);
       throw error;
     }
 
-    if (result.replaced !== gsUri) {
-      await this.photos.removeQuietly(result.replaced);
+    if (result.replaced.photo !== photo) {
+      await this.photos.removeQuietly(result.replaced.photo);
+    }
+    if (result.replaced.photoThumb !== photoThumb) {
+      await this.photos.removeQuietly(result.replaced.photoThumb);
     }
 
     return this.toResponse(result.row);
@@ -498,8 +513,11 @@ export class MenuService {
    * list. Only items that are Available for Sale and Show Online (Q37's
    * default: an unavailable dish is hidden, with no "Sold out" state), in
    * the customer categories' order, the category's dishes by `sort`; a
-   * category left with none is not listed. Photos are signed for an hour,
-   * because the answer is cached (`PUBLIC_PHOTO_LINK_TTL_MS`).
+   * category left with none is not listed. Photos and their thumbnails are
+   * signed for an hour and the links reused while 45 minutes remain
+   * (`PhotoStore.publicSignedUrlOrNull`), because the answer is cached.
+   * Two queries, and nothing remembered between reads but those links, so
+   * a price or availability change shows on the very next read.
    */
   async publicMenu(): Promise<PublicMenuResponse> {
     const categories = await this.prisma.menuCategory.findMany({
@@ -520,6 +538,7 @@ export class MenuService {
         choiceLabel: true,
         choiceOptions: true,
         photo: true,
+        photoThumb: true,
         photoAlt: true,
       },
     });
@@ -538,10 +557,12 @@ export class MenuService {
             item.choiceLabel !== null && item.choiceOptions.length > 0
               ? { label: item.choiceLabel, options: item.choiceOptions }
               : null,
-          photoUrl: await this.photos.signedUrlOrNull(
-            item.photo,
-            PUBLIC_PHOTO_LINK_TTL_MS,
-          ),
+          photoUrl: await this.photos.publicSignedUrlOrNull(item.photo),
+          // Never a thumbnail without the photo it was made from.
+          thumbUrl:
+            item.photo === null
+              ? null
+              : await this.photos.publicSignedUrlOrNull(item.photoThumb),
           photoAlt: item.photoAlt,
         } satisfies PublicMenuItemResponse,
       })),

@@ -433,20 +433,48 @@ describe('Menu & Prices (e2e)', () => {
         item.version,
         await testImage(2000, 1000, 'png'),
       ).expect(200);
-      const firstUri = (
-        await prisma.menuItem.findUniqueOrThrow({ where: { id: item.id } })
-      ).photo!;
+      const firstRow = await prisma.menuItem.findUniqueOrThrow({
+        where: { id: item.id },
+      });
+      const firstUri = firstRow.photo!;
+      const firstThumb = firstRow.photoThumb!;
       const meta = await sharp(storage.objectAt(firstUri)?.body).metadata();
+      // The thumbnail (B2): WebP inside 240 pixels, beside the photo.
+      const thumbMeta = await sharp(
+        storage.objectAt(firstThumb)?.body,
+      ).metadata();
 
       expect([meta.width, meta.height, meta.format]).toEqual([800, 400, 'png']);
+      expect(firstThumb).toMatch(
+        new RegExp(`/menu/${item.id}/thumb-[0-9a-f-]{36}\\.webp$`),
+      );
+      expect([thumbMeta.width, thumbMeta.height, thumbMeta.format]).toEqual([
+        240,
+        120,
+        'webp',
+      ]);
       expect((first.body as Item).photoUrl).toMatch(/\/menu\//);
+      // The staff item's shape is unchanged: no thumbnail field.
+      expect(first.body).not.toHaveProperty('thumbUrl');
 
       const second = await upload(
         item.id,
         (first.body as Item).version,
         await testImage(500, 500),
       ).expect(200);
+      const secondRow = await prisma.menuItem.findUniqueOrThrow({
+        where: { id: item.id },
+      });
       expect(storage.objectAt(firstUri)).toBeUndefined();
+      expect(storage.objectAt(firstThumb)).toBeUndefined();
+      expect(storage.objectAt(secondRow.photoThumb!)).toBeDefined();
+
+      // A refused command (a stale version) leaves no new object behind.
+      const stored = storage.objects.size;
+      await upload(item.id, item.version, await testImage(300, 300)).expect(
+        409,
+      );
+      expect(storage.objects.size).toBe(stored);
 
       const removed = await request(server())
         .delete(`/api/v1/staff/menu/${item.id}/photo`)
@@ -454,6 +482,14 @@ describe('Menu & Prices (e2e)', () => {
         .send({ version: (second.body as Item).version })
         .expect(200);
       expect((removed.body as Item).photoUrl).toBeNull();
+      expect(
+        await prisma.menuItem.findUniqueOrThrow({
+          where: { id: item.id },
+          select: { photo: true, photoThumb: true },
+        }),
+      ).toEqual({ photo: null, photoThumb: null });
+      expect(storage.objectAt(secondRow.photo!)).toBeUndefined();
+      expect(storage.objectAt(secondRow.photoThumb!)).toBeUndefined();
 
       const history = await prisma.auditLog.findMany({
         where: { ref: item.slug, action: 'menu.photo' },

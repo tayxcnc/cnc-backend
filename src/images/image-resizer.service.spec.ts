@@ -41,6 +41,42 @@ describe('ImageResizerService', () => {
     expect([meta.width, meta.height, meta.format]).toEqual([800, 400, 'webp']);
   });
 
+  it('makes a menu thumbnail as WebP fitting inside 240 pixels at its own shape (B2)', async () => {
+    const landscape = await resizer.menuThumbnail(
+      await blank(800, 400).jpeg().toBuffer(),
+    );
+    const portrait = await resizer.menuThumbnail(
+      await blank(600, 800).png().toBuffer(),
+    );
+
+    const [wide, tall] = await Promise.all(
+      [landscape, portrait].map((bytes) => sharp(bytes).metadata()),
+    );
+    expect([wide.width, wide.height, wide.format]).toEqual([240, 120, 'webp']);
+    expect([tall.width, tall.height, tall.format]).toEqual([180, 240, 'webp']);
+  });
+
+  it('never enlarges a menu thumbnail, and keeps a transparent background', async () => {
+    const bytes = await sharp({
+      create: {
+        width: 100,
+        height: 80,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .png()
+      .toBuffer();
+    const meta = await sharp(await resizer.menuThumbnail(bytes)).metadata();
+
+    expect([meta.width, meta.height, meta.format, meta.hasAlpha]).toEqual([
+      100,
+      80,
+      'webp',
+      true,
+    ]);
+  });
+
   it('never enlarges a small menu photo', async () => {
     const bytes = await blank(300, 200).jpeg().toBuffer();
     const stored = await resizer.resize('menu', bytes, inspected(bytes));
