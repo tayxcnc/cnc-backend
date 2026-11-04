@@ -9,6 +9,7 @@ import { Checked, requiredText } from '../../common/checked';
 import { PaginationQuery } from '../../common/dto/pagination.query';
 import { VersionedWriteDto } from '../../common/dto/versioned-write.dto';
 import { isSent } from '../../common/is-sent';
+import { noLongDashes } from '../../common/no-long-dashes';
 import { OptionalText } from '../../common/optional-text';
 import { trimText } from '../../common/trim-text';
 import {
@@ -24,13 +25,18 @@ import {
  * sentence must show once, as it stands (A7).
  */
 
-/** The name and phone: required, refused with the demo's one sentence. */
+/**
+ * The name and phone: required, refused with the demo's one sentence, then
+ * "Please rewrite this without long dashes." for a long dash (P18).
+ */
 const RequiredVendorText = (name: string) =>
   Checked(
-    requiredText(
-      VENDOR_NAME_PHONE_MESSAGE,
-      VENDOR_TEXT_MAX_LENGTH,
-      `${name} must be ${VENDOR_TEXT_MAX_LENGTH} characters or fewer.`,
+    noLongDashes(
+      requiredText(
+        VENDOR_NAME_PHONE_MESSAGE,
+        VENDOR_TEXT_MAX_LENGTH,
+        `${name} must be ${VENDOR_TEXT_MAX_LENGTH} characters or fewer.`,
+      ),
     ),
   );
 
@@ -38,6 +44,11 @@ const RequiredVendorText = (name: string) =>
  * Body of `POST /staff/vendors` and `PATCH /staff/vendors/:id`:
  * `vendor.save`. The whole profile, as the Vendor Profile form sends it; an
  * optional text left out is saved empty, as in the demo.
+ *
+ * Every vendor field refuses a long dash (G2, decision P18) except the
+ * notes: "Services / Procurement Notes" is a staff note, typed on an iPad
+ * whose Smart Punctuation turns "--" into a long dash, and P18 never
+ * refuses a staff note. The app cleans it where it shows it.
  */
 export class SaveVendorFields {
   @ApiProperty({ example: 'Plateau Fresh Foods', maxLength: 120 })
@@ -51,19 +62,19 @@ export class SaveVendorFields {
   phone!: string;
 
   @ApiPropertyOptional({ example: 'Food supplies', maxLength: 120 })
-  @OptionalText('service', VENDOR_TEXT_MAX_LENGTH)
+  @OptionalText('service', VENDOR_TEXT_MAX_LENGTH, { noLongDashes: true })
   service?: string;
 
   @ApiPropertyOptional({ description: 'Contact person.', maxLength: 120 })
-  @OptionalText('contact', VENDOR_TEXT_MAX_LENGTH)
+  @OptionalText('contact', VENDOR_TEXT_MAX_LENGTH, { noLongDashes: true })
   contact?: string;
 
   @ApiPropertyOptional({ maxLength: VENDOR_EMAIL_MAX_LENGTH })
-  @OptionalText('email', VENDOR_EMAIL_MAX_LENGTH)
+  @OptionalText('email', VENDOR_EMAIL_MAX_LENGTH, { noLongDashes: true })
   email?: string;
 
   @ApiPropertyOptional({ maxLength: PURCHASING_NOTE_MAX_LENGTH })
-  @OptionalText('address', PURCHASING_NOTE_MAX_LENGTH)
+  @OptionalText('address', PURCHASING_NOTE_MAX_LENGTH, { noLongDashes: true })
   address?: string;
 
   @ApiPropertyOptional({

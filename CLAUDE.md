@@ -57,6 +57,7 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `GET /staff/overview`: manager vs staff overview, the layout deciding what is computed, each role's rows, Needs Attention, the trend's interval, the crosscheck over the last 366 days, the measured cost | The overview |
 | `GET /staff/notifications`: the bell's items, order and words, who gets which, the four alert switches, the review-task rule, the bounded poll, `readBell` in tests | The staff bell |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
+| Long dashes: refused only on menu items and vendors (`noLongDashes`), never on notes; the optional stored-text report | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
 | The C5 tables' CHECKs, one open shift per person, task links, pack cost | Stock requests, purchasing, waste, tasks, assets and attendance: the schema |
@@ -321,7 +322,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      seeded-settings.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
                      load:till, C8-4), load/load-targets.ts (where it may
-                     run, its backoff)
+                     run, its backoff); report-long-dashes.ts (stored long
+                     dashes in menu items and vendors, read-only unless
+                     --apply)
 docs/                conventions.md; load-testing.md (C8-4);
                      demo-tests-map.md (the 107 demo tests, C8-6)
 ```
