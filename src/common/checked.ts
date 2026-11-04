@@ -45,6 +45,23 @@ export function requiredText(
 }
 
 /**
+ * Optional text, once it is sent: a string (the field is trimmed by its
+ * `@Transform` first, and may be empty) of at most `maxLength` characters.
+ * Whether it was sent is the field's `@ValidateIf` or `@IsOptional`.
+ */
+export function textUpTo(
+  notText: string,
+  maxLength: number,
+  tooLong: string,
+): (value: unknown) => string | null {
+  return (value) => {
+    if (typeof value !== 'string') return notText;
+
+    return value.length > maxLength ? tooLong : null;
+  };
+}
+
+/**
  * A business date: a `YYYY-MM-DD` string naming a real day
  * (`parseIsoDate`), never an instant (*Contract conventions*). Shared by
  * every request and query that names a business date, so each answers its
