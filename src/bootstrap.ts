@@ -5,6 +5,7 @@ import {
   type ValidationPipeOptions,
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import compression from 'compression';
 import helmet from 'helmet';
 import { CncAppModule } from './app.module';
 import { StructuredLogger } from './common/logging/structured-logger';
@@ -86,6 +87,22 @@ export const CORS_ALLOWED_HEADERS = [
  * (C8-3), so a screen can say how long to wait.
  */
 export const CORS_EXPOSED_HEADERS = ['Retry-After'] as const;
+
+/**
+ * Compress responses for a client that asks (Brotli or gzip, by its
+ * `Accept-Encoding`), above the package's 1 KB floor (B2: the menu list is
+ * about 39 KB as JSON and under 4 KB compressed).
+ *
+ * Responses only: a request body is never touched, so the Paystack
+ * webhook's signature is still checked over the exact bytes Paystack sent
+ * (`rawBody`). Images are left alone (already compressed), and Express's
+ * `ETag` is computed before compression, so a conditional request still
+ * answers 304. A function, so that `bootstrap()` and the e2e harness
+ * compress identically.
+ */
+export function useCompression(app: INestApplication): void {
+  app.use(compression());
+}
 
 /** The one method this needs from the Express instance under the adapter. */
 interface SettableApp {
@@ -199,6 +216,9 @@ export async function bootstrap(): Promise<void> {
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
 
   app.use(helmet());
+
+  // After helmet, so its headers are set before a body is compressed.
+  useCompression(app);
 
   useCors(app, config.corsOrigins);
 
