@@ -3,6 +3,7 @@ import {
   MediaStorage,
   parseGsUri,
   type SignedUrl,
+  type StoredObject,
 } from '../src/storage/media-storage';
 
 /** The bucket name the fake reports; no real bucket is ever named. */
@@ -21,14 +22,16 @@ export interface FakeObject {
  *
  * Objects are kept by name so a test can read back exactly what was stored
  * (the resized bytes) and see what was removed. Signed URLs are fake links
- * that name the object and expire like real ones. `failSigning` and
- * `failRemoving` make the next calls throw, for the paths that must survive
- * a storage failure.
+ * that name the object and expire like real ones. `read` answers the stored
+ * bytes, or null for an object that is not there, as the real binding does
+ * for a 404. `failSigning`, `failRemoving` and `failReading` make the next
+ * calls throw, for the paths that must survive or report a storage failure.
  */
 export class FakeMediaStorage extends MediaStorage {
   readonly objects = new Map<string, FakeObject>();
   failSigning = false;
   failRemoving = false;
+  failReading = false;
 
   save(objectName: string, body: Buffer, contentType: string): Promise<string> {
     this.objects.set(objectName, { body, contentType });
@@ -51,6 +54,20 @@ export class FakeMediaStorage extends MediaStorage {
       url: `https://storage.test/${bucket}/${objectName}?X-Goog-Signature=fake`,
       expiresAt,
     });
+  }
+
+  read(gsUri: string): Promise<StoredObject | null> {
+    if (this.failReading) {
+      return Promise.reject(new Error('Fake read failure.'));
+    }
+
+    const stored = this.objectAt(gsUri);
+
+    return Promise.resolve(
+      stored === undefined
+        ? null
+        : { body: stored.body, contentType: stored.contentType },
+    );
   }
 
   remove(gsUri: string): Promise<void> {

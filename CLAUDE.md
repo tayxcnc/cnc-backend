@@ -84,7 +84,8 @@ Every entry below is a pointer, not a rule. Read the named section of
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
 | Staff accounts: R2, session revocation, first passwords, QR reissue | Auth |
 | Staff ID cards and the QR payload; the sweep routes and the tokens sweep | Auth |
-| Suites that need a database of their own (`createIsolatedDatabase`) | Local environment |
+| Suites that need a database of their own (`createIsolatedDatabase`); the settings row from the seed's values (`createSeededSettingsIfMissing`) | Local environment |
+| The staff photo streamed as bytes (`GET /staff/me/photo`, `GET /staff/people/:id/photo`), its caching and read rule | Infrastructure; Auth |
 | The print record (`POST /staff/audit/print`); printing from API data | Money controls and the audit log |
 | A controlled clock in tests (fake `Date` only); the C4 gate walk and race suites | Local environment |
 | Shared-row e2e suites, seeded rows in tests | Local environment |
@@ -252,7 +253,8 @@ src/
                      plan §9.1 item in the demo's order, behind the alert
                      switches; the new items' words (staff-bell-items.ts),
                      the bounded pager over the kinds (bell-sources.ts)
-  shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
+  shell/             GET /staff/me, /staff/me/card, /staff/me/photo,
+                     /staff/reference (assets lite
                      for Reception and managers), the overview layout
                      (exported to overview/)
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
@@ -317,7 +319,7 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,
-                     shared-rows-lock.ts, test-images.ts
+                     seeded-settings.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
                      load:till, C8-4), load/load-targets.ts (where it may
                      run, its backoff); report-long-dashes.ts (stored long

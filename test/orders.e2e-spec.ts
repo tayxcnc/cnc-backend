@@ -36,6 +36,7 @@ import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { STALE_VERSION_MESSAGE } from '../src/prisma/optimistic-version';
 import { drawNumber } from '../src/prisma/sequences';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -82,7 +83,7 @@ describe('Orders and dockets (e2e)', () => {
     app = await createTestApp();
     prisma = app.get(CncPrismaService);
 
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
     ({ vatBps, serviceBps } = await prisma.settings.findUniqueOrThrow({
       where: { singleton: true },
       select: { vatBps: true, serviceBps: true },

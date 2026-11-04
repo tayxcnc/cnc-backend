@@ -62,6 +62,7 @@ import { drawNumber } from '../src/prisma/sequences';
 import { StockLedgerService } from '../src/stock/stock-ledger.service';
 import { insufficientStockMessage } from '../src/stock/stock-messages';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -126,7 +127,7 @@ describe('Order payments and corrections (e2e)', () => {
     prisma = app.get(CncPrismaService);
     ledger = app.get(StockLedgerService, { strict: false });
 
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
     ({ approvalLimitKobo, dailyLimitOn, dailyLimitKobo } =
       await prisma.settings.findUniqueOrThrow({
         where: { singleton: true },

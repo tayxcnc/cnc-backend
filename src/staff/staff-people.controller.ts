@@ -11,6 +11,8 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UploadedFile,
   UseGuards,
 } from '@nestjs/common';
@@ -21,7 +23,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { CurrentStaff } from '../auth/decorators/current-staff.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CncStaffGuard } from '../auth/guards/cnc-staff.guard';
@@ -29,6 +31,7 @@ import type { StaffPrincipal } from '../auth/staff-principal';
 import { clientAddressOf } from '../common/client-address';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { VersionedWriteDto } from '../common/dto/versioned-write.dto';
+import { ApiPhotoResponse, photoFile } from '../images/photo-response';
 import { PhotoUpload, PhotoUploadRequest } from '../images/photo-upload';
 import { MoneyControlService } from '../money-control/money-control.service';
 import type { UploadedImageFile } from '../images/uploaded-image';
@@ -72,8 +75,9 @@ const ID_PARAM = {
 /**
  * Staff & Access (plan §5.4; card C3-6): the account list, `staff.save`,
  * `staff.photo` and the staff ID reissue. Managers only, except a person's
- * own photograph. The admin password reset is under the same prefix in
- * `StaffPasswordResetController` (C3-3).
+ * own photograph. The card and its photo read (CS B5) share one rule,
+ * `MoneyControlService.mayReadCard`. The admin password reset is under the
+ * same prefix in `StaffPasswordResetController` (C3-3).
  */
 @ApiTags('Staff & Access')
 @ApiBearerAuth()
@@ -144,6 +148,48 @@ export class StaffPeopleController {
     return this.cards.card(id, (account) =>
       this.money.mayReadCard(actor, account),
     );
+  }
+
+  @Get(':id/photo')
+  @Roles()
+  @ApiParam(ID_PARAM)
+  @ApiOperation({
+    operationId: 'staffPeoplePhoto',
+    summary: 'A staff photograph, as an image',
+    description:
+      'The photo on GET /staff/people/:id/card, streamed from the API so ' +
+      'the staff app can draw it into the printed card and its PDF (a ' +
+      'canvas cannot read the bucket’s signed link). Exactly the card’s ' +
+      'rule: managers only, and a Manager or Owner photo only by the Owner ' +
+      '(or its holder). Everyone reads their own through ' +
+      'GET /staff/me/photo.',
+  })
+  @ApiPhotoResponse()
+  @ApiResponse(UNAUTHORISED)
+  @ApiResponse({
+    status: 403,
+    description:
+      'Not a manager, or the caller may not use staff routes; or a Manager ' +
+      'opening another Manager’s or the Owner’s photo ("Only the Owner can ' +
+      'open a Manager or Owner Staff ID.").',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse({
+    status: 404,
+    description:
+      '"Staff account not found." or "This staff account has no photo."',
+    type: ApiErrorResponse,
+  })
+  async photo(
+    @CurrentStaff() actor: StaffPrincipal,
+    @Param('id') id: string,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<StreamableFile> {
+    const stored = await this.cards.photo(id, (account) =>
+      this.money.mayReadCard(actor, account),
+    );
+
+    return photoFile(response, stored);
   }
 
   @Post()
