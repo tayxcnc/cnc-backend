@@ -4,8 +4,10 @@ import { STAFF_NOT_FOUND_MESSAGE } from '../auth/staff-auth.service';
 import { formatIsoDate } from '../common/calendar-date';
 import { renderQrSvg } from '../common/qr-svg';
 import { PhotoStore } from '../images/photo-store.service';
+import type { StoredPhoto } from '../images/photo-store.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import type { StaffCardResponse } from './dto/staff-card.response';
+import { NO_STAFF_PHOTO_MESSAGE } from './staff-messages';
 import { staffQrPayload } from './staff-qr';
 
 /**
@@ -62,5 +64,36 @@ export class StaffCardService {
       joinedOn: formatIsoDate(row.joinedOn),
       qrSvg: await renderQrSvg(staffQrPayload(row.staffNo, row.qrToken)),
     };
+  }
+
+  /**
+   * The card's photograph as bytes (CS B5), for a screen that draws the
+   * card into a canvas or a PDF and so cannot use the signed link: the
+   * bucket has no CORS policy, and a canvas refuses a cross-origin image
+   * without one.
+   *
+   * `authorise` is the card's own rule, run at the same point, so the photo
+   * is never readable by anyone who could not read the card. 404 with
+   * {@link NO_STAFF_PHOTO_MESSAGE} when there is no photo, or the one
+   * recorded is no longer in the bucket.
+   */
+  async photo(
+    staffId: string,
+    authorise?: (account: { id: string; role: StaffRole }) => void,
+  ): Promise<StoredPhoto> {
+    const row = await this.prisma.staff.findUnique({
+      where: { id: staffId },
+      select: { id: true, role: true, photo: true },
+    });
+
+    if (row === null) throw new NotFoundException(STAFF_NOT_FOUND_MESSAGE);
+
+    authorise?.({ id: row.id, role: row.role });
+
+    const stored = await this.photos.read(row.photo);
+
+    if (stored === null) throw new NotFoundException(NO_STAFF_PHOTO_MESSAGE);
+
+    return stored;
   }
 }
