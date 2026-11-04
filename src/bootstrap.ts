@@ -91,7 +91,7 @@ export const CORS_EXPOSED_HEADERS = ['Retry-After'] as const;
 /**
  * Compress responses for a client that asks (Brotli or gzip, by its
  * `Accept-Encoding`), above the package's 1 KB floor (B2: the menu list is
- * about 39 KB as JSON and under 4 KB compressed).
+ * about 41 KB as JSON and about 8 KB compressed).
  *
  * Responses only: a request body is never touched, so the Paystack
  * webhook's signature is still checked over the exact bytes Paystack sent
