@@ -23,6 +23,7 @@ import {
   SETTINGS_RANGES_MESSAGE,
 } from '../src/settings/settings-rules';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { lockSharedRows } from './shared-rows-lock';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
@@ -71,7 +72,7 @@ describe('Settings (e2e)', () => {
 
     // The rows a seeded database holds, created if this one was never
     // seeded (a fresh CI database); never changed if present.
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
     await prisma.business.createMany({
       data: [{ ...BUSINESS, addressLines: [...BUSINESS.addressLines] }],
       skipDuplicates: true,

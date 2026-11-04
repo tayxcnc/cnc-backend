@@ -46,6 +46,7 @@ import {
   WHOLE_ABOVE_ZERO_MESSAGE,
 } from '../src/stock/stock-messages';
 import { createTestApp } from './create-test-app';
+import { createSeededSettingsIfMissing } from './seeded-settings';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 
 /**
@@ -79,10 +80,10 @@ describe('Stock core (e2e)', () => {
     app = await createTestApp();
     prisma = app.get(CncPrismaService);
 
-    // The settings row the limits are read from, with the column defaults,
+    // The settings row the limits are read from, with the seed's values,
     // and the business row the staff reference read needs, if no seed has
     // run on this database (a fresh CI database); never changed if present.
-    await prisma.settings.createMany({ data: [{}], skipDuplicates: true });
+    await createSeededSettingsIfMissing(prisma);
     await prisma.business.createMany({
       data: [{ ...BUSINESS, addressLines: [...BUSINESS.addressLines] }],
       skipDuplicates: true,
