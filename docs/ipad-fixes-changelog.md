@@ -88,6 +88,13 @@ PR 13). Closes CS B2, CS B5 and CS B3 (verified, no change).
   - 404 for no photo, a photo gone from the bucket and no account; 401
     with no token;
   - 500 when the bucket cannot be read.
+  - every refusal, 404 and 500 carries neither a `max-age` nor
+    `Vary: Authorization` (`expectNoPhotoCaching`). Seen failing with
+    `Vary: Authorization` set on the people route before the read (the 403
+    and 404 cases), then put back.
+- `test/settings.e2e-spec.ts`: the "change the printer" case now saves the
+  width the row does not hold (`MM80` when it holds the seeded `MM58`), so
+  it still proves the printer changes now that the row starts on 58 mm.
 - New, `src/storage/gcs-media-storage.spec.ts`: the Cloud Storage binding's
   `read` against a stand-in client (bytes and type from the URI's bucket,
   a generic type when none is stored, null on a 404 from either call,

@@ -255,6 +255,12 @@ describe('staff ID cards (e2e)', () => {
     });
 
     /** A 200 photo answer: the stored bytes, type and caching. */
+    /** A refusal or an error carries neither the photo's caching nor its Vary. */
+    function expectNoPhotoCaching(response: request.Response): void {
+      expect(response.headers['cache-control'] ?? '').not.toMatch(/max-age/);
+      expect(response.headers['vary'] ?? '').not.toMatch(/\bAuthorization\b/);
+    }
+
     async function expectPhoto(
       response: request.Response,
       stored: FakeObject,
@@ -303,7 +309,7 @@ describe('staff ID cards (e2e)', () => {
       ).expect(403);
 
       expect(messageOf(refused)).toBe(OWNER_ONLY_MANAGER_CARD_MESSAGE);
-      expect(refused.headers['cache-control']).not.toBe(PHOTO_CACHE_CONTROL);
+      expectNoPhotoCaching(refused);
 
       await expectPhoto(
         await get(`/staff/people/${photoOwner.id}/photo`, photoOwner).expect(
@@ -321,19 +327,21 @@ describe('staff ID cards (e2e)', () => {
         ).expect(403);
 
         expect(messageOf(refused)).toBe(ROLE_REFUSED_MESSAGE);
+        expectNoPhotoCaching(refused);
       }
     });
 
     it('answers 404 for no photo, a photo gone from the bucket and no account, and 401 with no token', async () => {
       const none = await get('/staff/me/photo', photoManager).expect(404);
       expect(messageOf(none)).toBe(NO_STAFF_PHOTO_MESSAGE);
-      expect(none.headers['cache-control']).not.toBe(PHOTO_CACHE_CONTROL);
+      expectNoPhotoCaching(none);
 
       const managerNone = await get(
         `/staff/people/${photoManager.id}/photo`,
         photoOwner,
       ).expect(404);
       expect(messageOf(managerNone)).toBe(NO_STAFF_PHOTO_MESSAGE);
+      expectNoPhotoCaching(managerNone);
 
       expect(
         messageOf(
@@ -351,6 +359,7 @@ describe('staff ID cards (e2e)', () => {
       });
       const goneNone = await get('/staff/me/photo', gone).expect(404);
       expect(messageOf(goneNone)).toBe(NO_STAFF_PHOTO_MESSAGE);
+      expectNoPhotoCaching(goneNone);
 
       await get('/staff/me/photo').expect(401);
       await get(`/staff/people/${photoWaiter.id}/photo`).expect(401);
@@ -360,7 +369,7 @@ describe('staff ID cards (e2e)', () => {
       storage.failReading = true;
 
       const failed = await get('/staff/me/photo', photoWaiter).expect(500);
-      expect(failed.headers['cache-control']).not.toBe(PHOTO_CACHE_CONTROL);
+      expectNoPhotoCaching(failed);
     });
   });
 });

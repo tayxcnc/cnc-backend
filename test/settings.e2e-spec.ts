@@ -223,18 +223,24 @@ describe('Settings (e2e)', () => {
   describe('settings.save', () => {
     it('lets a manager change the printer and an alert, and moves the version', async () => {
       const version = await settingsVersion();
+      // A width the row does not already hold, so the save really changes
+      // the printer (the seed is MM58).
+      const otherWidth =
+        originalSettings.printerWidth === PrinterWidth.MM58
+          ? PrinterWidth.MM80
+          : PrinterWidth.MM58;
 
       const response = await saveSettings(
         managerToken,
         {
-          printerWidth: PrinterWidth.MM58,
+          printerWidth: otherWidth,
           alertArrivals: !originalSettings.alertArrivals,
         },
         200,
       );
 
       expect(response.body).toMatchObject({
-        printerWidth: PrinterWidth.MM58,
+        printerWidth: otherWidth,
         alertArrivals: !originalSettings.alertArrivals,
         version: version + 1,
       });
