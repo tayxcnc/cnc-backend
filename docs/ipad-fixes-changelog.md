@@ -4,6 +4,158 @@ What each fix from the iPad fix pack and its batch 2 brief changed in this
 repository, and every decision taken without the founder's confirmation.
 Newest entries go at the top.
 
+## Long dashes and the bill read tests (CNC Staff App)
+
+Branch `fix/copy-dashes-and-bill-tests` (platform fixes plan, wave 4, PR
+24). Closes CS B1 (tests), CS B4, CS B6 (verified) and G2 (CNC backend).
+
+### What changed
+
+- **G2. The opening hours history has no long dash.** A change to the week
+  used to read "Monday changed from 08:00–24:00 to Closed." It now reads
+  "Monday changed from 08:00 until 24:00 to Closed." ("to" would read
+  "from 08:00 to 24:00 to Closed"). It was the only text the server writes
+  that held a long dash; code comments and the API documentation are left
+  alone (P17). Rows already in the history keep their old wording, and
+  the staff app's `cleanCopy()` tidies them when it shows them.
+- **CS B4. Menu items and vendors refuse a long dash.** Saving a menu item
+  whose name, description or photo text holds an en dash or an em dash,
+  or a vendor whose name, phone, service type, contact person, email or
+  address holds one, answers 400 "Please rewrite this without long
+  dashes." and saves nothing. A hyphen ("Walk-in", "Slow-cooked") is
+  fine. The check is one shared piece, `src/common/no-long-dashes.ts`,
+  run inside each field's existing check, so a field still answers one
+  sentence: a blank name still gets "Enter an item name and positive
+  price." or "Enter the vendor name and phone.", and only a name that is
+  otherwise good gets the dash sentence.
+- **Never on notes (P18).** Staff notes, reasons, tasks, anything a
+  customer types and the business details still take a long dash, because
+  an iPad turns a typed "--" into one and refusing it there would block
+  daily work. A vendor's "Services / Procurement Notes" is a staff note,
+  so it keeps taking one too. The app cleans these when it shows them.
+- **The menu's three fields were converted to the one-sentence check**
+  with their existing words kept: a missing name used to answer "Enter an
+  item name and positive price." twice plus the length sentence; it now
+  answers it once. A description or photo text that is not text answers
+  "description must be text." or "photoAlt must be text." once, without
+  the length sentence beside it.
+- **CS B4. Seeds, emails and receipts.** Searched: the seeds, the seeded
+  menu, the email templates, receipts, the bell and push text and every
+  error message hold no long dash and no spaced hyphen, so nothing there
+  changed. No price, tax rate or business detail changed.
+- **An optional report of stored long dashes (P19),**
+  `scripts/report-long-dashes.ts`. It lists every menu item and vendor
+  value that holds a long dash, before and after, and writes nothing
+  unless `--apply` is passed:
+
+  ```
+  npx ts-node -r dotenv/config scripts/report-long-dashes.ts
+  npx ts-node -r dotenv/config scripts/report-long-dashes.ts --apply
+  ```
+
+  It reads only the fields the app now refuses a dash in, never the
+  business details or the activity history. `--apply` refuses anything but
+  a local database unless `CNC_SEED_DASHES_ALLOW_REMOTE=true` is set for
+  the run. Running it twice is safe. Staging is wiped and production starts
+  from seeds that hold no long dash, so no database is expected to need it.
+- **CS B1. The bill read is pinned by tests, with no new route (P21).**
+  History > View already opens a bill with `GET /staff/orders/:id`, which
+  returns every printed field and writes nothing. New tests prove it: an
+  open, a settled and a cancelled bill are each read three times, the
+  answers are identical, and no audit, payment or docket row is added and
+  the bill's version does not move. A Bartender is refused a Restaurant
+  bill ("Bartenders can operate Bar POS only.") and still reads a Bar
+  bill; the Kitchen is refused; a Waiter, a Cashier, a Manager and the
+  Owner all read a settled bill and get the same answer. Who may read it
+  is unchanged.
+- **CS B6. Date range rules: verified, no change.** The routes that take a
+  `from` and `to` (Activity History, Attendance and every report) include
+  the whole of the `to` day in Lagos and refuse a `from` after `to` with a
+  400. Existing tests already pin this: `test/audit.e2e-spec.ts` ("filters
+  a manager's read by module, action, staff and WAT dates"),
+  `test/reports.e2e-spec.ts` ("to must not be before from.", and the
+  Lagos midnight cases), `test/attendance.e2e-spec.ts` and
+  `src/common/date-range.spec.ts`. Reservations and Online Orders take a
+  single `date` (or none), not a range, so there is nothing to check there.
+- **Records.** `docs/conventions.md` (Errors) has the long-dash rule and its
+  reason; `CLAUDE.md` points at it and lists the report script.
+
+### Tests
+
+Updated to the new values, not loosened or removed:
+
+- `src/settings/opening-hours.spec.ts` and `test/settings.e2e-spec.ts`:
+  "08:00 until 24:00".
+
+New:
+
+- `src/common/no-long-dashes.spec.ts` and `src/common/checked.spec.ts`
+  (`textUpTo`): the dash sentence, a hyphen passing, the field's own
+  sentence first and alone, optional fields, `OptionalText` refusing a
+  dash only when asked.
+- `test/menu.e2e-spec.ts`: a dash in a new item's name, description or
+  photo text is refused and adds nothing; in a change it is refused and
+  the item and its version stay as they were; each field's own sentence
+  still comes first, once.
+- `test/purchasing.e2e-spec.ts`: a dash in each vendor field but the notes
+  is refused and adds nothing; the notes keep one; an edit with a dash
+  changes nothing.
+- `test/order-payments.e2e-spec.ts`, "the bill read (CS B1)": the two
+  tests described above.
+- `scripts/report-long-dashes.spec.ts` and
+  `test/report-long-dashes.e2e-spec.ts` (its own database): what the
+  report finds, that a report writes nothing, that a value changed since
+  the read is skipped, that `--apply` cleans and moves each version, that
+  a second run does nothing, and that the business details, the history
+  and a vendor's notes are untouched.
+
+Each new guard was seen failing once with its guard removed, then put
+back: with the dash check removed from `noLongDashes`, three unit tests,
+both menu dash tests and the vendor dash test failed; with the bill read
+changed to move the bill's version and its department check removed, both
+bill read tests failed; with the report's "still the value read"
+condition removed, the skip test and the apply test failed.
+
+### Before merge: staging
+
+Nothing. No migration, no seed change and no setting.
+
+### Decisions made without confirmation
+
+1. **A vendor's notes take a long dash (P18).** The plan says "vendor
+   fields", but the notes field is "Services / Procurement Notes", a note
+   staff type, and P18 never refuses a staff note. Every other vendor
+   field, phone and email included, refuses one.
+2. **The message is CS B4's, "Please rewrite this without long dashes."**,
+   as the plan says, and names no field (TAY's names the field; the two
+   backends share no code). The staff app shows it under the form that
+   sent it.
+3. **The field's own sentence comes first.** A blank or over-long name
+   answers its existing sentence; the dash sentence is only for a value
+   that is otherwise good, so one field never answers two sentences.
+4. **The menu fields now answer one sentence where they answered two or
+   three** (a missing or non-text name, description or photo text). The
+   words are the same; only the repeats are gone. No screen parses these
+   sentences (checked in `cnc-frontend` on `develop` and its feature
+   branches).
+5. **"until" in the opening hours history**, as the plan says, rather than
+   "to", which would make "from 08:00 to 24:00 to Closed".
+6. **The report is a script, not a migration (P19)**, reads exactly the
+   fields the app now refuses a dash in, moves each written row's version
+   (so a form opened before the run asks for a refresh rather than saving
+   the old text back) and writes no audit row (it is an operator's one-off
+   run, recorded here). It has no npm script; the command is in its header.
+7. **CS B1: no new route and no narrower access (P21).** The brief's "a
+   Cashier reads only their own till and today" is not applied: CNC has no
+   till record, and narrowing would break the cashier's History > View.
+   Roles outside the Point of Sale, such as the Kitchen, are refused as
+   they already were.
+8. **CS B6: verified, no change.** No new test was added because the
+   existing ones listed above already cover both rules.
+9. **No seed or price changed.** The seeds hold no long dash, so there was
+   nothing to clean; a guard over the seed files was not added, as it is
+   not in this pull request's scope.
+
 ## Contact details (batch 2, section 2)
 
 Branch `fix/contact-details-batch2` (platform fixes plan, wave 0, PR 1).

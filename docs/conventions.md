@@ -122,6 +122,22 @@ They are here so the first card that builds it starts from the rule.
   sentence would not reach the screen as it stands (A7). An "M+r" reason is
   `@AdminReason` (`src/common/admin-reason.ts`), whose one sentence is the
   demo's "An admin correction requires a reason."
+- **A long dash (U+2013, U+2014) is refused only in catalogue text: a menu
+  item's name, description and photo text, and every vendor field but the
+  notes, with "Please rewrite this without long dashes."** (platform fixes
+  G2, decisions P17 and P18). The check is `noLongDashes`
+  (`src/common/no-long-dashes.ts`), a combinator inside `@Checked`
+  (`OptionalText` takes `{ noLongDashes: true }`), so the field's own
+  sentence comes first and each field still answers one sentence. The
+  founder wants no long dash where people read CNC's text, because it reads
+  as machine written; but iPadOS Smart Punctuation turns a typed "--" into
+  one, so it is **never** refused in a staff note, a reason, a task,
+  anything a customer typed or the business details, where refusing it
+  would block daily work: the apps clean those when they show them. Text
+  the server writes itself carries no long dash either (the opening hours
+  history reads "08:00 until 24:00"). Stored values are found, and
+  optionally cleaned, by `scripts/report-long-dashes.ts` (read-only unless
+  `--apply`; never `Business` or `AuditLog`), not by a migration (P19).
 - **An item list in a request (`[{ stockItemId, qty }]`) is validated with
   `@ValidLines` (`src/common/command-lines.ts`), never `@ValidateNested`**
   (from C4). The ValidationPipe prefixes a nested error with its path
