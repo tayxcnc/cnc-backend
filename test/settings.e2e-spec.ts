@@ -441,7 +441,7 @@ describe('Settings (e2e)', () => {
       expect(row).toEqual(
         expect.objectContaining({
           actionLabel: 'Opening Hours Saved',
-          changes: ['Monday changed from 08:00–24:00 to Closed.'],
+          changes: ['Monday changed from 08:00 until 24:00 to Closed.'],
         }),
       );
     });

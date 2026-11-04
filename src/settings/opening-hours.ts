@@ -210,9 +210,14 @@ export function minutesLabel(minutes: number): string {
 
 /**
  * A week as the activity history reads it: one plain field per day
- * (`monday: "08:00–24:00"` or `"Closed"`), so a changed day reads
- * "Monday changed from 08:00–24:00 to Closed." rather than "Days changed
- * from 7 entries to 7 entries."
+ * (`monday: "08:00 until 24:00"` or `"Closed"`), so a changed day reads
+ * "Monday changed from 08:00 until 24:00 to Closed." rather than "Days
+ * changed from 7 entries to 7 entries."
+ *
+ * "until", not a dash or "to": the founder wants no long dash in text
+ * people read (G2, P17), and "to" would make the sentence read "changed
+ * from 08:00 to 24:00 to Closed", which names the wrong thing as the
+ * change.
  */
 export function weekForAudit(
   days: OpeningHoursDayValue[] | null,
@@ -226,7 +231,7 @@ export function weekForAudit(
       day.opensAtMinutes === null ||
       day.closesAtMinutes === null
         ? 'Closed'
-        : `${minutesLabel(day.opensAtMinutes)}–${minutesLabel(day.closesAtMinutes)}`,
+        : `${minutesLabel(day.opensAtMinutes)} until ${minutesLabel(day.closesAtMinutes)}`,
     ]),
   );
 }
