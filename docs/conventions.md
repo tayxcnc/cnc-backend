@@ -716,6 +716,18 @@ They are here so the first card that builds it starts from the rule.
   cannot take an account over. The target row is locked while the rules are
   checked, so a role change landing at the same moment cannot slip past the
   Owner rule. Staff creation (C3-6) issues its first password the same way.
+- **While an account is on its temporary password (`mustChangePassword`),
+  sign-in and the forced change also take it typed loosely
+  (`readTemporaryPassword`): any case, spaces, any dash or none, "o" for
+  zero and "l" or "i" for one.** The founder's new staff could not sign in
+  on the iPad with the password read off the PC (2026-11-06), while the
+  same password pasted on the PC worked. Hex has none of those letters, so
+  the secret is still 80 bits; any other character is not read. The second
+  argon2 verification runs whenever the text reads as a temporary password,
+  for every account and the unknown-email decoy alike, so a refusal's timing
+  never says which accounts are on one. Once changed, only the chosen
+  password signs in, exactly as typed. The "same password" refusal counts a
+  loosely typed temporary password as the same one.
 - **Throttling is per route: `@UseGuards(ClientAddressThrottlerGuard)` with
   `@Throttle`, never an APP_GUARD, against a `ThrottlerModule` registered in
   the module that owns the routes, counting in memory** (plan A18: no Redis

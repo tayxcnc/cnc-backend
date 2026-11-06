@@ -69,6 +69,34 @@ export function generateTemporaryPassword(): string {
   return hex.match(/.{4}/g)!.join('-');
 }
 
+/** Hex characters in a temporary password: two per random byte. */
+const TEMPORARY_PASSWORD_HEX = TEMPORARY_PASSWORD_BYTES * 2;
+
+/**
+ * A temporary password as it was typed, read back into the form
+ * `generateTemporaryPassword` stores (`3f9a-07c2-…`), or null when it is not
+ * one. A person reading it off one device and typing it on an iPad keyed it
+ * wrong in ways that do not change which password it is: capitals, spaces,
+ * a dash left out or an en dash for the hyphen, "o" for zero, "l" or "i"
+ * for one. Hex has none of those letters, so reading them back adds no
+ * guess: the password is still the same 80 bits. Anything else in the text,
+ * a stray letter or a character autofill left in the field, means it is not
+ * the password, and null.
+ */
+export function readTemporaryPassword(typed: string): string | null {
+  const hex = typed
+    .toLowerCase()
+    .replace(/[\s\p{Pd}−]/gu, '')
+    .replace(/o/g, '0')
+    .replace(/[li]/g, '1');
+
+  if (!new RegExp(`^[0-9a-f]{${TEMPORARY_PASSWORD_HEX}}$`).test(hex)) {
+    return null;
+  }
+
+  return hex.match(/.{4}/g)!.join('-');
+}
+
 /** Hash a plaintext password for `Staff.passwordHash`. */
 export function hashPassword(plaintext: string): Promise<string> {
   return hash(plaintext, ARGON2_OPTIONS);
