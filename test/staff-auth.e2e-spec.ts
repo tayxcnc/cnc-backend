@@ -882,6 +882,40 @@ describe('staff auth (e2e)', () => {
       await refreshCall(managerSession.cookie).expect(200);
     });
 
+    it('takes the temporary password typed loosely, until it is changed', async () => {
+      const manager = await createStaff(StaffRole.MANAGER);
+      const cashier = await createStaff(StaffRole.CASHIER);
+      const managerSession = await signIn(manager);
+      const { temporaryPassword } = (
+        await resetCall(managerSession.accessToken, cashier.id).expect(200)
+      ).body as { temporaryPassword: string };
+
+      // As it was keyed on the iPad: capitals, spaces, an en dash and a dash left out.
+      const [a, b, c, d, e] = temporaryPassword.toUpperCase().split('-');
+      const loose = `${a} - ${b}–${c}${d}-${e}`;
+      // Anything that is not a separator means it is not the password.
+      await signInCall(cashier.email, `${temporaryPassword}x`).expect(401);
+      const signedIn = await signInCall(cashier.email, loose).expect(200);
+      const { accessToken } = signedIn.body as { accessToken: string };
+
+      // The forced change takes it loosely too, and refuses it as the new one.
+      const same = await changePasswordCall(accessToken, {
+        currentPassword: loose,
+        newPassword: temporaryPassword.replace(/-/g, ''),
+      }).expect(400);
+      expect(messageOf(same)).toBe(SAME_PASSWORD_MESSAGE);
+      const newPassword = `new-${randomUUID()}`;
+      await changePasswordCall(accessToken, {
+        currentPassword: loose,
+        newPassword,
+      }).expect(200);
+
+      // Once changed, neither form of the old password signs in.
+      await signInCall(cashier.email, temporaryPassword).expect(401);
+      await signInCall(cashier.email, loose).expect(401);
+      await signInCall(cashier.email, newPassword).expect(200);
+    });
+
     it('keeps Manager and Owner accounts to the Owner', async () => {
       const owner = await createStaff(StaffRole.OWNER);
       const manager = await createStaff(StaffRole.MANAGER);

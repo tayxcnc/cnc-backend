@@ -23,6 +23,7 @@ import { ACCOUNT_GONE_MESSAGE } from './guards/cnc-staff.guard';
 import {
   generateTemporaryPassword,
   hashPassword,
+  readTemporaryPassword,
   verifyPassword,
 } from './password';
 import type { StaffPrincipal } from './staff-principal';
@@ -146,7 +147,10 @@ export class StaffAuthService {
     });
 
     if (staff === null) {
-      await verifyPassword(await this.decoy(), request.password);
+      await this.passwordMatches(
+        { passwordHash: await this.decoy(), mustChangePassword: false },
+        request.password,
+      );
       // No audit row can name an account that does not exist; the
       // application log is the record. The address the caller typed, never
       // the password.
@@ -157,7 +161,7 @@ export class StaffAuthService {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
-    const matches = await verifyPassword(staff.passwordHash, request.password);
+    const matches = await this.passwordMatches(staff, request.password);
 
     if (!matches || !staff.isActive) {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
@@ -221,14 +225,19 @@ export class StaffAuthService {
       throw new UnauthorizedException(ACCOUNT_GONE_MESSAGE);
     }
 
-    if (!(await verifyPassword(staff.passwordHash, request.currentPassword))) {
+    if (!(await this.passwordMatches(staff, request.currentPassword))) {
       // A different sentence from sign-in's, safely: the caller has proved
       // which account is theirs, so the only thing this tells them is which
       // field they got wrong.
       throw new UnauthorizedException(CURRENT_PASSWORD_INCORRECT_MESSAGE);
     }
 
-    if (request.newPassword === request.currentPassword) {
+    // The current password in any form it is accepted in: a temporary
+    // password typed loosely as the "new" one is still the same password.
+    if (
+      request.newPassword === request.currentPassword ||
+      (await this.passwordMatches(staff, request.newPassword))
+    ) {
       throw new BadRequestException(SAME_PASSWORD_MESSAGE);
     }
 
@@ -356,5 +365,29 @@ export class StaffAuthService {
     this.decoyHash ??= hashPassword(generateTemporaryPassword());
 
     return this.decoyHash;
+  }
+
+  /**
+   * Whether `typed` is the account's password. An account still on a
+   * temporary password (`mustChangePassword`) also matches it typed loosely
+   * (`readTemporaryPassword`): the founder's new staff could not sign in on
+   * the iPad with the password read off the PC (2026-11-06). The second
+   * verification runs whenever the text reads as a temporary password,
+   * whatever the account, so how long a refusal takes never says which
+   * accounts are on one.
+   */
+  private async passwordMatches(
+    staff: { passwordHash: string; mustChangePassword: boolean },
+    typed: string,
+  ): Promise<boolean> {
+    if (await verifyPassword(staff.passwordHash, typed)) return true;
+
+    const read = readTemporaryPassword(typed);
+
+    if (read === null || read === typed) return false;
+
+    const matches = await verifyPassword(staff.passwordHash, read);
+
+    return matches && staff.mustChangePassword;
   }
 }
