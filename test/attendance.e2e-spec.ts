@@ -433,11 +433,14 @@ describe('Attendance (e2e)', () => {
     let first: Shift;
 
     it('attendance corrections retain original times and reject overlapping shifts (revision.test.cjs)', async () => {
+      // Each departure a few seconds past the hour: the faked clock still
+      // runs, so an arrival records a few milliseconds after its time, and
+      // a departure at exactly the hour could fall inside it.
       for (const time of [
         '2026-10-07T07:00:00Z',
-        '2026-10-07T08:00:00Z',
-        '2026-10-07T09:00:00Z',
-        '2026-10-07T10:00:00Z',
+        '2026-10-07T08:00:05Z',
+        '2026-10-07T09:00:05Z',
+        '2026-10-07T10:00:10Z',
       ]) {
         await scanAt(time, 'f');
       }
