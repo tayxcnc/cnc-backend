@@ -37,7 +37,8 @@ import { accessTokenFor, createStaffAccount } from './staff-fixtures';
  * are ported by name.
  *
  * **The clock is controlled** (`fakeDateOnly`): a repeat scan is one
- * within a minute, and the overnight and reporting cases need set times.
+ * within an hour of the arrival or a minute of the departure, and the
+ * overnight and reporting cases need set times.
  * It starts on 30 September 2026, the demo's own dates, and only moves
  * forward, each case on its own day and its own person; tokens are minted
  * afresh after every move. The suite runs on a database of its own, as
@@ -84,6 +85,7 @@ describe('Attendance (e2e)', () => {
   interface Scan {
     action: 'CHECKED_IN' | 'CHECKED_OUT' | 'REPEAT_IGNORED';
     duplicate: boolean;
+    present: boolean;
     staffId: string;
     staffNo: string;
     name: string;
@@ -280,19 +282,33 @@ describe('Attendance (e2e)', () => {
       });
     const count = await audited();
 
-    await moveClockTo('2026-10-03T12:00:30Z');
-    const repeat = (await scan(code).expect(200)).body as Scan;
-    expect(repeat).toMatchObject({
-      action: 'REPEAT_IGNORED',
-      duplicate: true,
-      at: arrived.at,
-    });
+    // Within the hour after the arrival, a scan is "already checked in".
+    for (const time of ['2026-10-03T12:00:30Z', '2026-10-03T12:59:00Z']) {
+      await moveClockTo(time);
+      const repeat = (await scan(code).expect(200)).body as Scan;
+      expect(repeat).toMatchObject({
+        action: 'REPEAT_IGNORED',
+        duplicate: true,
+        present: true,
+        at: arrived.at,
+      });
+    }
     expect(await audited()).toBe(count);
     expect((await shiftsOf('c'))[0].timeOut).toBeNull();
 
-    await moveClockTo('2026-10-03T12:02:00Z');
+    await moveClockTo('2026-10-03T13:00:30Z');
     const left = (await scan(code).expect(200)).body as Scan;
-    expect(left.action).toBe('CHECKED_OUT');
+    expect(left).toMatchObject({ action: 'CHECKED_OUT', present: false });
+
+    // Within a minute of the departure, a scan is "already checked out".
+    await moveClockTo('2026-10-03T13:01:00Z');
+    const after = (await scan(code).expect(200)).body as Scan;
+    expect(after).toMatchObject({
+      action: 'REPEAT_IGNORED',
+      present: false,
+      at: left.at,
+    });
+    expect(await shiftsOf('c')).toHaveLength(1);
   });
 
   it('answers a wrong token, an unknown number and a deactivated account with the one sentence', async () => {
@@ -382,8 +398,8 @@ describe('Attendance (e2e)', () => {
     const ROUNDS = 6;
 
     for (let round = 0; round < ROUNDS; round += 1) {
-      // Each round two minutes on, so it is never a repeat of the last.
-      const at = Date.parse('2026-10-06T18:00:00Z') + round * 120_000;
+      // Each round 61 minutes on, so it is never a repeat of the last.
+      const at = Date.parse('2026-10-06T18:00:00Z') + round * 61 * 60_000;
 
       await moveClockTo(new Date(at).toISOString());
 

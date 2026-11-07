@@ -28,13 +28,22 @@ export class ScanAttendanceResponse {
     enum: SCAN_ACTIONS,
     enumName: 'AttendanceScanAction',
     description:
-      'CHECKED_IN or CHECKED_OUT; REPEAT_IGNORED for a second scan within ' +
-      'a minute of the last, which records nothing.',
+      'CHECKED_IN or CHECKED_OUT; REPEAT_IGNORED, which records nothing, ' +
+      'for a scan within an hour of the check-in or within a minute of ' +
+      'the check-out.',
   })
   action!: ScanAction;
 
   @ApiProperty({ description: 'True for REPEAT_IGNORED.' })
   duplicate!: boolean;
+
+  @ApiProperty({
+    description:
+      'Whether the person is checked in after the scan: for ' +
+      'REPEAT_IGNORED, true is "already checked in" and false "already ' +
+      'checked out".',
+  })
+  present!: boolean;
 
   @ApiProperty() staffId!: string;
   @ApiProperty({ example: 'CNC-S004' }) staffNo!: string;
@@ -50,8 +59,8 @@ export class ScanAttendanceResponse {
 
   @ApiProperty({
     description:
-      'When the scan was recorded (ISO 8601, UTC); for a repeat, the scan ' +
-      'it repeated.',
+      'When the scan was recorded (ISO 8601, UTC); for a repeat, the ' +
+      'check-in or check-out it repeated.',
   })
   at!: string;
 }

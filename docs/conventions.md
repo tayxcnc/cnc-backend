@@ -2321,14 +2321,21 @@ They are here so the first card that builds it starts from the rule.
   belongs to a deactivated account is the demo's one 400, "This staff QR
   code is invalid or the account is inactive."** One sentence for all four,
   so a scanner tells a stranger nothing about which part was wrong.
-- **The scan follows the demo: a scan within a minute of the person's last
-  arrival or departure is a repeat and records nothing, audit included;
-  otherwise the open shift closes, however long ago it began (an overnight
-  shift closes on the next scan), and with none open a new one starts,
-  dated by the Lagos day of arrival** (`scanStep`, plan §7.9). TAY's
-  sixteen-hour cap and its "which shift?" question are not copied: CNC's
-  demo and plan close on the next scan. The scan takes no Idempotency-Key:
-  a retry within the minute is the ignored repeat.
+- **An open shift closes only from an hour after its arrival
+  (`CHECK_OUT_AFTER_MS`); a scan before that is a repeat and records
+  nothing, audit included. From the hour the open shift closes, however
+  long ago it began (an overnight shift closes on the next scan). With none
+  open, a scan within a minute of the departure is a repeat, and any other
+  starts a new shift, dated by the Lagos day of arrival** (`scanStep`).
+  The hour is the founder's rule of 2026-11-07, replacing the demo's
+  one-minute window after an arrival (plan §7.9): on staging a second scan
+  by mistake checked staff out minutes after they arrived. TAY has the same
+  hour. TAY's sixteen-hour cap and its "which shift?" question are not
+  copied: CNC's plan closes on the next scan. The scan takes no
+  Idempotency-Key: a retry is the ignored repeat.
+- **The scan answers `present`, whether the person is checked in after
+  it**, so the scanner shows a repeat as "Already In" (true) or "Already
+  Out" (false) without a second read.
 - **Every scan and every correction of a person runs under that person's
   advisory lock (`pg_advisory_xact_lock` on `cnc:attendance:<staff id>`),
   taken before any row; the partial unique index
