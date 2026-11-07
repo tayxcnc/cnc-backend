@@ -478,7 +478,7 @@ describe('the C5 gate (e2e)', () => {
     // The token the scanner read is never answered back.
     expect(JSON.stringify(arrived.body)).not.toContain(card.qrToken);
 
-    // Eight hours later, well past the one-minute repeat window.
+    // Eight hours later, well past the hour before a check-out.
     jest.setSystemTime(Date.now() + 8 * 60 * 60 * 1000);
     await mintTokens();
 

@@ -23,8 +23,15 @@ import {
  * Nothing here knows about lateness, leave or pay.
  */
 
-/** A repeat scan of one person within a minute of their last is ignored (§7.9). */
+/** A repeat scan of one person within a minute of their departure is ignored (§7.9). */
 export const REPEAT_SCAN_WINDOW_MS = 60_000;
+
+/**
+ * An open shift closes only from an hour after its arrival; a scan before
+ * that is a repeat. The founder's rule of 2026-11-07, after staff scanned
+ * twice by mistake on staging and were checked out minutes after arriving.
+ */
+export const CHECK_OUT_AFTER_MS = 60 * 60_000;
 
 /** The shift filters of the attendance screens, as the API spells them. */
 export const SHIFT_FILTERS = ['ALL', 'COMPLETED', 'OPEN'] as const;
@@ -80,26 +87,32 @@ export interface Shift {
 export type ScanStep = 'REPEAT' | 'CHECK_OUT' | 'CHECK_IN';
 
 /**
- * The demo's scan, given the person's latest shift (by arrival) and their
- * open one: within a minute of the last scan (the latest shift's departure,
- * else its arrival) the scan is a repeat and changes nothing; otherwise an
- * open shift closes, whenever it began (an overnight shift closes on the
- * next scan, §7.9), and with none open a new one starts.
+ * The scan, given the person's latest shift (by arrival) and their open
+ * one. An open shift is a repeat within an hour of its arrival
+ * ({@link CHECK_OUT_AFTER_MS}) and closes from then, whenever it began (an
+ * overnight shift closes on the next scan, §7.9). With none open, a scan
+ * within a minute of the latest shift's departure is a repeat, and any
+ * other starts a new shift. A repeat changes nothing.
  */
 export function scanStep(
   latest: Shift | null,
   open: Shift | null,
   now: Date,
 ): ScanStep {
-  if (latest !== null) {
-    const lastScan = latest.timeOut ?? latest.timeIn;
-
-    if (now.getTime() - lastScan.getTime() < REPEAT_SCAN_WINDOW_MS) {
-      return 'REPEAT';
-    }
+  if (open !== null) {
+    return now.getTime() - open.timeIn.getTime() < CHECK_OUT_AFTER_MS
+      ? 'REPEAT'
+      : 'CHECK_OUT';
   }
 
-  return open === null ? 'CHECK_IN' : 'CHECK_OUT';
+  if (
+    latest?.timeOut != null &&
+    now.getTime() - latest.timeOut.getTime() < REPEAT_SCAN_WINDOW_MS
+  ) {
+    return 'REPEAT';
+  }
+
+  return 'CHECK_IN';
 }
 
 /** `YYYY-MM-DDTHH:mm`, as a `datetime-local` field sends a Lagos wall clock. */

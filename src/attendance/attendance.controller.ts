@@ -94,10 +94,11 @@ export class AttendanceController {
     summary: 'Record a staff ID scan (attendance.scan)',
     description:
       'Reception and managers, from the camera or a USB scanner. Checks ' +
-      'the person in, or out of their open shift (overnight included); a ' +
-      'second scan within a minute is ignored and records nothing. The ' +
+      'the person in, or out of their open shift from an hour after the ' +
+      'check-in (overnight included). A scan within that hour, or within ' +
+      'a minute of the check-out, is ignored and records nothing. The ' +
       'code is compared and never returned, logged or audited. Takes no ' +
-      'Idempotency-Key: a retry within the minute is the ignored repeat.',
+      'Idempotency-Key: a retry is the ignored repeat.',
   })
   @ApiResponse({ status: 200, type: ScanAttendanceResponse })
   @ApiResponse({

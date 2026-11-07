@@ -6,6 +6,7 @@ import {
 } from './attendance-messages';
 import {
   attendanceSummary,
+  CHECK_OUT_AFTER_MS,
   monthPeriod,
   overlaps,
   parseStaffCode,
@@ -79,25 +80,34 @@ describe('scanStep', () => {
     expect(scanStep(overnight, overnight, now)).toBe('CHECK_OUT');
   });
 
-  it('ignores a repeat within a minute of the last arrival or departure, and not after', () => {
-    const arrived = { timeIn: at('2026-10-02T11:59:30Z'), timeOut: null };
+  it('ignores a scan within an hour of the arrival, and checks out from the hour', () => {
+    const justArrived = { timeIn: at('2026-10-02T11:59:30Z'), timeOut: null };
+    const almostAnHour = {
+      timeIn: new Date(now.getTime() - CHECK_OUT_AFTER_MS + 1),
+      timeOut: null,
+    };
+    const anHour = {
+      timeIn: new Date(now.getTime() - CHECK_OUT_AFTER_MS),
+      timeOut: null,
+    };
+
+    expect(scanStep(justArrived, justArrived, now)).toBe('REPEAT');
+    expect(scanStep(almostAnHour, almostAnHour, now)).toBe('REPEAT');
+    expect(scanStep(anHour, anHour, now)).toBe('CHECK_OUT');
+  });
+
+  it('ignores a repeat within a minute of the departure, and checks in after it', () => {
     const left = {
       timeIn: at('2026-10-02T08:00:00Z'),
       timeOut: new Date(now.getTime() - REPEAT_SCAN_WINDOW_MS + 1),
     };
+    const leftAMinuteAgo = {
+      timeIn: at('2026-10-02T08:00:00Z'),
+      timeOut: new Date(now.getTime() - REPEAT_SCAN_WINDOW_MS),
+    };
 
-    expect(scanStep(arrived, arrived, now)).toBe('REPEAT');
     expect(scanStep(left, null, now)).toBe('REPEAT');
-    expect(
-      scanStep(
-        {
-          timeIn: new Date(now.getTime() - REPEAT_SCAN_WINDOW_MS),
-          timeOut: null,
-        },
-        null,
-        now,
-      ),
-    ).toBe('CHECK_IN');
+    expect(scanStep(leftAMinuteAgo, null, now)).toBe('CHECK_IN');
   });
 });
 
