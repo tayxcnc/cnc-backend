@@ -27,7 +27,10 @@
     "db:seed": "ts-node -r dotenv/config prisma/seed.ts",
     "db:seed:owner": "ts-node -r dotenv/config prisma/seed-owner.ts",
     "db:studio": "prisma studio",
-    "media:backfill-thumbs": "ts-node -r dotenv/config scripts/backfill-menu-thumbs.ts"
+    "media:backfill-thumbs": "ts-node -r dotenv/config scripts/backfill-menu-thumbs.ts",
+    "db:backup:menu": "ts-node -r dotenv/config scripts/export-cnc-menu.ts",
+    "db:clean:cnc": "ts-node -r dotenv/config scripts/cleanup-cnc-db.ts",
+    "db:restore:menu": "ts-node -r dotenv/config scripts/restore-cnc-menu.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "8.4.0",
