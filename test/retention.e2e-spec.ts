@@ -18,8 +18,11 @@ import { SWEEP_TOKEN_HEADER } from '../src/internal/sweep-token.guard';
 import {
   attendanceCutoff,
   enquiryCutoff,
+  pushMessageCutoff,
+  pushSubscriptionCutoff,
 } from '../src/internal/retention-sweep.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
+import { drawNumber } from '../src/prisma/sequences';
 import { staffQrPayload } from '../src/staff/staff-qr';
 import { createTestApp } from './create-test-app';
 import {
@@ -33,6 +36,8 @@ const HOUR_MS = 60 * 60 * 1000;
 interface RetentionBody {
   enquiries: number;
   attendanceRecords: number;
+  pushMessages: number;
+  pushSubscriptions: number;
   more: boolean;
 }
 
@@ -40,7 +45,8 @@ interface RetentionBody {
  * `POST /api/v1/internal/sweeps/retention` (card C8-5, Q36): enquiries
  * older than twelve months and finished shifts older than two years are
  * deleted; the rows either side of each boundary, the open shift and every
- * audit row stay, and the reads that touch those people still answer.
+ * audit row stay, and the reads that touch those people still answer. From
+ * C10, push rows older than 30 days and push devices unused for 180 go too.
  *
  * On a database of its own: the sweep deletes across the whole table, and
  * on the shared database it would also take other suites' rows, and the
@@ -177,7 +183,13 @@ describe('the retention sweep (e2e)', () => {
 
     const body = (await sweep().expect(200)).body as RetentionBody;
 
-    expect(body).toEqual({ enquiries: 1, attendanceRecords: 1, more: false });
+    expect(body).toEqual({
+      enquiries: 1,
+      attendanceRecords: 1,
+      pushMessages: 0,
+      pushSubscriptions: 0,
+      more: false,
+    });
 
     const enquiries = await prisma.enquiry.findMany({ select: { id: true } });
 
@@ -224,6 +236,8 @@ describe('the retention sweep (e2e)', () => {
     expect((await sweep().expect(200)).body).toEqual({
       enquiries: 0,
       attendanceRecords: 0,
+      pushMessages: 0,
+      pushSubscriptions: 0,
       more: false,
     });
   });
@@ -245,10 +259,116 @@ describe('the retention sweep (e2e)', () => {
     expect((await sweep().expect(200)).body).toEqual({
       enquiries: 1_203,
       attendanceRecords: 0,
+      pushMessages: 0,
+      pushSubscriptions: 0,
       more: false,
     });
     expect(
       await prisma.enquiry.count({ where: { ipHash: 'retention-batch' } }),
+    ).toBe(0);
+  });
+
+  it('deletes push rows older than 30 days and devices unused for 180, and counts them (C10)', async () => {
+    const now = new Date();
+    const messageEdge = pushMessageCutoff(now).getTime();
+    const deviceEdge = pushSubscriptionCutoff(now).getTime();
+    const customer = await prisma.customer.create({
+      data: {
+        memberNo: await drawNumber(prisma, 'customer'),
+        name: 'Retention Push',
+        email: `retention-push-${Date.now()}@cnc.test`,
+      },
+    });
+    const staff = await createStaffAccount(prisma, StaffRole.KITCHEN);
+    const message = (key: string, createdAt: Date) =>
+      prisma.pushMessage.create({
+        data: {
+          createdAt,
+          customerId: customer.id,
+          event: 'order.preparing',
+          topic: key,
+          dedupeKey: key,
+          title: 'Order WEB-000001 is being prepared',
+          body: 'The kitchen has started on your order.',
+          tag: key,
+          status: 'SENT',
+          expiresAt: new Date(createdAt.getTime() + HOUR_MS),
+        },
+        select: { id: true },
+      });
+    const device = (
+      owner: { customerId: string } | { staffId: string },
+      lastSeenAt: number,
+      lastSuccessAt: number | null,
+    ) => {
+      const fields = {
+        endpoint: `https://fcm.googleapis.com/fcm/send/retention-${Math.random()}`,
+        p256dh: 'p'.repeat(87),
+        auth: 'a'.repeat(22),
+        lastSeenAt: new Date(lastSeenAt),
+        lastSuccessAt: lastSuccessAt === null ? null : new Date(lastSuccessAt),
+      };
+
+      return 'customerId' in owner
+        ? prisma.customerPushSubscription.create({
+            data: { ...fields, customerId: owner.customerId },
+            select: { id: true },
+          })
+        : prisma.staffPushSubscription.create({
+            data: { ...fields, staffId: owner.staffId },
+            select: { id: true },
+          });
+    };
+
+    const old = await message('retention:old', new Date(messageEdge - HOUR_MS));
+    const kept = await message(
+      'retention:kept',
+      new Date(messageEdge + HOUR_MS),
+    );
+
+    // Seen long ago and never delivered to: gone.
+    const unused = await device(
+      { customerId: customer.id },
+      deviceEdge - HOUR_MS,
+      null,
+    );
+    // Seen long ago but delivered to lately: kept.
+    const delivering = await device(
+      { customerId: customer.id },
+      deviceEdge - 20 * 24 * HOUR_MS,
+      now.getTime() - 24 * HOUR_MS,
+    );
+    // A staff device neither seen nor delivered to for 180 days: gone.
+    const staffUnused = await device(
+      { staffId: staff.id },
+      deviceEdge - 2 * HOUR_MS,
+      deviceEdge - HOUR_MS,
+    );
+
+    expect((await sweep().expect(200)).body).toEqual({
+      enquiries: 0,
+      attendanceRecords: 0,
+      pushMessages: 1,
+      pushSubscriptions: 2,
+      more: false,
+    });
+
+    expect(
+      await prisma.pushMessage.findMany({
+        where: { id: { in: [old.id, kept.id] } },
+        select: { id: true },
+      }),
+    ).toEqual([{ id: kept.id }]);
+    expect(
+      await prisma.customerPushSubscription.findMany({
+        where: { id: { in: [unused.id, delivering.id] } },
+        select: { id: true },
+      }),
+    ).toEqual([{ id: delivering.id }]);
+    expect(
+      await prisma.staffPushSubscription.count({
+        where: { id: staffUnused.id },
+      }),
     ).toBe(0);
   });
 });

@@ -7,6 +7,7 @@ import { MailModule } from '../mail/mail.module';
 import { MoneyControlModule } from '../money-control/money-control.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PaystackClientModule } from '../payments/paystack-client.module';
+import { PushModule } from '../push/push.module';
 import { StockModule } from '../stock/stock.module';
 import { CustomerOrdersController } from './customer-orders.controller';
 import { CustomerOrdersService } from './customer-orders.service';
@@ -31,6 +32,10 @@ import { OnlineRefundsService } from './online-refunds.service';
  * the receipt, the stage changes, the refunds, by email and in the in-app
  * list) and the customer's own orders (`GET /me/orders`,
  * `CustomerOrdersService`).
+ *
+ * From C10, the web pushes of those events (`PushModule`): the customer's
+ * stage and refund pushes beside the in-app items, and the staff's new
+ * web order and web docket pushes beside the placement and the edits.
  */
 @Module({
   imports: [
@@ -43,6 +48,7 @@ import { OnlineRefundsService } from './online-refunds.service';
     PaystackClientModule,
     MailModule,
     CustomerNotificationsModule,
+    PushModule,
   ],
   controllers: [OnlineOrdersController, CustomerOrdersController],
   providers: [

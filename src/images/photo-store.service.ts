@@ -1,8 +1,44 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
-import { MediaStorage } from '../storage/media-storage';
-import { ImageResizerService, type PhotoKind } from './image-resizer.service';
+import { PUBLIC_PHOTO_LINK_TTL_MS } from '../common/public-cache';
+import {
+  MediaStorage,
+  type SignedUrl,
+  type StoredObject,
+} from '../storage/media-storage';
+import {
+  ImageResizerService,
+  MENU_THUMB_FORMAT,
+  type PhotoKind,
+} from './image-resizer.service';
 import { readUploadedImage, type UploadedImageFile } from './uploaded-image';
+
+/**
+ * A public link is handed out again while at least this much of its life
+ * remains: 45 minutes of the hour it is signed for (B2). See
+ * `PhotoStore.publicSignedUrlOrNull`.
+ */
+export const PUBLIC_LINK_MIN_REMAINING_MS = 45 * 60 * 1000;
+
+/**
+ * At most this many public links are remembered per instance. The menu
+ * needs two per dish with a photo (166 dishes today), and a link is about
+ * a kilobyte, so the cap is a megabyte at most, with room for photos that
+ * have since been replaced.
+ */
+export const PUBLIC_LINK_MEMO_SIZE = 1000;
+
+/** What `storeMenuPhoto` wrote: the photo and its thumbnail. */
+export interface StoredMenuPhoto {
+  photo: string;
+  thumb: string;
+}
+
+/**
+ * A photo's bytes and stored type, as `PhotoStore.read` answers it. Named
+ * here so code outside `images/` never reaches into `storage/`.
+ */
+export type StoredPhoto = StoredObject;
 
 /**
  * Staff and menu photographs (A17): judged by their bytes, resized, stored
@@ -28,6 +64,9 @@ import { readUploadedImage, type UploadedImageFile } from './uploaded-image';
 export class PhotoStore {
   private readonly logger = new Logger(PhotoStore.name);
 
+  /** Public links by `gs://` URI, oldest first (`publicSignedUrlOrNull`). */
+  private readonly publicLinks = new Map<string, SignedUrl>();
+
   constructor(
     private readonly storage: MediaStorage,
     private readonly resizer: ImageResizerService,
@@ -49,11 +88,47 @@ export class PhotoStore {
     ownerId: string,
     file: UploadedImageFile | undefined,
   ): Promise<string> {
-    const { bytes, image } = readUploadedImage(file);
-    const stored = await this.resizer.resize(kind, bytes, image);
-    const objectName = `${kind}/${ownerId}/photo-${randomUUID()}.${image.format.extension}`;
+    return (await this.write(kind, ownerId, file)).gsUri;
+  }
 
-    return this.storage.save(objectName, stored, image.format.contentType);
+  /**
+   * A menu photo and its thumbnail (B2), both written before the command's
+   * transaction opens, like `store`. The thumbnail is made from the stored
+   * photo (`menuThumbnail`) under its own fresh name
+   * (`menu/<id>/thumb-<uuid>.webp`). If it cannot be written, the photo
+   * just written is removed and the upload fails, so a row never points at
+   * a photo without its thumbnail through this path.
+   */
+  async storeMenuPhoto(
+    itemId: string,
+    file: UploadedImageFile | undefined,
+  ): Promise<StoredMenuPhoto> {
+    const photo = await this.write('menu', itemId, file);
+
+    try {
+      const thumb = await this.writeMenuThumb(itemId, photo.stored);
+
+      return { photo: photo.gsUri, thumb };
+    } catch (error) {
+      await this.removeQuietly(photo.gsUri);
+      throw error;
+    }
+  }
+
+  /**
+   * A thumbnail for a menu photo stored before thumbnails existed, made
+   * from the stored bytes; returns its `gs://` URI. The backfill's one
+   * step (`backfillMenuThumbs`). A photo recorded but no longer in the
+   * bucket throws, so the backfill reports that item as failed.
+   */
+  async storeMenuThumbFor(itemId: string, photoGsUri: string): Promise<string> {
+    const stored = await this.storage.read(photoGsUri);
+
+    if (stored === null) {
+      throw new Error(`${photoGsUri} is recorded but not in the bucket.`);
+    }
+
+    return this.writeMenuThumb(itemId, stored.body);
   }
 
   /**
@@ -65,30 +140,90 @@ export class PhotoStore {
    * screen should not be unavailable because a photograph could not be
    * signed.
    *
-   * `ttlMs` is the link's life, the storage's ten minutes unless a read
-   * that is cached longer asks for more (the public menu).
+   * The link lives the storage's ten minutes and is signed afresh on every
+   * call: a signed-in screen asks again, and a photo of a person is never
+   * handed out for longer.
    */
-  async signedUrlOrNull(
-    gsUri: string | null,
-    ttlMs?: number,
-  ): Promise<string | null> {
+  async signedUrlOrNull(gsUri: string | null): Promise<string | null> {
     if (gsUri === null) return null;
 
-    try {
-      const { url } =
-        ttlMs === undefined
-          ? await this.storage.signedUrl(gsUri)
-          : await this.storage.signedUrl(gsUri, ttlMs);
+    return (await this.signOrNull(gsUri))?.url ?? null;
+  }
 
-      return url;
-    } catch (error: unknown) {
-      this.logger.error(
-        `Could not sign a link for ${gsUri}; answering without the photo.`,
-        error instanceof Error ? error.stack : String(error),
-      );
+  /**
+   * A link for a public read that is cached (the menu): signed for
+   * `PUBLIC_PHOTO_LINK_TTL_MS` (an hour), and the same link is handed out
+   * again while at least `PUBLIC_LINK_MIN_REMAINING_MS` (45 minutes) of it
+   * remains.
+   *
+   * - **Fast.** On Cloud Run every signature is a call to Google's signing
+   *   service, one per photo; the menu has one per dish with a photo, and
+   *   two with its thumbnail. Reused, a warm menu read signs nothing.
+   * - **Cacheable.** The same links make the same body, so the menu's
+   *   `ETag` holds and a conditional request answers 304, for up to 15
+   *   minutes at a time; a fresh link per read made every body new.
+   * - **Never stale past its life.** A link is handed out only with at
+   *   least 45 minutes left, and the menu is cached for a minute (plus the
+   *   page's own minute), so a visitor always has over 40 minutes.
+   *
+   * Remembered per `gs://` URI in this instance's memory, at most
+   * `PUBLIC_LINK_MEMO_SIZE` of them, the oldest dropped first. A replaced
+   * photo has a new URI (`store` names every upload afresh), so a link to
+   * the old photo is never handed out for the new one. A signing failure
+   * is not remembered: the next read tries again.
+   */
+  async publicSignedUrlOrNull(gsUri: string | null): Promise<string | null> {
+    if (gsUri === null) return null;
 
-      return null;
+    const remembered = this.publicLinks.get(gsUri);
+
+    if (
+      remembered !== undefined &&
+      remembered.expiresAt.getTime() - Date.now() >=
+        PUBLIC_LINK_MIN_REMAINING_MS
+    ) {
+      return remembered.url;
     }
+
+    const signed = await this.signOrNull(gsUri, PUBLIC_PHOTO_LINK_TTL_MS);
+
+    if (signed === null) return null;
+
+    // Deleted first so a re-signed link moves to the newest end.
+    this.publicLinks.delete(gsUri);
+    this.publicLinks.set(gsUri, signed);
+
+    for (const oldest of this.publicLinks.keys()) {
+      if (this.publicLinks.size <= PUBLIC_LINK_MEMO_SIZE) break;
+      this.publicLinks.delete(oldest);
+    }
+
+    return signed.url;
+  }
+
+  /**
+   * The photo's bytes and type, for a route that streams it from the API
+   * (CS B5), or null when there is no photo: the column is null, or it
+   * names an object that is no longer in the bucket.
+   *
+   * Unlike `signedUrlOrNull`, a storage failure is not turned into null.
+   * There the photo is one field of a larger answer that should still
+   * arrive; here it is the whole answer, and "no photo" would be a false
+   * statement about the person, so the request fails (500) and the screen
+   * can try again.
+   */
+  async read(gsUri: string | null): Promise<StoredPhoto | null> {
+    if (gsUri === null) return null;
+
+    const stored = await this.storage.read(gsUri);
+
+    if (stored === null) {
+      this.logger.warn(
+        `${gsUri} is recorded but not in the bucket; answering as no photo.`,
+      );
+    }
+
+    return stored;
   }
 
   /**
@@ -108,6 +243,55 @@ export class PhotoStore {
           'object, not a lost photo.',
         error instanceof Error ? error.stack : String(error),
       );
+    }
+  }
+
+  /** Check, resize and write one upload; the URI and the bytes stored. */
+  private async write(
+    kind: PhotoKind,
+    ownerId: string,
+    file: UploadedImageFile | undefined,
+  ): Promise<{ gsUri: string; stored: Buffer }> {
+    const { bytes, image } = readUploadedImage(file);
+    const stored = await this.resizer.resize(kind, bytes, image);
+    const objectName = `${kind}/${ownerId}/photo-${randomUUID()}.${image.format.extension}`;
+
+    return {
+      gsUri: await this.storage.save(
+        objectName,
+        stored,
+        image.format.contentType,
+      ),
+      stored,
+    };
+  }
+
+  private async writeMenuThumb(itemId: string, photo: Buffer): Promise<string> {
+    const thumb = await this.resizer.menuThumbnail(photo);
+
+    return this.storage.save(
+      `menu/${itemId}/thumb-${randomUUID()}.${MENU_THUMB_FORMAT.extension}`,
+      thumb,
+      MENU_THUMB_FORMAT.contentType,
+    );
+  }
+
+  /** Sign, or log and answer null (see `signedUrlOrNull`). */
+  private async signOrNull(
+    gsUri: string,
+    ttlMs?: number,
+  ): Promise<SignedUrl | null> {
+    try {
+      return ttlMs === undefined
+        ? await this.storage.signedUrl(gsUri)
+        : await this.storage.signedUrl(gsUri, ttlMs);
+    } catch (error: unknown) {
+      this.logger.error(
+        `Could not sign a link for ${gsUri}; answering without the photo.`,
+        error instanceof Error ? error.stack : String(error),
+      );
+
+      return null;
     }
   }
 }

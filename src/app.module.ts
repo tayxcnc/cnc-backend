@@ -28,6 +28,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { CncPrismaModule } from './prisma/cnc-prisma.module';
 import { RateLimitModule } from './common/throttler/rate-limit.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
+import { PushModule } from './push/push.module';
 import { CncPrismaService } from './prisma/cnc-prisma.service';
 import { ReceptionModule } from './reception/reception.module';
 import { ReportsModule } from './reports/reports.module';
@@ -85,6 +86,7 @@ import { WasteModule } from './waste/waste.module';
     PaymentsModule,
     OnlineOrdersModule,
     NotificationsModule,
+    PushModule,
     ShellModule,
     SweepsModule,
   ],

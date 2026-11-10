@@ -86,7 +86,7 @@ describe('reference data', () => {
         approvalLimitKobo: 5000000,
         dailyLimitOn: true,
         dailyLimitKobo: 15000000,
-        printerWidth: 'MM80',
+        printerWidth: 'MM58',
         alertLowStock: true,
         alertApprovals: true,
         alertUnsettled: true,
@@ -100,7 +100,7 @@ describe('reference data', () => {
       });
     });
 
-    it('equals the column defaults the C3 core migration gives the Settings table', () => {
+    it('equals the column defaults the C3 core migration gives the Settings table, except the paper', () => {
       const sql = readFileSync(
         join(
           __dirname,
@@ -135,23 +135,30 @@ describe('reference data', () => {
               : (/^'(.*)'$/.exec(value)?.[1] ?? Number(value));
       }
 
-      expect(defaults).toEqual({ ...SETTINGS });
+      // CS B2: the seed starts the receipt paper at 58 mm, while the column
+      // default stays 80 mm because the change ships with no migration. It
+      // is the one difference, so a suite that needs the seeded row writes
+      // it from SETTINGS (test/seeded-settings.ts), never from the defaults.
+      expect(defaults).toEqual({ ...SETTINGS, printerWidth: 'MM80' });
+      expect(SETTINGS.printerWidth).toBe('MM58');
     });
   });
 
   describe('business', () => {
-    it("holds Q7's details, with digits for the phone and no country in the address", () => {
+    it("holds Q7's details with batch 2's phone and Instagram, digits for the phone and no country in the address", () => {
       expect(BUSINESS).toEqual({
         name: 'Chef Noro Culinary',
         addressLine:
           '7A Hospital Place, opposite Water Board, Jos, Plateau State',
         addressLines: ['7A Hospital Place,', 'opposite Water Board, Jos'],
-        phone: '08022188797',
+        phone: '09113500003',
         email: 'chefnoroculinarycnc@gmail.com',
         registration: 'RC 765598',
         mapLat: 9.897137833050548,
         mapLng: 8.889460545696355,
-        socialLinks: {},
+        socialLinks: {
+          instagram: 'https://www.instagram.com/chefnoroculinary',
+        },
       });
     });
   });

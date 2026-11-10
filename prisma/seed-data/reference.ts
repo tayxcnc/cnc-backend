@@ -39,8 +39,16 @@ export const SETTINGS = {
   /** The Daily Approval Limit, on, at ₦150,000 per manager per day (Q7). */
   dailyLimitOn: true,
   dailyLimitKobo: 15000000,
-  /** The staff app's default paper, `80mm`. */
-  printerWidth: PrinterWidth.MM80,
+  /**
+   * The staff app's default paper, `58mm` (CS B2): the receipt printer the
+   * venue uses is a 58 mm thermal printer, and a receipt laid out for 80 mm
+   * comes out shrunk or cut on it. 80 mm and A4 stay choices in Settings >
+   * Receipt Printer. The schema's column default stays `MM80`; only a
+   * seeded install starts on 58 mm, and the seed never overwrites a row
+   * that exists, so a database seeded earlier keeps its value until
+   * someone changes it in Settings.
+   */
+  printerWidth: PrinterWidth.MM58,
   /** The staff app's bell switches, all on (`ALERTS` in `domain.ts`). */
   alertLowStock: true,
   alertApprovals: true,
@@ -62,23 +70,24 @@ export const SETTINGS = {
  * CNC's business details (plan §4.1 "Business", Q7, D28), from the website's
  * `lib/site.ts` and the staff app's `BUSINESS`.
  *
- * `phone` is digits only; the site formats it ("0802 218 8797").
- * `addressLine` carries no country; the site appends ", Nigeria", and the
- * receipt omits it, as the staff app's receipt does today. `addressLines`
- * is the website's two-line form, punctuation included. The map pin is the
- * one CNC confirmed. `socialLinks` stays empty until the accounts are
- * supplied.
+ * `phone` is digits only; the site formats it ("0911 350 0003", batch 2
+ * section 2). `addressLine` carries no country; the site appends
+ * ", Nigeria", and the receipt omits it, as the staff app's receipt does
+ * today. `addressLines` is the website's two-line form, punctuation
+ * included. The map pin is the one CNC confirmed. `socialLinks` holds only
+ * Instagram (batch 2 section 2); the other networks stay unset until their
+ * accounts are supplied.
  */
 export const BUSINESS = {
   name: 'Chef Noro Culinary',
   addressLine: '7A Hospital Place, opposite Water Board, Jos, Plateau State',
   addressLines: ['7A Hospital Place,', 'opposite Water Board, Jos'],
-  phone: '08022188797',
+  phone: '09113500003',
   email: 'chefnoroculinarycnc@gmail.com',
   registration: 'RC 765598',
   mapLat: 9.897137833050548,
   mapLng: 8.889460545696355,
-  socialLinks: {},
+  socialLinks: { instagram: 'https://www.instagram.com/chefnoroculinary' },
 } as const;
 
 export interface TableSeed {

@@ -26,6 +26,8 @@ import type {
 import { OutboundMessagesService } from '../mail/outbound-messages.service';
 import { parseCheckoutLines } from '../ordering/cart-pricing';
 import { cardText } from '../payments/paystack-transaction';
+import { asId, asOrderNumber } from '../push/push-input-types';
+import { PushQueueService } from '../push/push-queue.service';
 
 type Tx = Prisma.TransactionClient;
 
@@ -85,6 +87,35 @@ export function sendsStatusMail(
 }
 
 /**
+ * The web push a stage change sends the order's customer (C10, PC1 to
+ * PC4), if any: preparing, on its way, ready, and a cancellation. The
+ * stages the customer is part of (received, delivered, collected) push
+ * nothing. Order Updates silences the first three and never the
+ * cancellation; the queue reads the switch (the catalogue's `gate`).
+ */
+export function stagePushEvent(
+  status: OnlineFulfilmentStatus,
+):
+  | 'order.preparing'
+  | 'order.on_the_way'
+  | 'order.ready'
+  | 'order.cancelled'
+  | null {
+  switch (status) {
+    case OnlineFulfilmentStatus.PREPARING:
+      return 'order.preparing';
+    case OnlineFulfilmentStatus.ON_THE_WAY:
+      return 'order.on_the_way';
+    case OnlineFulfilmentStatus.READY:
+      return 'order.ready';
+    case OnlineFulfilmentStatus.CANCELLED:
+      return 'order.cancelled';
+    default:
+      return null;
+  }
+}
+
+/**
  * A web order's messages to its customer (plan §7.4 step 5, §9.2; card
  * C7-6): the receipt when the payment writes the order, the stage changes
  * staff make, and the money given back. Each is an email to the address
@@ -105,6 +136,12 @@ export function sendsStatusMail(
  *
  * A deleted account's orders (Q36) have no email left and get no item
  * (`CustomerNotificationsService.record` skips them).
+ *
+ * **Web push (C10).** A customer's stage change (`stagePushEvent`) and
+ * refund also queue a push to their devices, with the item, under the
+ * same key: the push's topic *is* the mail key, so `dispatch` sends both
+ * after the commit, and the call sites need nothing new. The receipt
+ * pushes nothing: the customer has just paid, on screen.
  */
 @Injectable()
 export class OnlineOrderMail {
@@ -112,6 +149,7 @@ export class OnlineOrderMail {
     private readonly outbound: OutboundMessagesService,
     private readonly notifications: CustomerNotificationsService,
     private readonly config: CncConfigService,
+    private readonly push: PushQueueService,
   ) {}
 
   /**
@@ -206,6 +244,7 @@ export class OnlineOrderMail {
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         select: { name: true },
       });
+      const event = stagePushEvent(status);
 
       await this.notifications.record(
         tx,
@@ -216,6 +255,16 @@ export class OnlineOrderMail {
           lines.map((line) => line.name),
         ),
         dedupeKey,
+        event === null
+          ? null
+          : {
+              event,
+              input: () => ({
+                onlineOrderId: asId(online.id),
+                orderNumber: asOrderNumber(online.orderNumber),
+                version: online.version,
+              }),
+            },
       );
     }
 
@@ -284,6 +333,15 @@ export class OnlineOrderMail {
         online.customerId,
         refundNotification(online.orderNumber, amount, refund.method),
         dedupeKey,
+        {
+          event: 'order.refunded',
+          // No amount and no method: the push only says a refund went.
+          input: () => ({
+            onlineOrderId: asId(online.id),
+            orderNumber: asOrderNumber(online.orderNumber),
+            paymentId: asId(refund.paymentId),
+          }),
+        },
       );
     }
 
@@ -321,11 +379,16 @@ export class OnlineOrderMail {
     return dedupeKey;
   }
 
-  /** Send the queued emails after the commit. Never throws. */
+  /**
+   * Send the queued emails, then the pushes queued under the same keys,
+   * after the commit (one push deadline for them all, D14). Never throws.
+   */
   async dispatch(...dedupeKeys: (string | null)[]): Promise<void> {
     for (const key of dedupeKeys) {
       if (key !== null) await this.outbound.dispatchByKey(key);
     }
+
+    await this.push.dispatchTopics(dedupeKeys);
   }
 
   private async online(tx: Tx, id: string) {

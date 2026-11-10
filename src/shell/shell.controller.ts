@@ -1,15 +1,26 @@
-import { Body, Controller, Get, Header, Put, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Put,
+  Res,
+  StreamableFile,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { CurrentStaff } from '../auth/decorators/current-staff.decorator';
 import { PasswordChangeExempt } from '../auth/decorators/password-change-exempt.decorator';
 import { CncStaffGuard } from '../auth/guards/cnc-staff.guard';
 import type { StaffPrincipal } from '../auth/staff-principal';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
+import { ApiPhotoResponse, photoFile } from '../images/photo-response';
 import { StaffCardResponse } from '../staff/dto/staff-card.response';
 import { StaffCardService } from '../staff/staff-card.service';
 import { OverviewPreferencesDto } from './dto/overview-preferences.dto';
@@ -79,6 +90,30 @@ export class ShellController {
   @ApiResponse(REFUSED)
   myCard(@CurrentStaff() actor: StaffPrincipal): Promise<StaffCardResponse> {
     return this.cards.card(actor.id);
+  }
+
+  @Get('me/photo')
+  @ApiOperation({
+    operationId: 'staffMePhoto',
+    summary: 'My photograph, as an image',
+    description:
+      'The photo on GET /staff/me/card, streamed from the API so the staff ' +
+      'app can draw it into the printed card and its PDF (a canvas cannot ' +
+      'read the bucket’s signed link). Every role reads its own.',
+  })
+  @ApiPhotoResponse()
+  @ApiResponse(UNAUTHORISED)
+  @ApiResponse(REFUSED)
+  @ApiResponse({
+    status: 404,
+    description: '"This staff account has no photo."',
+    type: ApiErrorResponse,
+  })
+  async myPhoto(
+    @CurrentStaff() actor: StaffPrincipal,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<StreamableFile> {
+    return photoFile(response, await this.cards.photo(actor.id));
   }
 
   @Get('reference')

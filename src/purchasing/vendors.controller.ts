@@ -58,8 +58,9 @@ const ROLE_REFUSED = {
 const BAD_PROFILE = {
   status: 400,
   description:
-    '"Enter the vendor name and phone.", or a field that is too long or ' +
-    'not text.',
+    '"Enter the vendor name and phone.", "Please rewrite this without ' +
+    'long dashes." (a long dash in any field but the notes), or a field ' +
+    'that is too long or not text.',
   type: ApiErrorResponse,
 } as const;
 

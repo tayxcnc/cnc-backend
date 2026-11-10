@@ -4,6 +4,7 @@ import {
   OutboundMessageStatus,
   type Prisma,
 } from '../../generated/cnc-client';
+import { retryAfterBackoff } from '../common/retry-backoff';
 import { CncConfigService } from '../config/cnc.config';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { frameCncMail } from './cnc-mail-frame';
@@ -47,12 +48,7 @@ export const MESSAGE_RETRY_BACKOFF_MS = [5 * 60 * 1000, 30 * 60 * 1000];
  * message that has spent every attempt is never tried again anyway.
  */
 export function retryAfterFor(attempts: number, now: Date): Date {
-  const index = Math.min(
-    Math.max(attempts, 1) - 1,
-    MESSAGE_RETRY_BACKOFF_MS.length - 1,
-  );
-
-  return new Date(now.getTime() + MESSAGE_RETRY_BACKOFF_MS[index]);
+  return retryAfterBackoff(MESSAGE_RETRY_BACKOFF_MS, attempts, now);
 }
 
 /**

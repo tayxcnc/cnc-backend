@@ -237,6 +237,49 @@ export const NOTIFICATIONS_READ_LIMIT = 120;
 export const BOOKING_CHANGE_LIMIT = 30;
 
 /**
+ * `POST /me/push/subscriptions` and `DELETE /me/push/subscriptions`, each
+ * per customer (C10). A page load syncs the device once, so thirty covers
+ * a person re-opening the app all day; anything more is a script probing
+ * endpoints.
+ */
+export const PUSH_SUBSCRIPTION_LIMIT = 30;
+
+/**
+ * `POST /staff/push/subscriptions` and `DELETE /staff/push/subscriptions`,
+ * each per staff member (C10). The same reason as the customer's, counted
+ * per person because the venue's tablets share one address.
+ */
+export const STAFF_PUSH_SUBSCRIPTION_LIMIT = 30;
+
+/**
+ * A signed-in staff member's write, counted per person from any address:
+ * `limit` in `ttl` milliseconds (fifteen minutes unless given), the other
+ * two counts skipped (C10). `CustomerWriteThrottle`'s staff twin: the
+ * route lists the throttler after `CncStaffGuard` (the controller's
+ * guard), so a request without a valid token is refused uncounted, and
+ * per person rather than per address because every device in the venue
+ * shares one.
+ */
+export function StaffWriteThrottle(
+  limit: number,
+  ttl: number = AUTH_ATTEMPT_WINDOW_MS,
+): MethodDecorator {
+  return applyDecorators(
+    Throttle({
+      [THROTTLERS.account]: {
+        limit,
+        ttl,
+        getTracker: signedInStaffTracker,
+      },
+    }),
+    SkipThrottle({
+      [THROTTLERS.address]: true,
+      [THROTTLERS.accountAnywhere]: true,
+    }),
+  );
+}
+
+/**
  * A public route counted per client address only: `limit` requests in
  * `ttl` milliseconds (fifteen minutes unless given), the other two counts
  * skipped. The bookings, the enquiries, the checkout and Paystack's

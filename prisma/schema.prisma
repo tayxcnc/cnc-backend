@@ -402,6 +402,29 @@ enum AttendanceSource {
   RECEPTION_QR
 }
 
+/// A queued web push's state (C10): waiting to go (`PENDING`), delivered to
+/// at least one device (`SENT`), failed and waiting out its backoff
+/// (`FAILED`), or given up (`DROPPED`, with a `PushDropReason`).
+enum PushMessageStatus {
+  PENDING
+  SENT
+  FAILED
+  DROPPED
+}
+
+/// Why a web push was given up (C10): the owner had no device left
+/// (`NO_DEVICE`), its time ran out (`EXPIRED`), the recipient may no longer
+/// receive it (`RECIPIENT_GONE`: an inactive staff member, a role out of the
+/// event's audience, a deleted customer), every push service refused it
+/// (`REJECTED`), or its attempts were spent (`GAVE_UP`).
+enum PushDropReason {
+  NO_DEVICE
+  EXPIRED
+  RECIPIENT_GONE
+  REJECTED
+  GAVE_UP
+}
+
 // ============================== REFERENCE DATA (§4.1) ======================
 
 /// The one settings row: VAT, service, fees, approval limits, the printer,
@@ -461,9 +484,9 @@ model Settings {
 /// CNC's business details: one source for the website, receipts and the
 /// entrance (D28). One row, held by `singleton` as on Settings.
 ///
-/// `phone` is stored as digits (`08022188797`); the site formats it.
+/// `phone` is stored as digits (`09113500003`); the site formats it.
 /// `addressLine` carries no country; the site appends ", Nigeria".
-/// `socialLinks` is an object keyed by network, empty until supplied.
+/// `socialLinks` is an object keyed by network; the seed sets `instagram`.
 model Business {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -617,6 +640,10 @@ model MenuItem {
   active          Boolean    @default(true)
   showOnline      Boolean    @default(true)
   photo           String?
+  /// The photo's 240 pixel WebP thumbnail (`thumbUrl` on `GET /menu`), a
+  /// `gs://` URI like `photo`; null with no photo, or for a photo stored
+  /// before thumbnails until `npm run media:backfill-thumbs` runs.
+  photoThumb      String?
   photoAlt        String?
   choiceLabel     String?
   choiceOptions   String[]   @default([])
@@ -702,6 +729,9 @@ model Staff {
   attendanceRecords     AttendanceRecord[]
   attendanceCorrections AttendanceCorrection[]
 
+  pushSubscriptions StaffPushSubscription[]
+  pushMessages      PushMessage[]
+
   @@index([role, isActive])
 }
 
@@ -758,6 +788,9 @@ model Customer {
   reservations  Reservation[]
   checkouts     Checkout[]
   onlineOrders  OnlineOrder[]
+
+  pushSubscriptions CustomerPushSubscription[]
+  pushMessages      PushMessage[]
 }
 
 /// A one-time sign-in or email-change code (A15). The code is 6 digits and
@@ -1850,6 +1883,110 @@ model OutboundMessage {
   retryAfter DateTime?
 
   @@index([status, createdAt])
+}
+
+/// One browser's web push subscription for a customer (C10): the push
+/// service's `endpoint` and the browser's two encryption keys, as
+/// `PushSubscription.toJSON()` gives them. An endpoint belongs to one
+/// customer at a time (it is unique), and moves to another only when that
+/// customer presents the same keys (`PushSubscriptionsService.subscribe`).
+///
+/// Deleted when the customer's sessions are revoked (sign-out, a reused
+/// refresh token, account deletion: `forgetPushSubject`), when a push
+/// service answers that it is gone or was signed with another key, and by
+/// the retention sweep after 180 days unused. `lastSeenAt` moves on every
+/// subscribe; `lastSuccessAt` on every push a service accepted.
+///
+/// The endpoint names a person's device: never logged, never returned.
+/// Cascade: a subscription is meaningless without its customer.
+model CustomerPushSubscription {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  endpoint      String    @unique @db.VarChar(1024)
+  p256dh        String    @db.VarChar(128)
+  auth          String    @db.VarChar(64)
+  customerId    String
+  userAgent     String?   @db.VarChar(200)
+  lastSeenAt    DateTime  @default(now())
+  lastSuccessAt DateTime?
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+}
+
+/// One browser's web push subscription for a staff member (C10): the same
+/// columns and rules as `CustomerPushSubscription`, in a table of its own so
+/// the realms never share a row. Also deleted on every revocation a role,
+/// email, status or password change makes. Cascade from the staff member,
+/// who is never deleted in any case.
+model StaffPushSubscription {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  endpoint      String    @unique @db.VarChar(1024)
+  p256dh        String    @db.VarChar(128)
+  auth          String    @db.VarChar(64)
+  staffId       String
+  userAgent     String?   @db.VarChar(200)
+  lastSeenAt    DateTime  @default(now())
+  lastSuccessAt DateTime?
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId])
+}
+
+/// A web push waiting to go, or its outcome (C10, `PushQueueService`).
+/// Written in the event's own transaction, inside `SAVEPOINT cnc_push`, so
+/// a committed event always has its row and a push defect never rolls the
+/// event back; sent after the commit, and retried by the push sweep.
+///
+/// The text is rendered when the row is written (`push-catalogue.ts`) and
+/// carries no free text, name, contact, money or address, so a retry needs
+/// no event data. `topic` is the catalogue entry's `about`, the handle a
+/// command dispatches by; `dedupeKey` (`<event>:<about>:<c|s>:<ownerId>`)
+/// makes each event write one row per person however often it runs.
+///
+/// `retryAfter` is the off-hours hold (D6), the backoff after a failed send
+/// and the claim's lease; `expiresAt` is when the push is no longer worth
+/// sending. A hand-written CHECK holds exactly one of `customerId` and
+/// `staffId`, and a partial index serves the queue's reads. Cascade from
+/// either owner; the retention sweep deletes rows after 30 days.
+model PushMessage {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customerId String?
+  staffId    String?
+  event      String            @db.VarChar(64)
+  topic      String            @db.VarChar(200)
+  dedupeKey  String            @unique @db.VarChar(300)
+  title      String            @db.VarChar(60)
+  body       String            @db.VarChar(160)
+  link       String?           @db.VarChar(200)
+  /// The staff app's hand-off ref (a docket, a checkout), never shown.
+  ref        String?           @db.VarChar(64)
+  tag        String            @db.VarChar(120)
+  urgent     Boolean           @default(false)
+  renotify   Boolean           @default(false)
+  status     PushMessageStatus @default(PENDING)
+  dropReason PushDropReason?
+  attempts   Int               @default(0)
+  retryAfter DateTime?
+  expiresAt  DateTime
+  sentAt     DateTime?
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  staff    Staff?    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([topic])
+  @@index([customerId])
+  @@index([staffId])
 }
 
 /// A contact-form message or a large-group booking enquiry (D50). Stored,

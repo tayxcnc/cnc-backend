@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CheckoutStatus } from '../../generated/cnc-client';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import {
   CheckoutPaymentsService,
   type ConfirmOutcome,
@@ -48,6 +49,10 @@ export interface PaymentsSweepResult {
  * first, and neither depends on a sweep. Both are idempotent by the same
  * conditional updates the webhook relies on, so two runs at once, or a run
  * racing a webhook, settle a checkout once.
+ *
+ * The staff pushes a run's settles queue (C10: a paid order, its docket, a
+ * held checkout) are collected and sent once, at the end of the run, under
+ * one deadline (D14), so a run's length never grows with a push service's.
  */
 @Injectable()
 export class PaymentSweepsService {
@@ -57,6 +62,7 @@ export class PaymentSweepsService {
     private readonly prisma: CncPrismaService,
     private readonly payments: CheckoutPaymentsService,
     private readonly dispatcher: WebhookDispatcherService,
+    private readonly push: PushQueueService,
   ) {}
 
   /**
@@ -82,12 +88,13 @@ export class PaymentSweepsService {
       expired: 0,
       unreachable: 0,
     };
+    const pushes: PushTopics = [];
 
     for (const checkout of overdue) {
       let outcome: ConfirmOutcome;
 
       try {
-        outcome = await this.payments.recheck(checkout.reference);
+        outcome = await this.payments.recheck(checkout.reference, pushes);
       } catch (error) {
         result.unreachable += 1;
         this.logger.warn(
@@ -108,6 +115,8 @@ export class PaymentSweepsService {
         result.expired += count;
       }
     }
+
+    await this.push.dispatchTopics(pushes);
 
     return result;
   }
@@ -132,6 +141,7 @@ export class PaymentSweepsService {
       select: { id: true, event: true, reference: true },
     });
     const result: PaymentsSweepResult = { redispatched: 0, failed: 0 };
+    const pushes: PushTopics = [];
 
     for (const row of stale) {
       try {
@@ -141,6 +151,7 @@ export class PaymentSweepsService {
             data: row.reference === null ? {} : { reference: row.reference },
           },
           row.id,
+          pushes,
         );
         result.redispatched += 1;
       } catch (error) {
@@ -151,6 +162,8 @@ export class PaymentSweepsService {
         );
       }
     }
+
+    await this.push.dispatchTopics(pushes);
 
     return result;
   }

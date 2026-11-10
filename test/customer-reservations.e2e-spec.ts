@@ -932,7 +932,10 @@ describe('customer reservations (e2e)', () => {
           book(guest({ table: 'TDS2', businessDate: target })),
         ]);
 
-        expect([moved.status, web.status].sort()).toEqual([200, 409]);
+        // Either may win: the change answers 200, the new booking 201.
+        expect([moved.status, web.status]).toEqual(
+          moved.status === 409 ? [409, 201] : [200, 409],
+        );
         if (moved.status === 409) {
           expect(messageOf(moved)).toBe(customerTakenMessage(made.tableName));
         } else {

@@ -34,6 +34,7 @@ import {
 } from '../idempotency/idempotency-key.decorator';
 import { idempotencyScope } from '../idempotency/idempotency-scope';
 import { IdempotencyService } from '../idempotency/idempotency.service';
+import type { PushTopics } from '../push/push-queue.service';
 import {
   CheckInResponse,
   ReservationPageResponse,
@@ -161,14 +162,16 @@ export class ReservationsController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<ReservationResponse> {
     const ipAddress = clientAddressOf(httpRequest);
+    const pushes: PushTopics = [];
     const result = await this.idempotency.execute({
       ...idempotency,
       scope: idempotencyScope.staff(actor.id),
       status: HttpStatus.CREATED,
-      work: (tx) => this.reservations.create(tx, actor, request, ipAddress),
+      work: (tx) =>
+        this.reservations.create(tx, actor, request, ipAddress, pushes),
     });
 
-    await this.reservations.sendConfirmation(result.body.id);
+    await this.reservations.sendConfirmation(result.body.id, pushes);
     response.status(result.status);
 
     return result.body;

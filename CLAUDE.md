@@ -47,15 +47,17 @@ Every entry below is a pointer, not a rule. Read the named section of
 | `GET /me/notifications`, what writes an item, unread, the booking reminders (Q32) and `reminderSentAt` | The customer's in-app list and booking reminders |
 | `POST /enquiries`, `POST /group-enquiries`: honeypot, the two limits, the inbox email (Q20) | Enquiries |
 | The Cloud Scheduler sweep jobs, their schedules and how to create them | Infrastructure |
+| The production deploy: `v*` tags by `tayxcnc` only, on a commit already on `main`, never re-run, no-traffic then check then move, rollback by traffic with the `rc` tag removed, secrets pinned at `:1`, the same names as staging, actions pinned by SHA | Infrastructure |
 | `PATCH /me`, phones, the delivery address module, prefs, the email change, the customer photo, deleting an account (Q36), `HOLDING_STATUSES`/`UNSETTLED_ORDER_STATUSES` | The customer's account |
 | Q36's periods, `POST /internal/sweeps/retention`, what deletion also forgets (unlinked records under the email, stored answers), the audit read withholding a deleted guest's values, what still holds a deleted person's details | Data retention and account deletion |
-| Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle | The public reads |
+| Public reads: what they expose, `PublicCache` and `no-store`, Q37, availability, the ordering times, no throttle; the reused public photo links, compression and `ETag`, menu thumbnails and their backfill (B2) | The public reads |
 | Owner rules, approval limits, the ledger, audit rows and reads | Money controls and the audit log |
 | Release rows: a refused card refund given back to the Daily Approval Limit (C8-0) | Money controls and the audit log; Staff Online Orders |
 | The nine reports: the shared period, Lagos day bounds, paging, bigint sums, departments by line, Q21's delivery line, who reads which; `settledBills`/`openBills` | Reports |
 | `GET /staff/overview`: manager vs staff overview, the layout deciding what is computed, each role's rows, Needs Attention, the trend's interval, the crosscheck over the last 366 days, the measured cost | The overview |
 | `GET /staff/notifications`: the bell's items, order and words, who gets which, the four alert switches, the review-task rule, the bounded poll, `readBell` in tests | The staff bell |
 | One sentence per request field (`@Checked`, `@AdminReason`, `@ValidLines`) | Errors |
+| Long dashes: refused only on menu items and vendors (`noLongDashes`), never on notes; the optional stored-text report | Errors |
 | Partial unique indexes and their names | Data and migrations |
 | The stock ledger, locations, counts and Q28, valuation, comparison rules | Stock |
 | The C5 tables' CHECKs, one open shift per person, task links, pack cost | Stock requests, purchasing, waste, tasks, assets and attendance: the schema |
@@ -76,12 +78,14 @@ Every entry below is a pointer, not a rule. Read the named section of
 | The web order a payment writes, its numbers, docket, Bar sale and customer, the confirmation read's recheck, the checkouts and payments sweeps, the fake's `pay` | Paid web orders and the payment sweeps |
 | Staff Online Orders: stages, corrections, edits (Bar too), zone fees (Q27), cancel (Q8), the balance, card refunds (Q26), resolving unconfirmed refunds and held checkouts, adjustments, limits | Staff Online Orders |
 | The receipt (Q31), stage and refund emails and in-app items (`OnlineOrderMail`), `GET /me/orders`, the online bell items and `ref` | Order messages, my orders and the online bell items |
+| Web push: the `PushMessage` queue and its savepoint, the catalogue, the free-text (privacy) rule and branded inputs, D1 to D14, the push-service host allowlist, the staff window, the push sweep, `CNC_VAPID_*` | Web push (and Configuration for `CNC_VAPID_*`) |
 | The allowlist, rejection, credentials, methods, headers | CORS |
 | Region, service accounts, WIF, `--set-secrets`, placeholders | Infrastructure |
 | Photos, `PhotoStore`, the media bucket and its test fake | Infrastructure |
 | Staff accounts: R2, session revocation, first passwords, QR reissue | Auth |
 | Staff ID cards and the QR payload; the sweep routes and the tokens sweep | Auth |
-| Suites that need a database of their own (`createIsolatedDatabase`) | Local environment |
+| Suites that need a database of their own (`createIsolatedDatabase`); the settings row from the seed's values (`createSeededSettingsIfMissing`) | Local environment |
+| The staff photo streamed as bytes (`GET /staff/me/photo`, `GET /staff/people/:id/photo`), its caching and read rule | Infrastructure; Auth |
 | The print record (`POST /staff/audit/print`); printing from API data | Money controls and the audit log |
 | A controlled clock in tests (fake `Date` only); the C4 gate walk and race suites | Local environment |
 | Shared-row e2e suites, seeded rows in tests | Local environment |
@@ -113,6 +117,7 @@ npm run db:generate      # prisma generate, to generated/cnc-client
 npm run db:migrate       # prisma migrate dev, LOCAL ONLY
 npm run db:seed          # reference data, menu, paired Bar stock (also Prisma's seed key)
 npm run db:seed:owner    # the first Owner, by hand only (never the seed key)
+npm run media:backfill-thumbs  # menu photo thumbnails for photos stored before them (B2)
 ```
 
 ## Layout
@@ -120,7 +125,8 @@ npm run db:seed:owner    # the first Owner, by hand only (never the seed key)
 ```
 src/
   main.ts            entry point; boots CncAppModule
-  bootstrap.ts       prefix, pipes, helmet, CORS (list from CncConfigService)
+  bootstrap.ts       prefix, pipes, helmet, compression, CORS (list from
+                     CncConfigService)
   app.module.ts      CncAppModule
   cnc-swagger.ts     Swagger UI and the openapi-cnc.json export (not in production)
   config/            CncConfigService, the only reader of the environment
@@ -144,7 +150,9 @@ src/
   internal/          the Cloud Scheduler sweeps: SweepTokenGuard, the tokens
                      sweep (which also deletes ended rate-limit counts),
                      messages and reminders sweeps, the retention sweep
-                     (RetentionSweepService, Q36, C8-5)
+                     (RetentionSweepService, Q36, C8-5); the push sweep
+                     (PushSweepService, POST /internal/sweeps/push, C10) and
+                     the clock's staff pushes (staff-clock-alerts.ts)
   customers/         the customer email-code sign-in (/auth/code, verify, refresh,
                      sign-out), the account (/me: profile, email change, photo,
                      DELETE); CustomerService (the one creator of customers),
@@ -178,6 +186,14 @@ src/
   customer-notifications/  the customer's in-app list (GET /me/notifications,
                      POST /me/notifications/read), CustomerNotificationsService
                      (the one writer), the items' words
+  push/              web push (C10): PushQueueService (the PushMessage queue,
+                     written in the event's transaction inside
+                     withPushSavepoint), the catalogue (push-catalogue.ts)
+                     and its branded inputs (push-input-types.ts), the
+                     recipients (D8), the staff window (push-window.ts), the
+                     push-service hosts (push-hosts.ts), the one web-push
+                     importer (push-sender.ts), PushSubscriptionsService and
+                     each realm's routes (/me/push, /staff/push)
   enquiries/         POST /enquiries and /group-enquiries: honeypot, the stored
                      cap and the throttle, the email to CNC's inbox
   images/            PhotoStore: byte inspection, sharp resizing, the upload route
@@ -187,8 +203,9 @@ src/
                      staff ID cards (the QR payload in staff-qr.ts)
   settings/          settings.save, business details, opening hours; the public
                      GET /business and GET /opening-hours
-  menu/              Menu & Prices: menu.save, photos, the paired Bar stock item;
-                     the public GET /menu
+  menu/              Menu & Prices: menu.save, photos and their thumbnails, the
+                     paired Bar stock item; the public GET /menu; the thumbnail
+                     backfill (menu-thumbs-backfill.ts)
   stock/             the stock core: StockLedgerService (the one writer of balances
                      and movements), balances and movements reads, issue, count,
                      Correct Balance, stock items, kitchen comparison rules;
@@ -239,7 +256,8 @@ src/
                      plan §9.1 item in the demo's order, behind the alert
                      switches; the new items' words (staff-bell-items.ts),
                      the bounded pager over the kinds (bell-sources.ts)
-  shell/             GET /staff/me, /staff/me/card, /staff/reference (assets lite
+  shell/             GET /staff/me, /staff/me/card, /staff/me/photo,
+                     /staff/reference (assets lite
                      for Reception and managers), the overview layout
                      (exported to overview/)
   prisma/            CncPrismaService, sequences, claimVersion, Prisma error helpers
@@ -260,7 +278,9 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      customer-auth: the email-code sign-in, its caps,
                      the realms, the outbound queue and TAY's cookies;
                      customer-account: /me, the email change, the photo,
-                     deletion; public-reads: the C6-4 public reads;
+                     deletion; public-reads: the C6-4 public reads,
+                     compression, 304s and changes on the next read (B2);
+                     menu-thumbs-backfill: the thumbnail backfill;
                      customer-reservations: web and app bookings, the
                      link, change and cancel, the races and the 24-hour
                      boundary; customer-messages: the in-app list, the
@@ -292,15 +312,25 @@ test/                e2e specs (c4-gate: the C4 gate walk; c4-races: the
                      a deleted person's details, and its read withholds
                      them; c8-acceptance: the Backend Brief §12 list,
                      one test per line, the sweep of every route for
-                     leaks),
+                     leaks; push-routes: each realm's key, subscribe
+                     and unsubscribe; push-queue: the queue, its
+                     outcomes, backoff and hold; push-customer-events
+                     and push-staff-events: every push through the
+                     real commands; push-sweep: the clock's pushes and
+                     the queue's sweep),
                      paystack-webhooks.ts, staff-bell.ts (readBell),
+                     push-devices.ts, recording-push-sender.ts,
+                     vapid-test-pair.ts, web-orders.ts,
                      create-test-app.ts, staff-fixtures.ts,
                      staff-sessions.ts, isolated-database.ts,
                      fake-media-storage.ts, fake-paystack-client.ts,
-                     shared-rows-lock.ts, test-images.ts
+                     seeded-settings.ts, shared-rows-lock.ts, test-images.ts
 scripts/             check-env-names.ts; load/till-and-booking.ts (npm run
                      load:till, C8-4), load/load-targets.ts (where it may
-                     run, its backoff)
+                     run, its backoff); backfill-menu-thumbs.ts (npm run
+                     media:backfill-thumbs); report-long-dashes.ts (stored
+                     long dashes in menu items and vendors, read-only
+                     unless --apply)
 docs/                conventions.md; load-testing.md (C8-4);
                      demo-tests-map.md (the 107 demo tests, C8-6)
 ```

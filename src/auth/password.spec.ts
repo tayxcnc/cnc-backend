@@ -2,6 +2,7 @@ import {
   generateTemporaryPassword,
   hashPassword,
   MIN_PASSWORD_LENGTH,
+  readTemporaryPassword,
   verifyPassword,
 } from './password';
 
@@ -49,5 +50,44 @@ describe('password hashing', () => {
       expect(password.length).toBeGreaterThanOrEqual(MIN_PASSWORD_LENGTH);
     }
     expect(new Set(passwords).size).toBe(passwords.length);
+  });
+
+  it('reads a temporary password typed loosely back into its stored form', () => {
+    const stored = '3f9a-07c2-b1d0-e4a8-5c6f';
+
+    for (const typed of [
+      stored,
+      '3F9A-07C2-B1D0-E4A8-5C6F',
+      '3f9a07c2b1d0e4a85c6f',
+      ' 3f9a 07c2 b1d0 e4a8 5c6f ',
+      '3f9a–07c2—b1d0−e4a8‐5c6f',
+      '3f9a-o7c2-bld0-e4a8-5c6f',
+      '3f9a-07c2-bId0-e4a8-5c6f',
+    ]) {
+      expect(readTemporaryPassword(typed)).toBe(stored);
+    }
+  });
+
+  it('reads nothing that is not a temporary password', () => {
+    for (const typed of [
+      'correct horse battery',
+      '3f9a-07c2-b1d0-e4a8',
+      '3f9a-07c2-b1d0-e4a8-5c6f0',
+      '3f9a-07c2-b1d0-e4a8-5c6fx',
+      '3f9a-07c2-b1d0-e4a8-5c6f!',
+      'Password1-3f9a-07c2-b1d0-e4a8-5c6f',
+      '',
+    ]) {
+      expect(readTemporaryPassword(typed)).toBeNull();
+    }
+  });
+
+  it('reads back every generated password as itself', () => {
+    for (const password of Array.from(
+      { length: 50 },
+      generateTemporaryPassword,
+    )) {
+      expect(readTemporaryPassword(password)).toBe(password);
+    }
   });
 });

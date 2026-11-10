@@ -46,6 +46,7 @@ import { OrdersService } from '../orders/orders.service';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
 import { claimVersion } from '../prisma/optimistic-version';
 import { drawNumber } from '../prisma/sequences';
+import { PushQueueService } from '../push/push-queue.service';
 import { StockLedgerService } from '../stock/stock-ledger.service';
 import {
   type HeldCheckoutResolveRequest,
@@ -91,6 +92,7 @@ import {
   OnlineRefundsService,
   REFUND_SENDING_STUCK_MS,
 } from './online-refunds.service';
+import { queueWebDocketPush } from './web-docket-push';
 import {
   ACTIVE_ONLINE_STATUSES,
   barDifference,
@@ -207,6 +209,7 @@ export class OnlineOrdersService {
     private readonly ledger: StockLedgerService,
     private readonly mail: OnlineOrderMail,
     private readonly refunds: OnlineRefundsService,
+    private readonly push: PushQueueService,
   ) {}
 
   /** Send a queued customer email after the commit (C7-6). Never throws. */
@@ -524,7 +527,7 @@ export class OnlineOrdersService {
     request: OnlineEditRequest,
     ipAddress: string,
   ): Promise<OnlineOrderChangeResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const { result, pushTopic } = await this.prisma.$transaction(async (tx) => {
       const { online, order } = await this.claim(tx, id, request.version);
 
       if (isClosed(online.fulfilmentStatus)) {
@@ -622,8 +625,19 @@ export class OnlineOrdersService {
         tx,
       );
 
-      return { onlineOrder: await this.read(tx, id), docket };
+      return {
+        result: { onlineOrder: await this.read(tx, id), docket },
+        // The kitchen's devices hear of the new revision (C10, PS2).
+        pushTopic:
+          docket === null
+            ? null
+            : await queueWebDocketPush(this.push, tx, docket, [actor.id]),
+      };
     });
+
+    await this.push.dispatchTopics([pushTopic]);
+
+    return result;
   }
 
   /**
@@ -743,7 +757,7 @@ export class OnlineOrdersService {
     request: OnlineZoneRequest,
     ipAddress: string,
   ): Promise<OnlineOrderChangeResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const { result, pushTopic } = await this.prisma.$transaction(async (tx) => {
       const { online, order } = await this.claim(tx, id, request.version);
 
       if (!BEFORE_DISPATCH.includes(online.fulfilmentStatus)) {
@@ -841,8 +855,19 @@ export class OnlineOrdersService {
         tx,
       );
 
-      return { onlineOrder: await this.read(tx, id), docket };
+      return {
+        result: { onlineOrder: await this.read(tx, id), docket },
+        // The reprint with the new fulfilment rings the kitchen (PS2).
+        pushTopic:
+          docket === null
+            ? null
+            : await queueWebDocketPush(this.push, tx, docket, [actor.id]),
+      };
     });
+
+    await this.push.dispatchTopics([pushTopic]);
+
+    return result;
   }
 
   /**

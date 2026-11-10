@@ -6,14 +6,14 @@ import {
 
 describe('phoneForDisplay', () => {
   it('shows a stored number as the website does', () => {
-    // cnc-frontend/lib/site.ts: phoneDisplay "0802 218 8797".
-    expect(phoneForDisplay('08022188797')).toBe('0802 218 8797');
+    // CNC's number, as batch 2 section 2 writes it: "0911 350 0003".
+    expect(phoneForDisplay('09113500003')).toBe('0911 350 0003');
     expect(phoneForDisplay('08031234567')).toBe('0803 123 4567');
   });
 
   it('leaves anything not in the stored form as it is', () => {
     expect(phoneForDisplay('+442079460958')).toBe('+442079460958');
-    expect(phoneForDisplay('0802 218 8797')).toBe('0802 218 8797');
+    expect(phoneForDisplay('0911 350 0003')).toBe('0911 350 0003');
     expect(phoneForDisplay('')).toBe('');
   });
 });
@@ -30,7 +30,7 @@ describe('canonicalNigerianPhone', () => {
 
   it('leaves the local form as it is', () => {
     expect(canonicalNigerianPhone('08031234567')).toBe('08031234567');
-    expect(canonicalNigerianPhone('08022188797')).toBe('08022188797');
+    expect(canonicalNigerianPhone('09113500003')).toBe('09113500003');
   });
 
   it('gives one value for the two spellings of one number', () => {

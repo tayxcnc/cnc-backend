@@ -28,6 +28,7 @@ import {
 import { MediaStorage } from '../src/storage/media-storage';
 import { createTestApp } from './create-test-app';
 import { FakeMediaStorage } from './fake-media-storage';
+import { testSubscription } from './push-devices';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
 import { testImage } from './test-images';
 
@@ -434,6 +435,48 @@ describe('Staff & Access (e2e)', () => {
         role: StaffRole.CASHIER,
       }).expect(200);
       expect(await live()).toBe(0);
+    });
+
+    it('forgets the push devices on a role change and a deactivation, and the still-valid access token cannot bind one again (C10)', async () => {
+      const devices = (staffId: string) =>
+        prisma.staffPushSubscription.count({ where: { staffId } });
+      const subscribe = (who: Person, status: number) =>
+        request(server())
+          .post('/api/v1/staff/push/subscriptions')
+          .set(as(who))
+          .send(testSubscription())
+          .expect(status);
+
+      const moved = await person(StaffRole.KITCHEN);
+
+      await subscribe(moved, 204);
+      expect(await devices(moved.id)).toBe(1);
+
+      const row = await prisma.staff.findUniqueOrThrow({
+        where: { id: moved.id },
+      });
+
+      await patch(manager, moved.id, {
+        version: row.version,
+        role: StaffRole.STOREKEEPER,
+      }).expect(200);
+      expect(await devices(moved.id)).toBe(0);
+
+      // The access token outlives the revocation by up to 15 minutes; the
+      // session behind it does not, so no device is bound.
+      await subscribe(moved, 401);
+      expect(await devices(moved.id)).toBe(0);
+
+      const leaving = await person(StaffRole.CASHIER);
+
+      await subscribe(leaving, 204);
+      await patch(owner, leaving.id, {
+        version: (
+          await prisma.staff.findUniqueOrThrow({ where: { id: leaving.id } })
+        ).version,
+        isActive: false,
+      }).expect(200);
+      expect(await devices(leaving.id)).toBe(0);
     });
   });
 

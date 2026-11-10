@@ -128,9 +128,10 @@ function filterWhere(
  * - **The scan** (`attendance.scan`, Reception): the camera or a USB
  *   scanner sends the decoded staff ID. The token in it is compared with
  *   the account's in constant time and then dropped: it is never returned,
- *   logged or written to an audit row. A repeat within a minute is
- *   ignored; otherwise an open shift closes (overnight included) and with
- *   none open a new one starts. Each scan takes an advisory lock on the
+ *   logged or written to an audit row. An open shift closes from an hour
+ *   after its arrival (overnight included) and a scan before that is an
+ *   ignored repeat; with none open, a scan within a minute of the
+ *   departure is an ignored repeat and any other starts a new shift. Each scan takes an advisory lock on the
  *   person, TAY's arrangement, so two scans of one card are serialised;
  *   the partial unique index `AttendanceRecord_staffId_key` (one open shift
  *   per person) is the backstop.
@@ -177,7 +178,11 @@ export class AttendanceService {
     }
 
     const now = new Date();
-    let outcome: { action: ScanAttendanceResponse['action']; at: Date };
+    let outcome: {
+      action: ScanAttendanceResponse['action'];
+      at: Date;
+      present: boolean;
+    };
 
     try {
       outcome = await this.prisma.$transaction(async (tx) => {
@@ -198,7 +203,8 @@ export class AttendanceService {
           // The demo returns before recording anything, audit included.
           return {
             action: 'REPEAT_IGNORED' as const,
-            at: latest.timeOut ?? latest.timeIn,
+            at: open?.timeIn ?? latest.timeOut ?? latest.timeIn,
+            present: open !== null,
           };
         }
 
@@ -227,7 +233,7 @@ export class AttendanceService {
             tx,
           );
 
-          return { action: 'CHECKED_OUT' as const, at: now };
+          return { action: 'CHECKED_OUT' as const, at: now, present: false };
         }
 
         const opened = await tx.attendanceRecord.create({
@@ -251,7 +257,7 @@ export class AttendanceService {
           tx,
         );
 
-        return { action: 'CHECKED_IN' as const, at: now };
+        return { action: 'CHECKED_IN' as const, at: now, present: true };
       });
     } catch (error) {
       // Under the lock a second open shift cannot be attempted; were the
@@ -266,6 +272,7 @@ export class AttendanceService {
     return {
       action: outcome.action,
       duplicate: outcome.action === 'REPEAT_IGNORED',
+      present: outcome.present,
       staffId: person.id,
       staffNo: person.staffNo,
       name: person.name,

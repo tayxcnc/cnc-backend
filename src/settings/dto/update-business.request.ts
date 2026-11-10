@@ -129,7 +129,7 @@ export class UpdateBusinessRequest extends VersionedWriteDto {
     description:
       'A Nigerian number; spaces and dashes are removed and `+234` is ' +
       'stored as `0`.',
-    example: '0802 218 8797',
+    example: '0911 350 0003',
   })
   @Transform(({ value }) => stripPhone(value))
   @ValidateIf(isSent)
@@ -199,7 +199,7 @@ export class UpdateBusinessRequest extends VersionedWriteDto {
       'the stored one. `{}` clears them.',
     type: 'object',
     additionalProperties: { type: 'string' },
-    example: { instagram: 'https://www.instagram.com/example' },
+    example: { instagram: 'https://www.instagram.com/chefnoroculinary' },
   })
   @ValidateIf(isSent)
   @Validate(SocialLinksShape)

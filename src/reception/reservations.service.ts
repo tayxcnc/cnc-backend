@@ -8,6 +8,7 @@ import {
   type Prisma,
   ReservationSource,
   ReservationStatus,
+  StaffRole,
   TableSessionStatus,
 } from '../../generated/cnc-client';
 import {
@@ -24,6 +25,8 @@ import {
 import { watToday } from '../common/wat';
 import { lockCustomerEmail } from '../customers/customer-email-lock';
 import { CncPrismaService } from '../prisma/cnc-prisma.service';
+import { asId, asRoomName, watTimeLabel } from '../push/push-input-types';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import { verifiedCustomerId } from './customer-link';
 import { ReservationMail } from './reservation-mail';
 import { claimVersion } from '../prisma/optimistic-version';
@@ -120,6 +123,12 @@ export interface BookingInput {
  * `Reservation_tableId_businessDate_key`; the service checks first so the
  * demo's sentence comes in the demo's order, and maps the index's clash
  * to the same sentence when two bookings race past the check.
+ *
+ * **Web push (C10).** A booking made for today, from any channel, or a
+ * change that moves one onto today, tells Reception's devices (PS10,
+ * `queueArrivalToday`): the 09:00 digest (PS11) has already gone. The
+ * guest's own pushes (PC6 to PC8) ride the booking messages
+ * (`ReservationMail`).
  */
 @Injectable()
 export class ReservationsService {
@@ -127,34 +136,41 @@ export class ReservationsService {
     private readonly prisma: CncPrismaService,
     private readonly audit: AuditService,
     private readonly mail: ReservationMail,
+    private readonly push: PushQueueService,
   ) {}
 
   /**
    * `reservation.create` from Reception, inside the idempotency service's
    * transaction (A9: a retried booking replays the first instead of
-   * booking twice).
+   * booking twice). `pushes` collects what to dispatch after the commit
+   * (`sendConfirmation`).
    */
   create(
     tx: Tx,
     actor: StaffPrincipal,
     request: CreateReservationRequest,
     ipAddress: string,
+    pushes: PushTopics = [],
   ): Promise<ReservationResponse> {
-    return this.book(tx, {
-      actor: staffActor(actor),
-      source: ReservationSource.RECEPTION,
-      customerId: null,
-      name: request.name,
-      phone: request.phone,
-      email: request.email,
-      tableId: request.tableId,
-      businessDate: request.businessDate,
-      time: request.time,
-      party: request.party,
-      note: request.note ?? '',
-      ipAddress,
-      ipHash: null,
-    });
+    return this.book(
+      tx,
+      {
+        actor: staffActor(actor),
+        source: ReservationSource.RECEPTION,
+        customerId: null,
+        name: request.name,
+        phone: request.phone,
+        email: request.email,
+        tableId: request.tableId,
+        businessDate: request.businessDate,
+        time: request.time,
+        party: request.party,
+        note: request.note ?? '',
+        ipAddress,
+        ipHash: null,
+      },
+      pushes,
+    );
   }
 
   /**
@@ -171,8 +187,13 @@ export class ReservationsService {
    * 5. for today, no guests are seated at it (409).
    *
    * The table's lock is taken first, so 3 to 5 hold until the commit.
+   * A booking for today adds Reception's push (PS10) to `pushes`.
    */
-  async book(tx: Tx, input: BookingInput): Promise<ReservationResponse> {
+  async book(
+    tx: Tx,
+    input: BookingInput,
+    pushes: PushTopics = [],
+  ): Promise<ReservationResponse> {
     const now = new Date();
     const businessDate = parseIsoDate(input.businessDate)!;
     const startMinutes = clockMinutes(input.time)!;
@@ -266,15 +287,73 @@ export class ReservationsService {
     // §9.2, Q31); sent after the commit by `sendConfirmation`.
     await this.mail.enqueue(tx, 'confirmed', row.id);
 
+    pushes.push(
+      await this.queueArrivalToday(
+        tx,
+        row.id,
+        now,
+        input.actor.kind === 'STAFF' ? [input.actor.staff.id] : [],
+      ),
+    );
+
     return reservationResponse(row, table);
   }
 
   /**
-   * Send a booking's confirmation once `book`'s transaction has committed.
-   * Safe after a replayed create: a sent message is not sent again.
+   * Send a booking's confirmation once `book`'s transaction has committed,
+   * with its pushes (the guest's, and `pushes`, Reception's). Safe after a
+   * replayed create: a sent message is not sent again.
    */
-  sendConfirmation(reservationId: string): Promise<void> {
-    return this.mail.dispatch(`reservation:${reservationId}:confirmed`);
+  sendConfirmation(
+    reservationId: string,
+    pushes: PushTopics = [],
+  ): Promise<void> {
+    return this.mail.dispatch(`reservation:${reservationId}:confirmed`, {
+      alsoPush: pushes,
+    });
+  }
+
+  /**
+   * Tell Reception's devices of a booking that is for today (C10, PS10):
+   * made today, or just moved onto today, from any channel. The 09:00
+   * digest (PS11) has gone by then, so a same-day booking would otherwise
+   * reach nobody's phone. No guest name: the party, the time and the room.
+   * Answers the topic, or null when the booking is not for today or
+   * nothing was queued. `except` is whoever made it.
+   */
+  async queueArrivalToday(
+    tx: Tx,
+    reservationId: string,
+    now: Date,
+    except: string[],
+  ): Promise<string | null> {
+    const row = await tx.reservation.findUniqueOrThrow({
+      where: { id: reservationId },
+      select: {
+        id: true,
+        version: true,
+        party: true,
+        businessDate: true,
+        startMinutes: true,
+        table: { select: { venue: { select: { staffName: true } } } },
+      },
+    });
+
+    if (formatIsoDate(row.businessDate) !== today(now)) return null;
+
+    return this.push.enqueueStaff(
+      tx,
+      'reservation.today',
+      () => ({
+        reservationId: asId(row.id),
+        version: row.version,
+        party: row.party,
+        time: watTimeLabel(row.startMinutes),
+        room: asRoomName(row.table.venue.staffName),
+        startsAt: bookingStart(row.businessDate, row.startMinutes),
+      }),
+      { roles: [StaffRole.RECEPTION], except },
+    );
   }
 
   /**
@@ -399,7 +478,9 @@ export class ReservationsService {
         tx,
       );
 
-      mailKey = await this.mail.enqueue(tx, 'cancelled', id);
+      mailKey = await this.mail.enqueue(tx, 'cancelled', id, {
+        byStaff: true,
+      });
 
       return readReservation(tx, id);
     });
@@ -469,6 +550,7 @@ export class ReservationsService {
     ipAddress: string,
   ): Promise<ReservationResponse> {
     let mailKey: string | null = null;
+    let arrival: string | null = null;
     const response = await insertOrClash(
       () =>
         this.prisma.$transaction(async (tx) => {
@@ -633,15 +715,22 @@ export class ReservationsService {
             next.startMinutes !== before.startMinutes ||
             next.party !== before.party
           ) {
-            mailKey = await this.mail.enqueue(tx, 'changed', id);
+            mailKey = await this.mail.enqueue(tx, 'changed', id, {
+              byStaff: true,
+            });
           }
+
+          // Moved onto today: Reception hears of it as of a new booking.
+          arrival = dateMoved
+            ? await this.queueArrivalToday(tx, id, now, [actor.id])
+            : null;
 
           return readReservation(tx, id);
         }),
       ALREADY_RESERVED_MESSAGE,
     );
 
-    await this.mail.dispatch(mailKey);
+    await this.mail.dispatch(mailKey, { alsoPush: [arrival] });
 
     return response;
   }

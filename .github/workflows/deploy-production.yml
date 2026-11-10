@@ -1,0 +1,125 @@
+# Production deploy.
+#
+# One job, for the one service this repository builds: tayxcnc-cnc-prod, in
+# the production project, beside TAY's service but sharing nothing with it:
+# its own runtime identity, its own deployer, its own database user, its own
+# secrets, its own bucket and its own Artifact Registry repository. The rules
+# behind every choice here are in docs/conventions.md, *Infrastructure*.
+#
+# A release is a `v*` tag pushed by the founder's account, and nothing else.
+# Never re-run a production deploy: the job refuses a second attempt, and a
+# fix is always a new tag. A rollback never needs this workflow: it is
+# `gcloud run services update-traffic "$SERVICE" --region "$REGION"
+# --to-revisions=PREV=100 --remove-tags=rc`, then a fixed tag, whose deploy
+# moves traffic back to the latest revision and puts `rc` on it again. The
+# `rc` tag must go: a tagged revision answers at its tag address whatever
+# its traffic share, so the bad revision would stay callable in public.
+#
+# Migrations are deliberately absent, as on staging. `prisma migrate deploy`
+# is run by a person from Cloud Shell, before the tag that needs it: Cloud Run
+# can start several instances at once, so an automatic migration races itself.
+#
+# Until the production project, its WIF pool and the PROD_* repository
+# secrets exist, a `v*` tag fails at the auth step and changes nothing.
+
+name: Deploy to production
+on:
+  push:
+    tags: ['v*']
+# Two tags in quick succession would otherwise race, and the older image could
+# land last. The in-flight deploy is not cancelled: a half-finished
+# `gcloud run deploy` is worse than a superseded one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+jobs:
+  # No `environment:` key: it would change the OIDC token's subject, and
+  # environment secrets need a paid plan on a private repository. The WIF
+  # provider's condition is the control (repository id, a refs/tags/v… ref, a
+  # push event, actor 312678855, run attempt 1).
+  cnc:
+    # Only a first attempt started by the founder's account deploys. Never re-run: push a new tag.
+    if: github.triggering_actor == 'tayxcnc' && github.run_attempt == '1'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, id-token: write }
+    env:
+      PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID }}
+      SERVICE: tayxcnc-cnc-prod
+      REGION: europe-west1
+      IMAGE: europe-west1-docker.pkg.dev/${{ secrets.PROD_GCP_PROJECT_ID }}/tayxcnc-cnc/cnc:${{ github.sha }}
+    steps:
+      # actions/checkout v7.0.1, pinned by commit. This job holds
+      # id-token: write, so a moved tag must never run new code with it.
+      # The full history, so the next step can see main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { fetch-depth: 0 }
+      # Only a commit already on main deploys. The guard and WIF check who
+      # pushed the tag and the attempt, not what it points at: a `v*` tag on
+      # a feature branch or an unreviewed local commit would otherwise reach
+      # production without the review and CI that main's merges carry. It
+      # runs before the auth step, so a refused tag never gets credentials.
+      - name: The tagged commit must be on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      # google-github-actions/auth v3.0.0, pinned by commit
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ secrets.PROD_WIF_PROVIDER }}
+          service_account: ${{ secrets.PROD_WIF_SERVICE_ACCOUNT }}
+      # google-github-actions/setup-gcloud v3.0.1, pinned by commit
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+      - run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+      # Tagged with the commit SHA only, so every revision traces to one commit.
+      - run: docker build --tag "$IMAGE" .
+      - run: docker push "$IMAGE"
+      # The new revision gets no traffic until its readiness check passes. Secrets are pinned versions.
+      #
+      # Each secret is mounted at version 1, never :latest. Cloud Run reads a
+      # :latest secret at every instance start, and with min 0 instances start
+      # all the time, so a wrong value added by mistake would break the
+      # service at the next cold start and a traffic rollback would not undo
+      # it. A changed value is a new version, a one-line change here and a new
+      # tag. The 13 names are staging's; CNC_PAYSTACK_LOCAL_MODE, every TAY_
+      # name and every seed or load-test name are absent, and production's
+      # boot rules refuse the local Paystack mode in any case.
+      #
+      # --max-instances 3 with the pool's max 3 is CNC's share of the shared
+      # instance's connection budget (9 of about 100, beside TAY's 15).
+      #
+      # --cpu-boost and --cpu-throttling are D7's shape, stated here because
+      # `gcloud run deploy` keeps any setting it is not given: left out, they
+      # would be whatever the G6 placeholder was created with. Throttled CPU
+      # is what the webhook's five-second inline wait is built for.
+      #
+      # These comments stay above the step, never inside the command. A `#`
+      # line between backslash-continued flags would comment out every flag
+      # after it, and the deploy would run with silently wrong settings.
+      - name: Deploy a new revision with no traffic
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project "$PROJECT_ID" --region "$REGION" --platform managed --image "$IMAGE" \
+            --no-traffic --tag rc \
+            --service-account "tayxcnc-cnc-prod-run@${PROJECT_ID}.iam.gserviceaccount.com" \
+            --min-instances 0 --max-instances 3 --concurrency 80 --cpu 1 --memory 512Mi --timeout 300 \
+            --cpu-boost --cpu-throttling \
+            --allow-unauthenticated \
+            --add-cloudsql-instances "${PROJECT_ID}:europe-west1:tayxcnc-prod-pg" \
+            --labels brand=cnc,env=prod \
+            --set-env-vars "CNC_GCS_BUCKET=tayxcnc-cnc-prod-media,CNC_ENV=production" \
+            --set-secrets "CNC_DB_URL=CNC_DB_URL:1,CNC_JWT_SECRET=CNC_JWT_SECRET:1,CNC_SWEEP_TOKEN=CNC_SWEEP_TOKEN:1,CNC_WEB_URL=CNC_WEB_URL:1,CNC_STAFF_URL=CNC_STAFF_URL:1,CNC_CORS_ORIGINS=CNC_CORS_ORIGINS:1,CNC_CONTACT_EMAIL=CNC_CONTACT_EMAIL:1,CNC_PAYSTACK_SECRET_KEY=CNC_PAYSTACK_SECRET_KEY:1,CNC_RESEND_API_KEY=CNC_RESEND_API_KEY:1,CNC_MAIL_FROM=CNC_MAIL_FROM:1,CNC_VAPID_PUBLIC_KEY=CNC_VAPID_PUBLIC_KEY:1,CNC_VAPID_PRIVATE_KEY=CNC_VAPID_PRIVATE_KEY:1,CNC_VAPID_SUBJECT=CNC_VAPID_SUBJECT:1" \
+            --quiet
+      # The rc tag's own address reaches the new revision while it serves no
+      # one. A revision whose boot rules refuse production never answers here.
+      - name: Readiness of the new revision must answer 200
+        run: |
+          RC_URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json | jq -r '.status.traffic[] | select(.tag=="rc") | .url')"
+          test -n "$RC_URL"
+          curl -fsS --retry 6 --retry-delay 10 --retry-all-errors "$RC_URL/api/v1/health/ready"
+      # This also un-pins traffic left pinned by an earlier rollback.
+      - name: Move all traffic to the new revision
+        run: gcloud run services update-traffic "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --to-latest --quiet
+      # A deploy that ends with an older revision still serving has failed,
+      # whatever the steps above reported.
+      - name: The new revision must be the one serving
+        run: |
+          gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json \
+            | jq -e '.status.latestReadyRevisionName as $r | [.status.traffic[] | select(.percent == 100) | .revisionName] | index($r) != null'

@@ -49,7 +49,7 @@ describe('mail templates', () => {
       time: '19:00',
       party: 2,
       // As `ReservationMail` passes it: the site's form (`phoneForDisplay`).
-      phone: '0802 218 8797',
+      phone: '0911 350 0003',
       accountUrl: 'https://tayxcnc.com/cnc/account',
     };
 
@@ -63,7 +63,7 @@ describe('mail templates', () => {
       expect(mail.text).toContain('Arrival: 19:00');
       expect(mail.text).toContain('Party: 2 guests');
       expect(mail.text).toContain(
-        'up to 24 hours before it starts. After that, please call CNC on 0802 218 8797.',
+        'up to 24 hours before it starts. After that, please call CNC on 0911 350 0003.',
       );
       expect(mail.html).toContain('Ada &lt;b&gt;');
       expect(mail.html).not.toContain('Ada <b>');
@@ -108,7 +108,7 @@ describe('mail templates', () => {
       );
       expect(mail.text).toContain('Party: 2 guests');
       expect(mail.text).toContain(
-        'If you can no longer come, please call CNC on 0802 218 8797. ' +
+        'If you can no longer come, please call CNC on 0911 350 0003. ' +
           'Nothing is charged.',
       );
       // Inside 24 hours the account can no longer change it.
@@ -213,7 +213,7 @@ describe('mail templates', () => {
       delivery: '₦5,000.00',
       total: '₦22,737.50',
       trackUrl: 'https://tayxcnc.com/cnc/account#order/CNCR-000124',
-      phone: '0802 218 8797',
+      phone: '0911 350 0003',
     };
 
     it('writes the receipt as the website’s done screen, escaped in HTML', () => {
@@ -237,7 +237,7 @@ describe('mail templates', () => {
           'https://tayxcnc.com/cnc/account#order/CNCR-000124',
       );
       expect(mail.text).toContain(
-        'Questions about your order? Call CNC on 0802 218 8797.',
+        'Questions about your order? Call CNC on 0911 350 0003.',
       );
       expect(mail.html).toContain('Thank you, Ada &lt;b&gt;.');
       expect(mail.html).not.toContain('Ada <b>');
@@ -275,7 +275,7 @@ describe('mail templates', () => {
       guestName: 'Ada',
       kind: 'ON_THE_WAY',
       place: '12 Rayfield Road, Rayfield, Jos',
-      phone: '0802 218 8797',
+      phone: '0911 350 0003',
       trackUrl: null,
     };
 
@@ -323,7 +323,7 @@ describe('mail templates', () => {
         amount: '₦3,225.00',
         method: 'CARD',
         card: 'Visa ending 4081',
-        phone: '0802 218 8797',
+        phone: '0911 350 0003',
       };
 
       const card = renderMail('order.refund', refund);

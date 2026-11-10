@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import { App } from 'supertest/types';
 import { CncAppModule } from '../src/app.module';
 import {
+  useCompression,
   useCors,
   useTrustedProxyHops,
   VALIDATION_PIPE_OPTIONS,
@@ -14,22 +15,32 @@ import { CncConfigService } from '../src/config/cnc.config';
 import { MAIL_TRANSPORT } from '../src/mail/mail-transport';
 import { RecordingMailTransport } from '../src/mail/recording-mail-transport';
 import { PAYSTACK_CLIENT } from '../src/payments/paystack-client';
+import { PUSH_SENDER } from '../src/push/push-sender';
+import { PUSH_PUBLIC_KEY } from '../src/push/push-subscriptions.service';
 import { MediaStorage } from '../src/storage/media-storage';
 import { FakeMediaStorage } from './fake-media-storage';
 import { FakePaystackClient } from './fake-paystack-client';
+import { RecordingPushSender } from './recording-push-sender';
+import { testVapidTrio } from './vapid-test-pair';
 
 /** The recording mail transport of an app `createTestApp` built. */
 export function sentMail(app: INestApplication<App>): RecordingMailTransport {
   return app.get<RecordingMailTransport>(MAIL_TRANSPORT, { strict: false });
 }
 
+/** The recording push sender of an app `createTestApp` built (C10). */
+export function pushSender(app: INestApplication<App>): RecordingPushSender {
+  return app.get<RecordingPushSender>(PUSH_SENDER, { strict: false });
+}
+
 /**
  * A CNC application wired the way `bootstrap()` wires the real one.
  *
  * Built from the real root module against the real database, with the same
- * request-id middleware, proxy trust, global prefix, ValidationPipe and CORS
- * rule as the service, each imported from `bootstrap.ts` rather than restated
- * so the harness and the service cannot drift apart.
+ * request-id middleware, proxy trust, global prefix, ValidationPipe,
+ * response compression and CORS rule as the service, each imported from
+ * `bootstrap.ts` rather than restated so the harness and the service cannot
+ * drift apart.
  *
  * Helmet and Swagger are left out: neither changes a status code or a body.
  * Every third party is replaced by a fake here, so no suite ever reaches
@@ -39,7 +50,12 @@ export function sentMail(app: INestApplication<App>): RecordingMailTransport {
  * (`MAIL_TRANSPORT`, a `RecordingMailTransport` that logs nothing, whatever
  * `CNC_ENV` says; read the messages with `sentMail(app)`) and, from C7,
  * Paystack (`PAYSTACK_CLIENT`, a `FakePaystackClient` that calls nobody;
- * read and steer it with `fakePaystack(app)`).
+ * read and steer it with `fakePaystack(app)`) and, from C10, web push
+ * (`PUSH_SENDER`, a `RecordingPushSender` that reaches no push service;
+ * read and steer it with `pushSender(app)`). The served push key
+ * (`PUSH_PUBLIC_KEY`) is the test pair's (`testVapidTrio`), whatever the
+ * local `.env` holds; `push: 'unconfigured'` serves none, as a service
+ * without `CNC_VAPID_*` does.
  *
  * `controllers` adds test-only routes beside the real ones, for a suite that
  * proves a piece of shared infrastructure (optimistic versions, idempotency)
@@ -58,6 +74,7 @@ export async function createTestApp(
   options: {
     controllers?: Type<unknown>[];
     rateLimitNamespace?: string;
+    push?: 'configured' | 'unconfigured';
   } = {},
 ): Promise<INestApplication<App>> {
   const moduleFixture = await Test.createTestingModule({
@@ -72,6 +89,12 @@ export async function createTestApp(
     .useValue(new RecordingMailTransport(false))
     .overrideProvider(PAYSTACK_CLIENT)
     .useValue(new FakePaystackClient())
+    .overrideProvider(PUSH_SENDER)
+    .useValue(new RecordingPushSender())
+    .overrideProvider(PUSH_PUBLIC_KEY)
+    .useValue(
+      options.push === 'unconfigured' ? null : testVapidTrio().publicKey,
+    )
     .compile();
 
   // `rawBody` matches bootstrap(): the Paystack webhook (C7) authenticates by
@@ -88,6 +111,11 @@ export async function createTestApp(
 
   app.setGlobalPrefix('api/v1');
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
+
+  // As in bootstrap(), so every suite reads compressed answers the way a
+  // browser does, and the Paystack webhook suites prove the signature is
+  // still checked over the raw request bytes with compression on.
+  useCompression(app);
 
   useCors(app, app.get(CncConfigService).corsOrigins);
 

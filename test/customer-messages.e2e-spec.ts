@@ -413,7 +413,7 @@ describe('customer messages (e2e)', () => {
         `Your CNC booking ${booking.number} is cancelled`,
       );
       // CNC's number as the website shows it, not the stored digits.
-      expect(mail?.text).toContain('please call CNC on 0802 218 8797.');
+      expect(mail?.text).toContain('please call CNC on 0911 350 0003.');
       expect(
         await prisma.outboundMessage.findUniqueOrThrow({
           where: { dedupeKey: `reservation:${booking.id}:cancelled` },

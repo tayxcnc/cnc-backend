@@ -5,9 +5,11 @@ import {
   envReadsIn,
   evaluate,
   isAllowedName,
+  mountDrift,
   mountsInScript,
   mountsInWorkflow,
   type CheckInput,
+  type DeployMounts,
   type Mount,
 } from './check-env-names';
 
@@ -68,6 +70,31 @@ jobs:
       - run: echo hello
 `;
 
+/** A deploy workflow whose `cnc` job mounts the given secret list. */
+function deployWorkflow(secrets: string): string {
+  return `
+jobs:
+  cnc:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          gcloud run deploy "$SERVICE" \\
+            --set-env-vars "CNC_ENV=production" \\
+            --set-secrets "${secrets}" \\
+            --quiet
+`;
+}
+
+/** The `cnc` job's mounted names, as main() gathers them per workflow. */
+function deployMountsOf(text: string, path: string): DeployMounts {
+  return {
+    path,
+    names: (mountsInWorkflow(text, path).get('cnc') ?? []).map(
+      (each) => each.name,
+    ),
+  };
+}
+
 function mount(overrides: Partial<Mount> & { name: string }): Mount {
   return {
     secret: null,
@@ -86,6 +113,7 @@ function cleanInput(): CheckInput {
       mount({ name: 'CNC_DB_URL', secret: 'CNC_DB_URL' }),
       mount({ name: 'CNC_WEB_URL', secret: 'CNC_WEB_URL' }),
     ],
+    deployMounts: [],
     envReads: [
       { name: 'PORT', file: CONFIG_PATH, line: 10 },
       { name: 'CNC_DB_URL', file: 'prisma.config.ts', line: 5 },
@@ -359,6 +387,48 @@ describe('check-env-names', () => {
       input.unattributed.push('deploy-staging.yml job "other"');
 
       expect(evaluate(input).failures).toBe(1);
+    });
+
+    it('fails a name mounted by one deploy workflow and not the other', () => {
+      const staging = deployMountsOf(
+        deployWorkflow(
+          'CNC_DB_URL=CNC_DB_URL:latest,CNC_WEB_URL=CNC_WEB_URL:latest',
+        ),
+        'deploy-staging.yml',
+      );
+      const production = deployMountsOf(
+        deployWorkflow('CNC_DB_URL=CNC_DB_URL:1'),
+        'deploy-production.yml',
+      );
+      const input = cleanInput();
+      input.deployMounts = [staging, production];
+
+      const result = evaluate(input);
+
+      expect(result.failures).toBe(1);
+      expect(result.lines).toContain(
+        '   FAIL 6. mounted by one deploy workflow and not the other: 1',
+      );
+      expect(result.lines).toContain(
+        '        - CNC_WEB_URL  (mounted by deploy-staging.yml; not by deploy-production.yml)',
+      );
+    });
+  });
+
+  describe('mountDrift', () => {
+    it('passes two deploy workflows that mount the same names, in any order', () => {
+      expect(
+        mountDrift([
+          { path: 'a.yml', names: ['CNC_ENV', 'CNC_DB_URL'] },
+          { path: 'b.yml', names: ['CNC_DB_URL', 'CNC_ENV'] },
+        ]),
+      ).toEqual([]);
+    });
+
+    it('compares nothing while only one deploy workflow exists', () => {
+      expect(mountDrift([{ path: 'a.yml', names: ['CNC_DB_URL'] }])).toEqual(
+        [],
+      );
     });
   });
 });

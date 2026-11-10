@@ -9,6 +9,25 @@ export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
 };
 
 /**
+ * How a purchase's review task's title starts ("Review purchase PR-000091
+ * from …"), which the demo's bell keys on.
+ */
+export const REVIEW_TASK_PREFIX = 'Review';
+
+/**
+ * The demo's rule for a task that only repeats a Purchase Approval: one
+ * linked to a purchase whose title starts "Review". While the approvals
+ * alert is on, a manager's bell leaves it out and its web push is not sent
+ * (C10, PS9), since the approval already asks for the same decision.
+ */
+export function isPurchaseReviewTask(task: {
+  purchaseId: string | null;
+  title: string;
+}): boolean {
+  return task.purchaseId !== null && task.title.startsWith(REVIEW_TASK_PREFIX);
+}
+
+/**
  * The demo's assigned-task bell item (`staff/lib/notifications.ts`): "Assigned
  * Task · Open", the task's title, on the Tasks page. Every task assigned to
  * the reader that is not Done shows one, the automatic ones included, which

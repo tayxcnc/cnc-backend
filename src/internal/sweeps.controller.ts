@@ -20,9 +20,11 @@ import { ReservationRemindersService } from '../reception/reservation-reminders.
 import { CheckoutsSweepResponse } from './dto/checkouts-sweep.response';
 import { MessagesSweepResponse } from './dto/messages-sweep.response';
 import { PaymentsSweepResponse } from './dto/payments-sweep.response';
+import { PushSweepResponse } from './dto/push-sweep.response';
 import { RemindersSweepResponse } from './dto/reminders-sweep.response';
 import { RetentionSweepResponse } from './dto/retention-sweep.response';
 import { TokensSweepResponse } from './dto/tokens-sweep.response';
+import { PushSweepService } from './push-sweep.service';
 import { RetentionSweepService } from './retention-sweep.service';
 import { SWEEP_TOKEN_HEADER, SweepTokenGuard } from './sweep-token.guard';
 import { TokensSweepService } from './tokens-sweep.service';
@@ -33,7 +35,8 @@ import { TokensSweepService } from './tokens-sweep.service';
  * C6-1 the messages sweep (the outbound queue's retry, built with the first
  * email CNC sends); C6-8 the reminders sweep; C7-5 the checkouts and
  * payments sweeps (`PaymentSweepsService`); C8-5 the retention sweep
- * (`RetentionSweepService`, Q36). Each has its Scheduler job (*Infrastructure* in
+ * (`RetentionSweepService`, Q36); C10 the push sweep (`PushSweepService`).
+ * Each has its Scheduler job (*Infrastructure* in
  * `docs/conventions.md` lists them; the retention job waits for the
  * founder's go-ahead).
  *
@@ -65,6 +68,7 @@ export class SweepsController {
     private readonly reminders: ReservationRemindersService,
     private readonly payments: PaymentSweepsService,
     private readonly retention: RetentionSweepService,
+    private readonly push: PushSweepService,
   ) {}
 
   @Post('tokens')
@@ -250,8 +254,10 @@ export class SweepsController {
     description:
       'Daily (cnc-staging-sweep-retention, proposed). Q36: enquiries made ' +
       'more than 12 months ago and finished shifts dated more than 2 years ' +
-      'ago (with their corrections), 500 rows a statement, at most 10,000 ' +
-      'of each a run. An open shift and the audit log are never deleted.',
+      'ago (with their corrections); from C10, web push rows older than 30 ' +
+      'days and push devices unused for 180. 500 rows a statement, at most ' +
+      '10,000 of each a run. An open shift and the audit log are never ' +
+      'deleted.',
   })
   @ApiHeader({
     name: SWEEP_TOKEN_HEADER,
@@ -268,9 +274,53 @@ export class SweepsController {
     const result = await this.retention.sweep(new Date());
 
     this.logger.log(
-      `Sweep retention deleted ${result.enquiries} enquiry(ies) and ` +
-        `${result.attendanceRecords} attendance record(s)` +
+      `Sweep retention deleted ${result.enquiries} enquiry(ies), ` +
+        `${result.attendanceRecords} attendance record(s), ` +
+        `${result.pushMessages} push(es) and ` +
+        `${result.pushSubscriptions} push device(s)` +
         (result.more ? '; more remain for the next run.' : '.'),
+    );
+
+    return result;
+  }
+
+  @Post('push')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'sweepPush',
+    summary: 'Queue the clock’s staff pushes and send what is due',
+    description:
+      'Every 5 minutes (cnc-staging-sweep-push). C10: queues a push for each ' +
+      'table still occupied past the Free Table Reminder and, between 09:00 ' +
+      'and 10:00 in Jos, the day’s arrivals and unsettled-bills digests; ' +
+      'then gives up on expired pushes and sends what is due (held pushes ' +
+      'whose staff window has opened, failed ones past their backoff), ' +
+      'oldest first, 100 a run, within 30 seconds. Each phase runs on its ' +
+      'own: one failing is named in `failed` and the others still run.',
+  })
+  @ApiHeader({
+    name: SWEEP_TOKEN_HEADER,
+    description: 'The shared secret, `CNC_SWEEP_TOKEN`.',
+    required: true,
+  })
+  @ApiResponse({ status: 200, type: PushSweepResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'The token is absent, wrong, or not configured.',
+    type: ApiErrorResponse,
+  })
+  async pushSweep(): Promise<PushSweepResponse> {
+    const result = await this.push.run(new Date());
+    // A failed phase's counts print as null, its name under `failed`.
+    const count = (value: number | null) => String(value);
+
+    this.logger.log(
+      `Push sweep: queued=${count(result.queued.staleTables)}` +
+        `/${count(result.queued.dailyDigests)} ` +
+        `delivered=${count(result.delivered)} ` +
+        `held=${count(result.held)} ` +
+        `dropped=${count(result.dropped)} ` +
+        `failed=[${result.failed.join(',')}]`,
     );
 
     return result;

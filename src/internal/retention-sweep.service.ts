@@ -9,6 +9,23 @@ import { CncPrismaService } from '../prisma/cnc-prisma.service';
 export const ENQUIRY_RETENTION_MONTHS = 12;
 export const ATTENDANCE_RETENTION_YEARS = 2;
 
+/**
+ * C10: a web push row is kept 30 days, whatever its status. It is a
+ * delivery record, not a history: the in-app list and the bell are the
+ * history, and a month answers "did that push go?".
+ */
+export const PUSH_MESSAGE_RETENTION_DAYS = 30;
+
+/**
+ * C10: a device's push subscription is deleted after 180 days with neither
+ * a subscribe nor a delivered push, as the account panel's privacy note
+ * says. Browsers rotate a live subscription long before that, so one this
+ * quiet belongs to a browser nobody uses.
+ */
+export const PUSH_SUBSCRIPTION_UNUSED_DAYS = 180;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /** Rows deleted per statement. */
 export const RETENTION_BATCH = 500;
 
@@ -23,6 +40,10 @@ export const RETENTION_MAX_BATCHES = 20;
 export interface RetentionSweepResult {
   enquiries: number;
   attendanceRecords: number;
+  /** Push rows older than 30 days (C10). */
+  pushMessages: number;
+  /** Devices unused for 180 days, both realms (C10). */
+  pushSubscriptions: number;
   /** True when a table still held rows past its period at the run's cap. */
   more: boolean;
 }
@@ -60,6 +81,27 @@ export function attendanceCutoff(now: Date): Date {
   return calendarDateBefore(watToday(now), ATTENDANCE_RETENTION_YEARS, 0);
 }
 
+/** A push row written before this instant is deleted (C10). */
+export function pushMessageCutoff(now: Date): Date {
+  return new Date(now.getTime() - PUSH_MESSAGE_RETENTION_DAYS * DAY_MS);
+}
+
+/** A device neither seen nor delivered to since this instant is deleted. */
+export function pushSubscriptionCutoff(now: Date): Date {
+  return new Date(now.getTime() - PUSH_SUBSCRIPTION_UNUSED_DAYS * DAY_MS);
+}
+
+/**
+ * The devices to forget: `greatest(lastSeenAt, coalesce(lastSuccessAt,
+ * lastSeenAt)) < cutoff`, said as Prisma can say it.
+ */
+function unusedSince(cutoff: Date) {
+  return {
+    lastSeenAt: { lt: cutoff },
+    OR: [{ lastSuccessAt: null }, { lastSuccessAt: { lt: cutoff } }],
+  };
+}
+
 /**
  * The retention sweep (`POST /internal/sweeps/retention`, card C8-5, Q36):
  * enquiries made more than twelve months ago, and finished shifts dated
@@ -75,6 +117,12 @@ export function attendanceCutoff(now: Date): Date {
  * record, so every audit read stays whole; and the audit log itself is
  * append-only by trigger and never swept (A13). The attendance reads and
  * the export read at most 366 days, so no screen asks for a deleted shift.
+ *
+ * **From C10, web push too:** push rows written more than 30 days ago, in
+ * any status, and devices in either realm with neither a subscribe nor a
+ * delivered push for 180 days. Nothing references a push row; a device is
+ * referenced by nothing either, and is forgotten at once anyway on every
+ * sign-out and revocation (`forgetPushSubject`).
  *
  * **An open shift is never deleted, however old.** It is the state the next
  * scan of that person acts on (it closes it), and the partial unique index
@@ -136,10 +184,74 @@ export class RetentionSweepService {
       return { selected: rows.length, deleted: count };
     });
 
+    const pushMessages = await this.inBatches(async () => {
+      const cutoff = pushMessageCutoff(now);
+      const rows = await this.prisma.pushMessage.findMany({
+        where: { createdAt: { lt: cutoff } },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: RETENTION_BATCH,
+        select: { id: true },
+      });
+
+      if (rows.length === 0) return { selected: 0, deleted: 0 };
+
+      const { count } = await this.prisma.pushMessage.deleteMany({
+        where: {
+          id: { in: rows.map(({ id }) => id) },
+          createdAt: { lt: cutoff },
+        },
+      });
+
+      return { selected: rows.length, deleted: count };
+    });
+
+    const customerDevices = await this.inBatches(async () => {
+      const unused = unusedSince(pushSubscriptionCutoff(now));
+      const rows = await this.prisma.customerPushSubscription.findMany({
+        where: unused,
+        orderBy: [{ lastSeenAt: 'asc' }, { id: 'asc' }],
+        take: RETENTION_BATCH,
+        select: { id: true },
+      });
+
+      if (rows.length === 0) return { selected: 0, deleted: 0 };
+
+      const { count } = await this.prisma.customerPushSubscription.deleteMany({
+        where: { id: { in: rows.map(({ id }) => id) }, ...unused },
+      });
+
+      return { selected: rows.length, deleted: count };
+    });
+
+    const staffDevices = await this.inBatches(async () => {
+      const unused = unusedSince(pushSubscriptionCutoff(now));
+      const rows = await this.prisma.staffPushSubscription.findMany({
+        where: unused,
+        orderBy: [{ lastSeenAt: 'asc' }, { id: 'asc' }],
+        take: RETENTION_BATCH,
+        select: { id: true },
+      });
+
+      if (rows.length === 0) return { selected: 0, deleted: 0 };
+
+      const { count } = await this.prisma.staffPushSubscription.deleteMany({
+        where: { id: { in: rows.map(({ id }) => id) }, ...unused },
+      });
+
+      return { selected: rows.length, deleted: count };
+    });
+
     return {
       enquiries: enquiries.deleted,
       attendanceRecords: attendance.deleted,
-      more: enquiries.more || attendance.more,
+      pushMessages: pushMessages.deleted,
+      pushSubscriptions: customerDevices.deleted + staffDevices.deleted,
+      more:
+        enquiries.more ||
+        attendance.more ||
+        pushMessages.more ||
+        customerDevices.more ||
+        staffDevices.more,
     };
   }
 

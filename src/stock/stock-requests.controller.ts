@@ -33,6 +33,7 @@ import {
 } from '../idempotency/idempotency-key.decorator';
 import { idempotencyScope } from '../idempotency/idempotency-scope';
 import { IdempotencyService } from '../idempotency/idempotency.service';
+import { PushQueueService, type PushTopics } from '../push/push-queue.service';
 import {
   CreateStockRequestRequest,
   IssueStockRequestRequest,
@@ -79,6 +80,7 @@ export class StockRequestsController {
   constructor(
     private readonly requests: StockRequestsService,
     private readonly idempotency: IdempotencyService,
+    private readonly push: PushQueueService,
   ) {}
 
   @Get()
@@ -144,13 +146,16 @@ export class StockRequestsController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<StockRequestResponse> {
     const ipAddress = clientAddressOf(httpRequest);
+    const pushes: PushTopics = [];
     const result = await this.idempotency.execute({
       ...idempotency,
       scope: idempotencyScope.staff(actor.id),
       status: HttpStatus.CREATED,
-      work: (tx) => this.requests.create(tx, actor, request, ipAddress),
+      work: (tx) => this.requests.create(tx, actor, request, ipAddress, pushes),
     });
 
+    // After the commit (C10); a replay ran no work and pushes nothing.
+    await this.push.dispatchTopics(pushes);
     response.status(result.status);
 
     return result.body;

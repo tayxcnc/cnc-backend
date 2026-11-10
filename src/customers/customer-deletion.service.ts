@@ -261,6 +261,12 @@ export class CustomerDeletionService {
 
       await tx.customerNotification.deleteMany({ where: { customerId } });
 
+      // C10: the account's devices and every push to it, sent or not. The
+      // revocation below forgets the devices and the waiting pushes too;
+      // the deletion says so itself (Q36), and takes the sent ones as well.
+      await tx.customerPushSubscription.deleteMany({ where: { customerId } });
+      await tx.pushMessage.deleteMany({ where: { customerId } });
+
       // Every message to the account's address, and every message about its
       // bookings and codes (which reach earlier addresses too: a booking's
       // email before an email change, the "email changed" notice to the old

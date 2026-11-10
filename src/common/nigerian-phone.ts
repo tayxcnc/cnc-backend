@@ -22,7 +22,7 @@ export const NIGERIAN_PHONE = /^(\+234|0)[789][01]\d{8}$/;
  *
  * The local form, not `+234…`, because the plan stores it (§4.2: a
  * customer's `phone` is "`0`+10 digits"), the business's own number is
- * stored that way (`08022188797`), and it is the form every CNC screen shows
+ * stored that way (`09113500003`), and it is the form every CNC screen shows
  * and every guest types. TAY's copy of this helper returns `+234…`; the two
  * services never compare numbers with each other, so they need not agree.
  * `Customer.phone` carries a CHECK refusing any other spelling.
@@ -36,8 +36,8 @@ export const NIGERIAN_PHONE = /^(\+234|0)[789][01]\d{8}$/;
  * another is a route that skipped the check.
  */
 /**
- * A stored number as the website shows it: `08022188797` becomes
- * `0802 218 8797` (`cnc-frontend/lib/site.ts`, `phoneDisplay`), so an email
+ * A stored number as the website shows it: `09113500003` becomes
+ * `0911 350 0003` (`cnc-frontend/lib/site.ts`, `phoneDisplay`), so an email
  * prints CNC's number the way the site does and a guest reads and dials it
  * the same. Anything not in the stored form (`0` plus 10 digits) comes back
  * unchanged rather than guessed at.

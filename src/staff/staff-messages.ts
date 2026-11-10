@@ -30,5 +30,12 @@ export const STAFF_NAME_REASON_MESSAGE =
 export const OWN_PHOTO_ONLY_MESSAGE =
   'You can update only your own photograph.';
 
+/**
+ * A photo read (`GET /staff/me/photo`, `GET /staff/people/:id/photo`) for
+ * an account with no photograph (404). New, because the demo had no such
+ * read; a screen that draws the ID card shows the placeholder instead.
+ */
+export const NO_STAFF_PHOTO_MESSAGE = 'This staff account has no photo.';
+
 /** Longest name accepted; new, because the demo has none. */
 export const STAFF_NAME_MAX_LENGTH = 120;

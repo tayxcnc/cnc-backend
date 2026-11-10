@@ -46,6 +46,7 @@ import {
   PaystackUnavailableError,
 } from '../src/payments/paystack-client';
 import { WebhookDispatcherService } from '../src/payments/webhook-dispatcher.service';
+import { signPaystackBody } from '../src/payments/webhook-signature';
 import { drawNumber } from '../src/prisma/sequences';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
 import { createTestApp, sentMail } from './create-test-app';
@@ -635,6 +636,35 @@ describe('checkouts and the Paystack webhook (e2e)', () => {
         'sk_test_someone_else',
       ).expect(401);
       expect(await prisma.paymentEvent.count()).toBe(before);
+    });
+
+    it('checks the signature over the raw request bytes with response compression on (B2)', async () => {
+      const body = await created();
+      // Padded past the compression floor (1 KB), as a real delivery with
+      // its customer and log blocks is.
+      const event = chargeSuccess(body.reference, body.sums.totalKobo, {
+        log: { history: 'x'.repeat(2048) },
+      });
+      const raw = JSON.stringify(event);
+      const post = (sent: string) =>
+        request(server())
+          .post('/api/v1/payments/webhook')
+          .set('Content-Type', 'application/json')
+          .set('Accept-Encoding', 'gzip, deflate, br')
+          .set('x-paystack-signature', signPaystackBody(raw, PAYSTACK_KEY))
+          .send(sent);
+
+      // The same event spaced differently parses to the same object but
+      // is not the bytes that were signed.
+      expect(
+        messageOf(await post(JSON.stringify(event, null, 1)).expect(401)),
+      ).toBe(INVALID_SIGNATURE_MESSAGE);
+
+      fakePaystack(app).pay(body.reference);
+      expect((await post(raw).expect(200)).body).toEqual({ received: true });
+      await dispatcher.settled();
+
+      expect((await row(body.reference)).status).toBe(CheckoutStatus.PAID);
     });
 
     it('settles the payment inside the delivery’s own request, while the instance has CPU', async () => {

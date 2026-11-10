@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import sharp from 'sharp';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { StaffRole } from '../generated/cnc-client';
@@ -6,11 +7,20 @@ import { CncTokenService } from '../src/auth/cnc-token.service';
 import { STAFF_NOT_FOUND_MESSAGE } from '../src/auth/staff-auth.service';
 import { ROLE_REFUSED_MESSAGE } from '../src/auth/staff-roles';
 import { renderQrSvg } from '../src/common/qr-svg';
+import { PHOTO_CACHE_CONTROL } from '../src/images/photo-response';
 import { OWNER_ONLY_MANAGER_CARD_MESSAGE } from '../src/money-control/money-control.service';
 import { CncPrismaService } from '../src/prisma/cnc-prisma.service';
+import { NO_STAFF_PHOTO_MESSAGE } from '../src/staff/staff-messages';
 import { staffQrPayload } from '../src/staff/staff-qr';
+import { MediaStorage } from '../src/storage/media-storage';
 import { createTestApp } from './create-test-app';
+import {
+  FAKE_BUCKET,
+  type FakeMediaStorage,
+  type FakeObject,
+} from './fake-media-storage';
 import { accessTokenFor, createStaffAccount } from './staff-fixtures';
+import { testImage } from './test-images';
 
 /**
  * Staff ID cards (plan §5.3 My Staff ID, §5.4 Staff & Access): the card's
@@ -184,5 +194,182 @@ describe('staff ID cards (e2e)', () => {
     ]) {
       expect(response.headers['cache-control']).toBe('no-store');
     }
+  });
+
+  /**
+   * CS B5: the card's photo as bytes from the API, for the staff app's
+   * canvas and PDF, which cannot read the bucket's signed link. The read
+   * rule is the card's, exactly; people of their own, so the card tests
+   * above keep `photoUrl: null`.
+   */
+  describe('the photo, streamed (GET /staff/me/photo, GET /staff/people/:id/photo)', () => {
+    let storage: FakeMediaStorage;
+    let photoWaiter: Person;
+    let photoManager: Person;
+    let photoOwner: Person;
+
+    /** The person's own upload, through the real route. */
+    async function uploadOwnPhoto(who: Person): Promise<FakeObject> {
+      const { version } = await prisma.staff.findUniqueOrThrow({
+        where: { id: who.id },
+        select: { version: true },
+      });
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/staff/people/${who.id}/photo`)
+        .set('Authorization', `Bearer ${who.token}`)
+        .field('version', String(version))
+        .attach('photo', await testImage(900, 600), 'face.jpg')
+        .expect(200);
+
+      const { photo } = await prisma.staff.findUniqueOrThrow({
+        where: { id: who.id },
+        select: { photo: true },
+      });
+      const stored = photo === null ? undefined : storage.objectAt(photo);
+
+      if (stored === undefined) throw new Error('The upload stored nothing.');
+
+      return stored;
+    }
+
+    const messageOf = (response: request.Response) =>
+      (response.body as { message: unknown }).message;
+
+    let waiterPhoto: FakeObject;
+    let ownerPhoto: FakeObject;
+
+    beforeAll(async () => {
+      storage = app.get<MediaStorage, FakeMediaStorage>(MediaStorage, {
+        strict: false,
+      });
+      photoWaiter = await person(StaffRole.WAITER);
+      photoManager = await person(StaffRole.MANAGER);
+      photoOwner = await person(StaffRole.OWNER);
+      waiterPhoto = await uploadOwnPhoto(photoWaiter);
+      ownerPhoto = await uploadOwnPhoto(photoOwner);
+    });
+
+    afterEach(() => {
+      storage.failReading = false;
+    });
+
+    /** A 200 photo answer: the stored bytes, type and caching. */
+    /** A refusal or an error carries neither the photo's caching nor its Vary. */
+    function expectNoPhotoCaching(response: request.Response): void {
+      expect(response.headers['cache-control'] ?? '').not.toMatch(/max-age/);
+      expect(response.headers['vary'] ?? '').not.toMatch(/\bAuthorization\b/);
+    }
+
+    async function expectPhoto(
+      response: request.Response,
+      stored: FakeObject,
+    ): Promise<void> {
+      expect(response.headers['content-type']).toBe('image/jpeg');
+      expect(Buffer.isBuffer(response.body)).toBe(true);
+      expect(Buffer.compare(response.body as Buffer, stored.body)).toBe(0);
+      expect(response.headers['content-length']).toBe(
+        String(stored.body.length),
+      );
+      expect(response.headers['cache-control']).toBe(PHOTO_CACHE_CONTROL);
+      // Appended to CORS's own Vary: Origin, never replacing it.
+      expect(response.headers['vary']).toMatch(/\bAuthorization\b/);
+      expect(response.headers['vary']).toMatch(/\bOrigin\b/);
+
+      // As stored at upload: the 320-pixel staff square, nothing resized.
+      const meta = await sharp(response.body as Buffer).metadata();
+      expect([meta.width, meta.height]).toEqual([320, 320]);
+    }
+
+    it('streams your own photo to any role, as stored, cached by the browser only', async () => {
+      await expectPhoto(
+        await get('/staff/me/photo', photoWaiter).expect(200),
+        waiterPhoto,
+      );
+      await expectPhoto(
+        await get('/staff/me/photo', photoOwner).expect(200),
+        ownerPhoto,
+      );
+      expect(PHOTO_CACHE_CONTROL).toBe('private, max-age=300');
+    });
+
+    it('lets a manager read a waiter’s photo', async () => {
+      await expectPhoto(
+        await get(`/staff/people/${photoWaiter.id}/photo`, photoManager).expect(
+          200,
+        ),
+        waiterPhoto,
+      );
+    });
+
+    it('refuses a Manager the Owner’s photo with the card’s sentence; the Owner reads it', async () => {
+      const refused = await get(
+        `/staff/people/${photoOwner.id}/photo`,
+        photoManager,
+      ).expect(403);
+
+      expect(messageOf(refused)).toBe(OWNER_ONLY_MANAGER_CARD_MESSAGE);
+      expectNoPhotoCaching(refused);
+
+      await expectPhoto(
+        await get(`/staff/people/${photoOwner.id}/photo`, photoOwner).expect(
+          200,
+        ),
+        ownerPhoto,
+      );
+    });
+
+    it('refuses a waiter another person’s photo, and its own through the managers’ route, as the card does', async () => {
+      for (const id of [photoManager.id, photoOwner.id, photoWaiter.id]) {
+        const refused = await get(
+          `/staff/people/${id}/photo`,
+          photoWaiter,
+        ).expect(403);
+
+        expect(messageOf(refused)).toBe(ROLE_REFUSED_MESSAGE);
+        expectNoPhotoCaching(refused);
+      }
+    });
+
+    it('answers 404 for no photo, a photo gone from the bucket and no account, and 401 with no token', async () => {
+      const none = await get('/staff/me/photo', photoManager).expect(404);
+      expect(messageOf(none)).toBe(NO_STAFF_PHOTO_MESSAGE);
+      expectNoPhotoCaching(none);
+
+      const managerNone = await get(
+        `/staff/people/${photoManager.id}/photo`,
+        photoOwner,
+      ).expect(404);
+      expect(messageOf(managerNone)).toBe(NO_STAFF_PHOTO_MESSAGE);
+      expectNoPhotoCaching(managerNone);
+
+      expect(
+        messageOf(
+          await get('/staff/people/no-such-account/photo', photoOwner).expect(
+            404,
+          ),
+        ),
+      ).toBe(STAFF_NOT_FOUND_MESSAGE);
+
+      // The row names an object the bucket no longer holds.
+      const gone = await person(StaffRole.CASHIER);
+      await prisma.staff.update({
+        where: { id: gone.id },
+        data: { photo: `gs://${FAKE_BUCKET}/staff/${gone.id}/photo-gone.jpg` },
+      });
+      const goneNone = await get('/staff/me/photo', gone).expect(404);
+      expect(messageOf(goneNone)).toBe(NO_STAFF_PHOTO_MESSAGE);
+      expectNoPhotoCaching(goneNone);
+
+      await get('/staff/me/photo').expect(401);
+      await get(`/staff/people/${photoWaiter.id}/photo`).expect(401);
+    });
+
+    it('fails the request when the bucket cannot be read, rather than claiming there is no photo', async () => {
+      storage.failReading = true;
+
+      const failed = await get('/staff/me/photo', photoWaiter).expect(500);
+      expectNoPhotoCaching(failed);
+    });
   });
 });
