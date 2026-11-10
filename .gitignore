@@ -11,6 +11,9 @@ npm-debug.log*
 # OS
 .DS_Store
 
+# Data backups
+backups/
+
 # Tests
 /coverage
 /.nyc_output
