@@ -10,8 +10,10 @@
 # Keep this major in step with `engines.node` in package.json and with the
 # Vercel projects' Node version on the frontends. CI reads the engines field,
 # so a bump here that is not mirrored there gives you a green build on one
-# runtime and a container running another.
-FROM node:22-slim AS builder
+# runtime and a container running another. Pinned to an exact release: the
+# floating 22-slim moved to 22.23.5 on 2026-11-11 and that image never started
+# on Cloud Run, so a base change is a reviewed commit, not a silent pull.
+FROM node:22.23.4-slim AS builder
 
 # Prisma's tooling dlopens libssl at load time. The slim base does not
 # guarantee it, and the failure mode is a runtime error about an undetectable
@@ -52,7 +54,7 @@ RUN npm ci --omit=dev
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS runtime
+FROM node:22.23.4-slim AS runtime
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
