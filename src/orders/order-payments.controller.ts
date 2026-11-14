@@ -132,7 +132,7 @@ export class OrderPaymentsController {
 
   @Post(':id/part-payments')
   @HttpCode(HttpStatus.CREATED)
-  @Roles(StaffRole.CASHIER, StaffRole.BARTENDER)
+  @Roles(StaffRole.CASHIER, StaffRole.WAITER, StaffRole.BARTENDER)
   @IdempotentRoute()
   @ApiParam(ID_PARAM)
   @ApiOperation({
@@ -185,7 +185,7 @@ export class OrderPaymentsController {
 
   @Post(':id/settle')
   @HttpCode(HttpStatus.OK)
-  @Roles(StaffRole.CASHIER, StaffRole.BARTENDER)
+  @Roles(StaffRole.CASHIER, StaffRole.WAITER, StaffRole.BARTENDER)
   @IdempotentRoute()
   @ApiParam(ID_PARAM)
   @ApiOperation({

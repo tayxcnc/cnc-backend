@@ -664,16 +664,18 @@ describe('Order payments and corrections (e2e)', () => {
       expect((await read(order.id)).payments).toHaveLength(0);
     });
 
-    it('only cashiers, bartenders and managers take part payments', async () => {
+    it('only cashiers, waiters, bartenders and managers take part payments', async () => {
       const order = await barBill();
 
-      const waiter = await partPay(StaffRole.WAITER, order, [cash(100)]).expect(
-        403,
-      );
-      expect(messageOf(waiter)).toBe(ROLE_REFUSED_MESSAGE);
-      await partPay(StaffRole.KITCHEN, order, [cash(100)]).expect(403);
+      const kitchen = await partPay(StaffRole.KITCHEN, order, [
+        cash(100),
+      ]).expect(403);
+      expect(messageOf(kitchen)).toBe(ROLE_REFUSED_MESSAGE);
 
-      await partPay(StaffRole.MANAGER, order, [cash(100)]).expect(201);
+      await partPay(StaffRole.WAITER, order, [cash(100)]).expect(201);
+      await partPay(StaffRole.MANAGER, await read(order.id), [
+        cash(100),
+      ]).expect(201);
     });
 
     it('needs the bill at Payment first', async () => {
@@ -1012,13 +1014,18 @@ describe('Order payments and corrections (e2e)', () => {
       expect(settled.payments).toHaveLength(0);
     });
 
-    it('is for cashiers, bartenders and managers, after Proceed to Payment', async () => {
+    it('is for cashiers, waiters, bartenders and managers, after Proceed to Payment', async () => {
       const order = await barBill(1);
-      const waiter = await settle(StaffRole.WAITER, order, [
-        cash(order.totals.totalKobo),
-      ]).expect(403);
-      expect(messageOf(waiter)).toBe(ROLE_REFUSED_MESSAGE);
-      await settle(StaffRole.KITCHEN, order, [cash(1)]).expect(403);
+      const kitchen = await settle(StaffRole.KITCHEN, order, [cash(1)]).expect(
+        403,
+      );
+      expect(messageOf(kitchen)).toBe(ROLE_REFUSED_MESSAGE);
+      const waiter = (
+        await settle(StaffRole.WAITER, order, [
+          cash(order.totals.totalKobo),
+        ]).expect(200)
+      ).body as Order;
+      expect(waiter.status).toBe(OrderStatus.SETTLED);
 
       const unpaid = await line(await open(), lagerId, 1);
       const early = await settle(StaffRole.CASHIER, unpaid, [
