@@ -132,7 +132,7 @@ run.
 | `payments.test.cjs` | part payments work for card, transfer and split | `test/order-payments.e2e-spec.ts` | "part payments work for card, transfer and split" |
 | `payments.test.cjs` | a part payment must be less than the balance | `test/order-payments.e2e-spec.ts` | "a part payment must be less than the balance" |
 | `payments.test.cjs` | settlement takes only the remaining balance after part payments | `test/order-payments.e2e-spec.ts` | "settlement takes only the remaining balance after part payments" |
-| `payments.test.cjs` | only cashiers, bartenders and managers take part payments | `test/order-payments.e2e-spec.ts` | "only cashiers, bartenders and managers take part payments" |
+| `payments.test.cjs` | only cashiers, bartenders and managers take part payments | `test/order-payments.e2e-spec.ts` | "only cashiers, waiters, bartenders and managers take part payments" |
 | `payments.test.cjs` | a part paid bill cannot be cancelled | `test/order-payments.e2e-spec.ts` | "a part paid bill cannot be cancelled" |
 | `payments.test.cjs` | settings keep business details and printer width | `test/settings.e2e-spec.ts` | "lets a manager change the printer and an alert, and moves the version" + "never lets the name, the address or the phone end up blank" + "answers out-of-range values in the demo’s words" |
 | `stock.test.cjs` | kitchen requests whole purchase units and the store issues them as portions | `test/stock-requests.e2e-spec.ts` | "kitchen requests whole purchase units and the store issues them as portions" |
