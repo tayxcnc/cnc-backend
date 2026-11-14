@@ -167,6 +167,9 @@ jobs:
       # own runtime identity, matching the rest of the isolation model: it must
       # not be able to read TAY's secrets.
       #
+      # CNC_ENV=production: this service is the one customers and staff use and
+      # takes live Paystack payments, which the boot rules refuse under staging.
+      #
       # These comments stay above the step, never inside the command. A `#`
       # line between backslash-continued flags would comment out every flag
       # after it, and the deploy would run with silently wrong settings.
@@ -181,7 +184,7 @@ jobs:
             --max-instances 2 \
             --allow-unauthenticated \
             --add-cloudsql-instances tayxcnc-staging:europe-west1:tayxcnc-staging-pg \
-            --set-env-vars "CNC_GCS_BUCKET=tayxcnc-cnc-staging-media,CNC_ENV=staging" \
+            --set-env-vars "CNC_GCS_BUCKET=tayxcnc-cnc-staging-media,CNC_ENV=production" \
             --set-secrets "CNC_DB_URL=CNC_DB_URL:latest,CNC_JWT_SECRET=CNC_JWT_SECRET:latest,CNC_SWEEP_TOKEN=CNC_SWEEP_TOKEN:latest,CNC_WEB_URL=CNC_WEB_URL:latest,CNC_STAFF_URL=CNC_STAFF_URL:latest,CNC_CORS_ORIGINS=CNC_CORS_ORIGINS:latest,CNC_CONTACT_EMAIL=CNC_CONTACT_EMAIL:latest,CNC_PAYSTACK_SECRET_KEY=CNC_PAYSTACK_SECRET_KEY:latest,CNC_RESEND_API_KEY=CNC_RESEND_API_KEY:latest,CNC_MAIL_FROM=CNC_MAIL_FROM:latest,CNC_VAPID_PUBLIC_KEY=CNC_VAPID_PUBLIC_KEY:latest,CNC_VAPID_PRIVATE_KEY=CNC_VAPID_PRIVATE_KEY:latest,CNC_VAPID_SUBJECT=CNC_VAPID_SUBJECT:latest" \
             --quiet
 
